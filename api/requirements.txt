@@ -1,4 +1,5 @@
 neo4j
 python-dotenv
+pydantic
 requests
 sentence-transformers
