@@ -12,3 +12,4 @@ docs
 !brand-kit/**/*.md
 web/Joel Landing.dc.html
 web/Dockerfile
+web/og.html

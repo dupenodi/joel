@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://joel-pi.vercel.app/sitemap.xml

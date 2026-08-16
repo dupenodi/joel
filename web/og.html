@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Joel — OG card</title>
+    <script type="module" src="/brand-kit/animated/joel-logo.js"></script>
+    <style>
+      @font-face {
+        font-family: "Satoshi";
+        src: url("./fonts/Satoshi-Variable.woff2") format("woff2");
+        font-style: normal;
+        font-weight: 300 900;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #fafafa;
+      }
+
+      /* Fixed to the 1.91:1 frame the social crawlers expect, so the
+         screenshot needs no post-crop. */
+      .card {
+        position: relative;
+        display: flex;
+        overflow: hidden;
+        width: 1200px;
+        height: 630px;
+        padding: 72px 80px;
+        flex-direction: column;
+        justify-content: space-between;
+        background: #fafafa;
+        color: #131313;
+        font-family: "Satoshi", "Helvetica Neue", Arial, sans-serif;
+      }
+
+      .glow {
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(10px);
+        pointer-events: none;
+      }
+
+      .glow-a {
+        top: -220px;
+        right: -160px;
+        width: 620px;
+        height: 620px;
+        background: radial-gradient(circle, rgba(255, 45, 45, 0.16), transparent 68%);
+      }
+
+      .glow-b {
+        bottom: -260px;
+        left: -180px;
+        width: 560px;
+        height: 560px;
+        background: radial-gradient(circle, rgba(19, 19, 19, 0.09), transparent 70%);
+      }
+
+      .row {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+
+      .brand {
+        gap: 0;
+        font-size: 34px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+
+      .brand joel-logo {
+        --joel-logo-size: 74px;
+        margin-right: -8px;
+        filter: drop-shadow(0 4px 10px rgba(19, 19, 19, 0.16));
+      }
+
+      .badge {
+        margin-left: auto;
+        padding: 11px 20px;
+        border: 1px solid #d6d6d9;
+        border-radius: 999px;
+        background: #ffffff;
+        color: #4a4a4d;
+        font-size: 18px;
+        font-weight: 600;
+      }
+
+      h1 {
+        max-width: 940px;
+        margin: 0;
+        font-size: 92px;
+        font-weight: 600;
+        letter-spacing: -0.035em;
+        line-height: 1.02;
+      }
+
+      /* Mirrors the site's hero lockup: "Meet" at ~half size, lifted off the baseline */
+      h1 .lead {
+        color: #8b8b8e;
+        font-size: 0.46em;
+        font-weight: 400;
+        vertical-align: 0.72em;
+      }
+
+      p {
+        max-width: 820px;
+        margin: 26px 0 0;
+        color: #4a4a4d;
+        font-size: 27px;
+        line-height: 1.45;
+      }
+
+      .tools {
+        gap: 12px;
+      }
+
+      .tool {
+        display: grid;
+        width: 52px;
+        height: 52px;
+        place-items: center;
+        border: 1px solid #e6e6e8;
+        border-radius: 15px;
+        background: #ffffff;
+        box-shadow: 0 1px 2px rgba(19, 19, 19, 0.05), 0 2px 8px rgba(19, 19, 19, 0.04);
+      }
+
+      .tool img {
+        width: 27px;
+        height: 27px;
+      }
+
+      .url {
+        margin-left: auto;
+        color: #131313;
+        font-size: 24px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <span class="glow glow-a"></span>
+      <span class="glow glow-b"></span>
+
+      <div class="row">
+        <span class="brand row">
+          <joel-logo variant="ink" label="Joel"></joel-logo>
+          <span>Joel</span>
+        </span>
+        <span class="badge">Built on HydraDB</span>
+      </div>
+
+      <div>
+        <h1><span class="lead">Meet</span> Joel.</h1>
+        <p>
+          A self-hosted company brain. Connect your tools, ask in plain language, get
+          answers with citations from your own data.
+        </p>
+      </div>
+
+      <div class="row tools">
+        <span class="tool"><img src="./icons/slack.svg" alt="" /></span>
+        <span class="tool"><img src="./icons/gmail.svg" alt="" /></span>
+        <span class="tool"><img src="./icons/googledrive.svg" alt="" /></span>
+        <span class="tool"><img src="./icons/notion.svg" alt="" /></span>
+        <span class="tool"><img src="./icons/jira.svg" alt="" /></span>
+        <span class="tool"><img src="./icons/confluence.svg" alt="" /></span>
+        <span class="tool"><img src="./icons/linear.svg" alt="" /></span>
+        <span class="tool"><img src="./icons/github.svg" alt="" /></span>
+        <span class="url">joel-pi.vercel.app</span>
+      </div>
+    </div>
+  </body>
+</html>

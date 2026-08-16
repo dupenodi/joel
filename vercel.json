@@ -3,6 +3,9 @@
   "rewrites": [
     { "source": "/styles.css", "destination": "/web/styles.css" },
     { "source": "/app.js", "destination": "/web/app.js" },
+    { "source": "/og.png", "destination": "/web/og.png" },
+    { "source": "/robots.txt", "destination": "/web/robots.txt" },
+    { "source": "/sitemap.xml", "destination": "/web/sitemap.xml" },
     { "source": "/icons/:path*", "destination": "/web/icons/:path*" },
     { "source": "/fonts/:path*", "destination": "/web/fonts/:path*" },
     { "source": "/", "destination": "/web" }
