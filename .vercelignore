@@ -1,0 +1,14 @@
+.env
+.venv
+.brand-tools
+.hydradb
+.DS_Store
+data
+eval
+api
+scripts
+docs
+*.md
+!brand-kit/**/*.md
+web/Joel Landing.dc.html
+web/Dockerfile

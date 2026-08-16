@@ -18,6 +18,7 @@ template.innerHTML = `
     .background-layer,
     .mark-layer,
     .spin-3d,
+    .mark-face,
     .spin-2d,
     svg {
       display: block;
@@ -32,6 +33,17 @@ template.innerHTML = `
 
     .background-layer,
     .mark-layer {
+      position: absolute;
+      inset: 0;
+    }
+
+    .mark-face {
+      position: relative;
+      transform-style: preserve-3d;
+    }
+
+    .spin-2d,
+    .eye-layer {
       position: absolute;
       inset: 0;
     }
@@ -57,8 +69,15 @@ template.innerHTML = `
       will-change: transform;
     }
 
+    .pupil {
+      transform: translate(var(--joel-pupil-x, 0px), var(--joel-pupil-y, 0px));
+      transform-box: fill-box;
+      transform-origin: center;
+      will-change: transform;
+    }
+
     :host([effects~="blink"]) .eye {
-      animation: joel-blink var(--joel-blink-duration) ease-in-out infinite;
+      animation: joel-blink var(--joel-blink-duration) linear infinite;
     }
 
     :host([paused]) *,
@@ -76,13 +95,17 @@ template.innerHTML = `
     }
 
     @keyframes joel-blink {
-      0%, 46%, 50%, 100% { transform: scaleY(1); }
-      48% { transform: scaleY(0.06); }
+      0%, 44%, 56%, 100% { transform: scaleY(1); }
+      48%, 52% { transform: scaleY(0.08); }
     }
 
     @media (prefers-reduced-motion: reduce) {
       :host(:not([force-motion])) * {
         animation: none !important;
+      }
+
+      .pupil {
+        transition: none;
       }
     }
   </style>
@@ -101,41 +124,53 @@ template.innerHTML = `
 
     <div class="mark-layer">
       <div class="spin-3d" part="spin-3d">
-        <div class="spin-2d" part="spin-2d">
-          <svg
-            part="mark"
-            xmlns="http://www.w3.org/2000/svg"
-            viewBox="0 0 512 512"
-            aria-hidden="true"
-          >
-            <g transform="translate(256 256) skewY(-10) translate(-256 -256)">
-              <g class="shadow" transform="translate(268, 268)">
-                <rect x="-34" y="-155" width="68" height="310" rx="26"/>
-                <rect x="-34" y="-155" width="68" height="310" rx="26" transform="rotate(45)"/>
-                <rect x="-34" y="-155" width="68" height="310" rx="26" transform="rotate(90)"/>
-                <rect x="-34" y="-155" width="68" height="310" rx="26" transform="rotate(135)"/>
-              </g>
-
-              <g transform="translate(252, 252)">
-                <g class="mark-outer">
+        <div class="mark-face">
+          <div class="spin-2d" part="spin-2d">
+            <svg
+              part="mark"
+              xmlns="http://www.w3.org/2000/svg"
+              viewBox="0 0 512 512"
+              aria-hidden="true"
+            >
+              <g transform="translate(256 256) skewY(-10) translate(-256 -256)">
+                <g class="shadow" transform="translate(268, 268)">
                   <rect x="-34" y="-155" width="68" height="310" rx="26"/>
                   <rect x="-34" y="-155" width="68" height="310" rx="26" transform="rotate(45)"/>
                   <rect x="-34" y="-155" width="68" height="310" rx="26" transform="rotate(90)"/>
                   <rect x="-34" y="-155" width="68" height="310" rx="26" transform="rotate(135)"/>
                 </g>
 
-                <g class="mark-inner">
-                  <rect x="-23" y="-145" width="46" height="290" rx="18"/>
-                  <rect x="-23" y="-145" width="46" height="290" rx="18" transform="rotate(45)"/>
-                  <rect x="-23" y="-145" width="46" height="290" rx="18" transform="rotate(90)"/>
-                  <rect x="-23" y="-145" width="46" height="290" rx="18" transform="rotate(135)"/>
-                </g>
-
-                <g transform="scale(0.78)">
-                  <g class="eye">
-                    <path d="M -68,-8 C -46,-42 -20,-60 4,-60 C 30,-60 54,-40 68,-8 Q 74,0 68,8 C 48,40 24,60 -4,60 C -32,60 -56,40 -68,8 Q -74,0 -68,-8 Z"/>
-                    <ellipse class="pupil" cx="0" cy="0" rx="22" ry="34"/>
+                <g transform="translate(252, 252)">
+                  <g class="mark-outer">
+                    <rect x="-34" y="-155" width="68" height="310" rx="26"/>
+                    <rect x="-34" y="-155" width="68" height="310" rx="26" transform="rotate(45)"/>
+                    <rect x="-34" y="-155" width="68" height="310" rx="26" transform="rotate(90)"/>
+                    <rect x="-34" y="-155" width="68" height="310" rx="26" transform="rotate(135)"/>
                   </g>
+
+                  <g class="mark-inner">
+                    <rect x="-23" y="-145" width="46" height="290" rx="18"/>
+                    <rect x="-23" y="-145" width="46" height="290" rx="18" transform="rotate(45)"/>
+                    <rect x="-23" y="-145" width="46" height="290" rx="18" transform="rotate(90)"/>
+                    <rect x="-23" y="-145" width="46" height="290" rx="18" transform="rotate(135)"/>
+                  </g>
+                </g>
+              </g>
+            </svg>
+          </div>
+
+          <svg
+            class="eye-layer"
+            part="eye"
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 512 512"
+            aria-hidden="true"
+          >
+            <g transform="translate(256 256) skewY(-10) translate(-256 -256)">
+              <g transform="translate(252, 252) scale(0.78)">
+                <g class="eye">
+                  <path d="M -68,-8 C -46,-42 -20,-60 4,-60 C 30,-60 54,-40 68,-8 Q 74,0 68,8 C 48,40 24,60 -4,60 C -32,60 -56,40 -68,8 Q -74,0 -68,-8 Z"/>
+                  <ellipse class="pupil" cx="0" cy="0" rx="22" ry="34"/>
                 </g>
               </g>
             </g>
@@ -170,6 +205,22 @@ const palettes = {
     inner: "#111111",
     eye: "#FFFFFF",
     pupil: "#111111",
+  },
+  ink: {
+    background: "transparent",
+    shadow: "rgba(18,18,18,0.14)",
+    outer: "#121212",
+    inner: "#121212",
+    eye: "#FAFAFA",
+    pupil: "#121212",
+  },
+  paper: {
+    background: "transparent",
+    shadow: "rgba(250,250,250,0.16)",
+    outer: "#FAFAFA",
+    inner: "#FAFAFA",
+    eye: "#121212",
+    pupil: "#FAFAFA",
   },
 };
 

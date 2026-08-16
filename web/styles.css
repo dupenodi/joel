@@ -1,0 +1,1506 @@
+@font-face {
+  font-family: "Ranade";
+  src: url("./fonts/Ranade-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Ranade";
+  src: url("./fonts/Ranade-VariableItalic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 700;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Satoshi";
+  src: url("./fonts/Satoshi-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Satoshi";
+  src: url("./fonts/Satoshi-VariableItalic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 300 900;
+  font-display: swap;
+}
+
+:root {
+  /* Switch site typeface here: --font-space-grotesk | --font-ranade | --font-satoshi */
+  --font-space-grotesk: "Space Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-ranade: "Ranade", "Helvetica Neue", Arial, sans-serif;
+  --font-satoshi: "Satoshi", "Helvetica Neue", Arial, sans-serif;
+  --font-sans: var(--font-satoshi);
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --ink: #131313;
+  --ink-soft: #4a4a4d;
+  --muted: #8b8b8e;
+  --line: #e6e6e8;
+  --line-strong: #d6d6d9;
+  --shadow-sm:
+    0 1px 2px rgba(19, 19, 19, 0.05), 0 2px 8px rgba(19, 19, 19, 0.04);
+  --shadow-md:
+    0 8px 24px rgba(19, 19, 19, 0.08), 0 2px 6px rgba(19, 19, 19, 0.04);
+  --radius: 20px;
+  --radius-sm: 12px;
+  --content-max: 1220px;
+  --header-h: 78px;
+  color: var(--ink);
+  background: var(--bg);
+  font-family: var(--font-sans);
+}
+
+.shell {
+  width: 100%;
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 0 clamp(20px, 4vw, 48px);
+  padding-left: max(clamp(20px, 4vw, 48px), env(safe-area-inset-left));
+  padding-right: max(clamp(20px, 4vw, 48px), env(safe-area-inset-right));
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  width: 100%;
+  max-width: 100%;
+  scroll-behavior: smooth;
+  overflow-x: hidden;
+  overflow-x: clip;
+}
+
+body {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-x: clip;
+  background: var(--bg);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  color: inherit;
+  border: none;
+  background: none;
+  font: inherit;
+}
+
+p {
+  margin: 0;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.skip-link {
+  position: fixed;
+  z-index: 100;
+  top: 12px;
+  left: 12px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+  color: var(--surface);
+  transform: translateY(-160%);
+  transition: transform 160ms ease;
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
+/* header */
+
+.site-header {
+  position: sticky;
+  z-index: 30;
+  top: 0;
+  width: 100%;
+  padding: 16px 0;
+  background: rgba(250, 250, 250, 0.82);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid transparent;
+}
+
+.header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  font-size: 1.32rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.brand-mark {
+  --joel-logo-size: 46px;
+  flex: 0 0 auto;
+  margin-right: -6px;
+  filter: drop-shadow(0 3px 6px rgba(19, 19, 19, 0.14));
+}
+
+.nav-toggle {
+  display: none;
+  width: 44px;
+  height: 44px;
+  margin-left: auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.nav-toggle-bars,
+.nav-toggle-bars::before,
+.nav-toggle-bars::after {
+  display: block;
+  width: 16px;
+  height: 1.5px;
+  border-radius: 999px;
+  background: var(--ink);
+  transition:
+    transform 180ms ease,
+    opacity 180ms ease;
+}
+
+.nav-toggle-bars {
+  position: relative;
+}
+
+.nav-toggle-bars::before,
+.nav-toggle-bars::after {
+  position: absolute;
+  left: 0;
+  content: "";
+}
+
+.nav-toggle-bars::before {
+  top: -5px;
+}
+
+.nav-toggle-bars::after {
+  top: 5px;
+}
+
+.site-header.is-nav-open .nav-toggle-bars {
+  background: transparent;
+}
+
+.site-header.is-nav-open .nav-toggle-bars::before {
+  top: 0;
+  transform: rotate(45deg);
+}
+
+.site-header.is-nav-open .nav-toggle-bars::after {
+  top: 0;
+  transform: rotate(-45deg);
+}
+
+nav {
+  display: flex;
+  align-items: center;
+  gap: clamp(20px, 3vw, 36px);
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+
+nav a:hover,
+nav a:focus-visible {
+  color: var(--ink);
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.nav-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink);
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease;
+}
+
+.nav-cta img {
+  display: block;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.nav-cta:hover,
+.nav-cta:focus-visible {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: var(--surface);
+}
+
+.nav-cta:hover img,
+.nav-cta:focus-visible img {
+  filter: invert(1);
+}
+
+main {
+  width: 100%;
+}
+
+/* buttons */
+
+.btn {
+  display: inline-flex;
+  min-height: 52px;
+  padding: 0 26px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  transition:
+    transform 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.btn-primary {
+  border: 1px solid var(--ink);
+  background: var(--ink);
+  box-shadow: var(--shadow-sm);
+  color: var(--surface);
+  cursor: pointer;
+}
+
+.btn-primary:hover,
+.btn-primary:focus-visible {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.btn-ghost {
+  border: 1px solid var(--line-strong);
+  color: var(--ink);
+}
+
+.btn-ghost:hover,
+.btn-ghost:focus-visible {
+  border-color: var(--ink);
+  background: var(--surface);
+}
+
+/* hero */
+
+.hero {
+  display: flex;
+  align-items: center;
+  min-height: calc(100svh - var(--header-h));
+  padding: clamp(28px, 4vw, 48px) 0;
+  box-sizing: border-box;
+}
+
+.hero-grid {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
+  align-items: center;
+  gap: clamp(28px, 5vw, 64px);
+}
+
+.eyebrow {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+h1 {
+  max-width: 680px;
+  font-size: clamp(3.1rem, 5.4vw, 4.8rem);
+  line-height: 1.05;
+}
+
+h1 span {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+/* "Meet" runs at half the wordmark's size so the line reads as a lockup, not two words */
+h1 .h1-lead {
+  color: var(--muted);
+  font-size: 0.46em;
+  font-weight: 400;
+  vertical-align: 0.1em;
+}
+
+.hero-sub {
+  max-width: 420px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: clamp(1.05rem, 1.3vw, 1.18rem);
+  font-weight: 400;
+}
+
+.hero-actions {
+  display: flex;
+  margin-top: 34px;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.hero-visual {
+  position: relative;
+  display: grid;
+  width: 100%;
+  min-height: min(68svh, 680px);
+  place-items: center;
+  perspective: 1200px;
+}
+
+.hero-orbit {
+  position: absolute;
+  z-index: 0;
+  width: 92%;
+  aspect-ratio: 1;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+}
+
+@property --r {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.hero-orbit-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 6px;
+  margin: -3px;
+  border-radius: 50%;
+  background: var(--ink);
+  opacity: 0.32;
+  transform: rotate(var(--r, 0deg)) translateX(var(--orbit-radius, 130px));
+  animation: joel-orbit-spin 22s linear infinite;
+  will-change: transform;
+}
+
+.hero-orbit-dot:nth-child(2) {
+  animation-delay: -7.33s;
+}
+
+.hero-orbit-dot:nth-child(3) {
+  animation-delay: -14.67s;
+}
+
+@keyframes joel-orbit-spin {
+  to {
+    --r: 360deg;
+  }
+}
+
+.hero-joel {
+  position: relative;
+  z-index: 1;
+  width: min(86%, 540px);
+  aspect-ratio: 1;
+  transform-style: preserve-3d;
+  will-change: transform;
+}
+
+/* callouts live outside .hero-joel so the float/tilt/hover transforms never touch them.
+   The layer may spill 20px past the visual — the shell gutter is never narrower than
+   that — and is capped so the bubbles stay close to Joel on wide single-column layouts. */
+.hero-callouts {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  z-index: 3;
+  width: min(calc(100% + 40px), 620px);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.hero-ask,
+.hero-speech {
+  position: absolute;
+  width: clamp(160px, 44%, 228px);
+  padding: 11px 13px 12px;
+  border: 1.5px solid var(--ink);
+  border-radius: 5px 18px 18px 18px;
+  background: var(--surface);
+  opacity: 0;
+  visibility: hidden;
+  transform-origin: 0 17px;
+}
+
+.hero-ask.is-open,
+.hero-speech.is-open {
+  visibility: visible;
+}
+
+.hero-ask {
+  top: 10%;
+  left: 0;
+  box-shadow: 4px 5px 0 rgba(19, 19, 19, 0.07);
+  transform: rotate(-1.5deg) scale(0.92);
+}
+
+.hero-speech {
+  top: 47%;
+  right: clamp(-96px, -5vw, -32px);
+  box-shadow: 4px 5px 0 rgba(19, 19, 19, 0.08);
+  transform: rotate(1.5deg) scale(0.92);
+}
+
+/* tail: rotated square below the squared top-left corner. Its size and offsets keep the
+   arm ends on the border's centre line, and leave ~5px of straight border above and
+   below even at the shortest (single line) height — when the tail reaches into the
+   corner radii instead, the joins notch and the outline reads as broken. */
+.hero-ask::after,
+.hero-speech::after {
+  position: absolute;
+  top: 11.5px;
+  left: -5.5px;
+  width: 10px;
+  height: 10px;
+  border-bottom: 1.5px solid var(--ink);
+  border-left: 1.5px solid var(--ink);
+  background: var(--surface);
+  transform: rotate(45deg);
+  content: "";
+}
+
+.hero-ask-label {
+  margin: 0 0 5px;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.hero-speech-status {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+
+.hero-speech.is-working .hero-speech-status {
+  display: flex;
+}
+
+.hero-speech.is-working .hero-speech-text,
+.hero-speech.is-working .hero-speech-cites {
+  display: none;
+}
+
+.hero-speech-status-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.hero-speech-status-label {
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.hero-tool-icon {
+  display: block;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.hero-speech-cites {
+  display: flex;
+  margin-top: 8px;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.hero-speech-cites[hidden] {
+  display: none;
+}
+
+.hero-cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  font-size: 0.62rem;
+  font-weight: 500;
+}
+
+.hero-cite .hero-tool-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.hero-ask-text,
+.hero-speech-text {
+  margin: 0;
+  color: var(--ink);
+  font-size: clamp(0.88rem, 1.05vw, 1rem);
+  font-weight: 500;
+  line-height: 1.35;
+  min-height: 1.35em;
+  overflow-wrap: break-word;
+}
+
+/* keeps the bubble bubble-shaped instead of a squashed pill while the answer types in */
+.hero-speech-text {
+  min-height: 2.7em;
+}
+
+.hero-speech-cursor {
+  display: none;
+  width: 6px;
+  height: 0.95em;
+  margin-left: 2px;
+  background: var(--ink);
+  vertical-align: -0.1em;
+}
+
+.hero-speech.is-typing .hero-speech-cursor {
+  display: inline-block;
+  animation: cursor 700ms steps(1) infinite;
+}
+
+.hero-logo-stage {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  aspect-ratio: 1;
+  transform-style: preserve-3d;
+}
+
+#hero-logo {
+  --joel-logo-size: 100%;
+  --joel-blink-duration: 3.4s;
+  display: block;
+  filter: drop-shadow(0 22px 36px rgba(19, 19, 19, 0.16));
+}
+
+/* shared section layout */
+
+.section-shell {
+  padding: clamp(72px, 9vw, 128px) 0;
+}
+
+.section-heading {
+  max-width: 720px;
+  margin: 0 auto clamp(48px, 6vw, 72px);
+  text-align: center;
+}
+
+.section-heading h2 {
+  font-size: clamp(2.4rem, 4.2vw, 3.6rem);
+  line-height: 1.12;
+  text-wrap: balance;
+}
+
+.section-lede {
+  max-width: 480px;
+  margin: 20px auto 0;
+  font-size: 1.05rem;
+}
+
+/* integrations orbit */
+
+.integrations {
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.orbit-stage {
+  position: relative;
+  width: min(760px, 100%);
+  margin: 0 auto;
+  aspect-ratio: 1;
+}
+
+.orbit-lines {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.orbit-lines .orbit-line {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.orbit-lines .orbit-pulse {
+  fill: var(--ink);
+  opacity: 0;
+}
+
+.orbit-hub {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  width: 34%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+}
+
+.orbit-hub joel-logo {
+  --joel-logo-size: 100%;
+  filter: drop-shadow(0 14px 24px rgba(19, 19, 19, 0.1));
+}
+
+.orbit-ring {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+.chip-position {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) translate(var(--x, 0px), var(--y, 0px));
+}
+
+.chip {
+  display: flex;
+  width: 108px;
+  padding: 16px 0 12px;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 200ms ease;
+}
+
+.chip:hover {
+  box-shadow: var(--shadow-md);
+}
+
+.chip-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface);
+}
+
+.chip-icon img {
+  display: block;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.chip-label {
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+/* architecture diagram */
+
+.arch-diagram {
+  position: relative;
+  display: flex;
+  max-width: 920px;
+  margin: 0 auto;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(28px, 4vw, 44px);
+}
+
+.arch-wires {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.arch-wires .arch-wire {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.arch-wires .arch-pulse {
+  fill: var(--ink);
+  opacity: 0;
+}
+
+.arch-stage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.arch-stage-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.arch-tools {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.arch-tool {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.arch-tool img {
+  display: block;
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+
+.arch-card {
+  width: min(100%, 360px);
+  padding: 22px 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  text-align: center;
+}
+
+.arch-card h3 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+}
+
+.arch-card p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.arch-card-sm {
+  width: 100%;
+  padding: 18px 16px;
+}
+
+.arch-card-feature {
+  border-color: var(--ink);
+  box-shadow: var(--shadow-md);
+}
+
+.arch-card-feature h3 {
+  font-weight: 700;
+}
+
+.arch-store-grid {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.arch-edges {
+  display: flex;
+  margin-top: 14px;
+  justify-content: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.arch-edges span {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.arch-ask-grid {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: stretch;
+  gap: 14px;
+}
+
+.arch-ask-grid > .arch-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.arch-kicker {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.arch-retrieve {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.arch-retrieve span {
+  display: flex;
+  min-width: 108px;
+  padding: 10px 12px;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 0.62rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
+.arch-retrieve span b {
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.arch-card-answer {
+  background: var(--ink);
+  border-color: var(--ink);
+  box-shadow: var(--shadow-md);
+  text-align: left;
+}
+
+.arch-card-answer p {
+  color: #f2f2f2;
+  font-weight: 500;
+}
+
+.arch-cites {
+  display: flex;
+  margin-top: 14px;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Same pill as the hero citations: light chip, brand mark in full colour, so a
+   logo reads the same here as it does in the Connect row. */
+.arch-cite {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.arch-cite img {
+  display: block;
+  width: 12px;
+  height: 12px;
+  object-fit: contain;
+}
+
+/* final cta */
+
+.cta-final {
+  padding: clamp(80px, 11vw, 140px) 0;
+  text-align: center;
+}
+
+.cta-final h2 {
+  font-size: clamp(2.4rem, 5.5vw, 4.4rem);
+}
+
+.cta-actions {
+  display: flex;
+  margin-top: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+/* footer */
+
+.site-footer {
+  padding: 28px 0;
+  border-top: 1px solid var(--line);
+}
+
+.footer-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.site-footer p {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+/* responsive */
+
+@media (max-width: 980px) {
+  .hero {
+    min-height: calc(100svh - var(--header-h));
+    padding-top: 20px;
+    padding-bottom: 36px;
+  }
+
+  .hero-grid {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .hero-visual {
+    min-height: 0;
+    height: auto;
+    order: -1;
+    padding: 0;
+  }
+
+  .hero-joel {
+    width: min(58%, 280px);
+    margin: 118px auto 150px;
+  }
+
+  .hero-callouts {
+    width: min(calc(100% - 8px), 340px);
+  }
+
+  .hero-ask,
+  .hero-speech {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    margin-left: 0;
+    padding: 10px 12px;
+  }
+
+  .hero-ask {
+    top: 10px;
+    bottom: auto;
+  }
+
+  .hero-speech {
+    top: auto;
+    bottom: 12px;
+  }
+
+  .orbit-stage {
+    width: min(560px, 100%);
+  }
+
+  /* Chips shrink with the ring so ten of them keep clear of each other. */
+  .chip {
+    width: 88px;
+    padding: 12px 0 10px;
+    gap: 8px;
+  }
+
+  .chip-icon {
+    width: 44px;
+    height: 44px;
+  }
+
+  .chip-icon img {
+    width: 24px;
+    height: 24px;
+  }
+
+  .chip-label {
+    font-size: 0.66rem;
+  }
+
+  /* The three stores stay side by side — that's the "one write, three places"
+     point — so the cards tighten up instead of stacking. */
+  .arch-store-grid {
+    gap: 10px;
+  }
+
+  .arch-store-grid .arch-card {
+    padding: 16px 10px;
+  }
+
+  .arch-store-grid .arch-card h3 {
+    margin-bottom: 6px;
+    font-size: 0.95rem;
+  }
+
+  .arch-store-grid .arch-card p {
+    font-size: 0.78rem;
+    line-height: 1.35;
+  }
+
+  .arch-ask-grid {
+    grid-template-columns: 1fr;
+    max-width: 360px;
+    margin: 0 auto;
+    gap: 20px;
+  }
+
+  .arch-retrieve {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  /* Wires run straight down the middle once the diagram stacks, so labels sit
+     on the line as chips rather than letting it strike through the text. */
+  .arch-stage-label {
+    position: relative;
+    z-index: 1;
+    padding: 4px 12px;
+    border-radius: 999px;
+    background: var(--bg);
+  }
+}
+
+@media (max-width: 680px) {
+  :root {
+    --header-h: 68px;
+  }
+
+  .shell {
+    padding-inline: clamp(16px, 5.33vw, 20px);
+    padding-left: max(clamp(16px, 5.33vw, 20px), env(safe-area-inset-left));
+    padding-right: max(clamp(16px, 5.33vw, 20px), env(safe-area-inset-right));
+  }
+
+  .site-header {
+    padding: 10px 0;
+    padding-top: max(10px, env(safe-area-inset-top));
+  }
+
+  .brand {
+    font-size: 1.16rem;
+  }
+
+  .brand-mark {
+    --joel-logo-size: 42px;
+  }
+
+  .nav-toggle {
+    display: inline-flex;
+  }
+
+  .header-inner {
+    position: relative;
+    flex-wrap: wrap;
+  }
+
+  nav {
+    display: none;
+    width: 100%;
+    margin-top: 12px;
+    padding: 12px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+  }
+
+  .site-header.is-nav-open nav {
+    display: flex;
+  }
+
+  nav a {
+    display: flex;
+    min-height: 44px;
+    padding: 0 14px;
+    align-items: center;
+    border-radius: 12px;
+  }
+
+  nav a:hover,
+  nav a:focus-visible {
+    background: var(--bg);
+  }
+
+  .nav-cta {
+    justify-content: center;
+    margin-top: 4px;
+    min-height: 44px;
+    padding: 0 17px;
+  }
+
+  .section-shell {
+    padding: clamp(64px, 18vw, 88px) 0;
+  }
+
+  .section-heading {
+    margin-bottom: clamp(38px, 11vw, 52px);
+  }
+
+  .section-heading h2 {
+    font-size: clamp(2rem, 10vw, 2.75rem);
+  }
+
+  .section-lede {
+    margin-top: 16px;
+    font-size: 1rem;
+    line-height: 1.55;
+  }
+
+  .hero {
+    min-height: auto;
+    padding: 16px 0 64px;
+  }
+
+  .hero-grid {
+    gap: 28px;
+  }
+
+  h1 {
+    font-size: clamp(2.35rem, 11vw, 3.2rem);
+  }
+
+  .hero-sub {
+    margin-top: 14px;
+  }
+
+  .hero-actions {
+    margin-top: 26px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .hero-actions .btn,
+  .cta-actions .btn {
+    width: 100%;
+    min-height: 50px;
+    padding-inline: 20px;
+  }
+
+  .orbit-stage {
+    width: min(400px, 100%);
+  }
+
+  .hero-visual {
+    padding: 0;
+  }
+
+  .hero-joel {
+    width: min(62%, 240px);
+    margin: 112px auto 146px;
+  }
+
+  .hero-callouts {
+    width: min(calc(100% - 4px), 320px);
+  }
+
+  .hero-ask,
+  .hero-speech {
+    left: 10px;
+    right: 10px;
+    width: auto;
+    margin-left: 0;
+    padding: 10px 12px;
+  }
+
+  .hero-ask-text,
+  .hero-speech-text {
+    font-size: clamp(0.78rem, 3.5vw, 0.88rem);
+  }
+
+  .hero-speech-status {
+    font-size: 0.74rem;
+  }
+
+  .hero-cite {
+    padding: 3px 7px 3px 5px;
+    font-size: 0.58rem;
+  }
+
+  /* Ten labelled chips can't fit the ring at phone widths, so the chip becomes
+     the icon itself and the name stays available to screen readers only. */
+  .chip {
+    width: 46px;
+    min-height: 46px;
+    padding: 0;
+    justify-content: center;
+    gap: 0;
+    border-radius: 50%;
+  }
+
+  .chip-icon {
+    width: 100%;
+    height: 100%;
+    border: none;
+    background: none;
+  }
+
+  .chip-icon img {
+    width: 20px;
+    height: 20px;
+  }
+
+  .chip-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .arch-diagram {
+    gap: 26px;
+  }
+
+  .arch-tools {
+    gap: 8px;
+  }
+
+  .arch-tool {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+  }
+
+  .arch-card {
+    padding: 20px 18px;
+    border-radius: 16px;
+  }
+
+  .arch-card-sm {
+    padding: 17px 15px;
+  }
+
+  .arch-store-grid {
+    gap: 8px;
+  }
+
+  .arch-store-grid .arch-card {
+    padding: 14px 8px;
+  }
+
+  .arch-store-grid .arch-card h3 {
+    font-size: 0.85rem;
+  }
+
+  .arch-store-grid .arch-card p {
+    font-size: 0.7rem;
+  }
+
+  .arch-retrieve {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .arch-retrieve span {
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .cta-final {
+    padding: clamp(72px, 20vw, 96px) 0;
+  }
+
+  .cta-final h2 {
+    font-size: clamp(2.1rem, 11vw, 3rem);
+  }
+
+  .cta-actions {
+    margin-top: 30px;
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: 12px;
+  }
+
+  .footer-inner {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .site-footer p {
+    max-width: 34ch;
+    line-height: 1.5;
+  }
+}
+
+@media (max-width: 480px) {
+  .hero-joel {
+    width: min(58%, 220px);
+    margin: 108px auto 140px;
+  }
+
+  .hero-ask,
+  .hero-speech {
+    left: 8px;
+    right: 8px;
+  }
+
+  .arch-card p {
+    font-size: 0.88rem;
+  }
+}
+
+@media (max-width: 340px) {
+  .shell {
+    padding-inline: 14px;
+    padding-left: max(14px, env(safe-area-inset-left));
+    padding-right: max(14px, env(safe-area-inset-right));
+  }
+
+  .brand-mark {
+    --joel-logo-size: 38px;
+  }
+
+  .nav-cta {
+    min-height: 42px;
+    padding-inline: 14px;
+  }
+
+  .hero-joel {
+    width: min(56%, 200px);
+    margin: 100px auto 132px;
+  }
+
+  .hero-ask,
+  .hero-speech {
+    left: 6px;
+    right: 6px;
+    padding: 8px 9px;
+  }
+
+  .chip {
+    width: 42px;
+    min-height: 42px;
+  }
+
+  .chip-icon img {
+    width: 18px;
+    height: 18px;
+  }
+
+  .arch-tool {
+    width: 42px;
+    height: 42px;
+  }
+
+  .arch-retrieve span {
+    padding-inline: 5px;
+  }
+
+  .arch-retrieve span b {
+    font-size: 0.72rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

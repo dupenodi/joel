@@ -1,0 +1,10 @@
+{
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/styles.css", "destination": "/web/styles.css" },
+    { "source": "/app.js", "destination": "/web/app.js" },
+    { "source": "/icons/:path*", "destination": "/web/icons/:path*" },
+    { "source": "/fonts/:path*", "destination": "/web/fonts/:path*" },
+    { "source": "/", "destination": "/web/index.html" }
+  ]
+}

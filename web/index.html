@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Joel is a self-hosted company brain that already knows you and your team — connected to the tools you use, running on your own machine."
+    />
+    <meta name="theme-color" content="#fafafa" />
+    <title>Joel — your company's memory, self-hosted</title>
+    <link rel="icon" href="/brand-kit/favicons/favicon.svg" />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+
+    <link rel="stylesheet" href="./styles.css" />
+    <script type="module" src="/brand-kit/animated/joel-logo.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/gsap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/ScrollTrigger.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/MotionPathPlugin.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.15.0/dist/DrawSVGPlugin.min.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="shell header-inner">
+        <a class="brand" href="#top">
+          <joel-logo variant="ink" label="Joel" class="brand-mark" aria-hidden="true"></joel-logo>
+          <span>Joel</span>
+        </a>
+
+        <button
+          class="nav-toggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="site-nav"
+          aria-label="Open menu"
+        >
+          <span class="nav-toggle-bars" aria-hidden="true"></span>
+        </button>
+
+        <nav id="site-nav" aria-label="Main navigation">
+          <a href="#integrations">Integrations</a>
+          <a href="#memory">Memory</a>
+          <a
+            class="nav-cta"
+            href="https://github.com/dupenodi/joel"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="GitHub"
+          >
+            <img src="./icons/github.svg" alt="" width="18" height="18" />
+            <span>GitHub</span>
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top">
+        <div class="shell hero-grid">
+          <div class="hero-copy">
+            <h1 class="js-hero"><span class="h1-lead">Meet</span> <span>Joel.</span></h1>
+            <p class="hero-sub js-hero">Stop digging through Slack, docs, and tickets.</p>
+
+            <div class="hero-actions js-hero">
+              <a
+                class="btn btn-primary"
+                href="https://github.com/dupenodi/joel"
+                target="_blank"
+                rel="noreferrer"
+                >Get started</a
+              >
+              <a class="btn btn-ghost" href="#integrations">See how it connects</a>
+            </div>
+          </div>
+
+          <div class="hero-visual">
+            <div class="hero-orbit" aria-hidden="true">
+              <span class="hero-orbit-dot"></span>
+              <span class="hero-orbit-dot"></span>
+              <span class="hero-orbit-dot"></span>
+            </div>
+
+            <div class="hero-joel" id="hero-joel">
+              <div class="hero-logo-stage" id="hero-logo-stage">
+                <joel-logo
+                  id="hero-logo"
+                  variant="ink"
+                  effects="blink"
+                  label="Animated Joel logo"
+                ></joel-logo>
+              </div>
+            </div>
+
+            <div class="hero-callouts">
+              <div class="hero-ask" id="hero-ask" aria-hidden="true">
+                <p class="hero-ask-label">You</p>
+                <p class="hero-ask-text" id="hero-ask-line"></p>
+              </div>
+
+              <div class="hero-speech" id="hero-speech" aria-hidden="true">
+                <p class="hero-speech-status" id="hero-speech-status"></p>
+                <p class="hero-speech-text">
+                  <span id="hero-speech-line"></span
+                  ><i class="hero-speech-cursor" aria-hidden="true"></i>
+                </p>
+                <div class="hero-speech-cites" id="hero-speech-cites" hidden></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="integrations section-shell" id="integrations">
+        <div class="shell">
+          <div class="section-heading">
+            <h2>Already knows<br />your stack.</h2>
+            <p class="section-lede">
+              Every tool your team already uses feeds the same graph. Nothing new to learn,
+              nothing new to check.
+            </p>
+          </div>
+
+          <div class="orbit-stage" id="orbit-stage">
+            <div class="orbit-hub">
+              <joel-logo variant="ink" label="Joel" aria-hidden="true"></joel-logo>
+            </div>
+
+            <div class="orbit-ring" id="orbit-ring">
+              <svg class="orbit-lines" id="orbit-lines" aria-hidden="true"></svg>
+
+              <div class="chip-position" data-tool="Slack">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img src="./icons/slack.svg" alt="" width="22" height="22" loading="lazy"
+                  /></span>
+                  <span class="chip-label">Slack</span>
+                </div>
+              </div>
+              <div class="chip-position" data-tool="Gmail">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img src="./icons/gmail.svg" alt="" width="22" height="22" loading="lazy"
+                  /></span>
+                  <span class="chip-label">Gmail</span>
+                </div>
+              </div>
+              <div class="chip-position" data-tool="Jira">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img src="./icons/jira.svg" alt="" width="22" height="22" loading="lazy"
+                  /></span>
+                  <span class="chip-label">Jira</span>
+                </div>
+              </div>
+              <div class="chip-position" data-tool="Confluence">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img
+                      src="./icons/confluence.svg"
+                      alt=""
+                      width="22"
+                      height="22"
+                      loading="lazy"
+                  /></span>
+                  <span class="chip-label">Confluence</span>
+                </div>
+              </div>
+              <div class="chip-position" data-tool="Drive">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img
+                      src="./icons/googledrive.svg"
+                      alt=""
+                      width="22"
+                      height="22"
+                      loading="lazy"
+                  /></span>
+                  <span class="chip-label">Drive</span>
+                </div>
+              </div>
+              <div class="chip-position" data-tool="GitHub">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img src="./icons/github.svg" alt="" width="22" height="22" loading="lazy"
+                  /></span>
+                  <span class="chip-label">GitHub</span>
+                </div>
+              </div>
+              <div class="chip-position" data-tool="HubSpot">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img src="./icons/hubspot.svg" alt="" width="22" height="22" loading="lazy"
+                  /></span>
+                  <span class="chip-label">HubSpot</span>
+                </div>
+              </div>
+              <div class="chip-position" data-tool="Linear">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img src="./icons/linear.svg" alt="" width="22" height="22" loading="lazy"
+                  /></span>
+                  <span class="chip-label">Linear</span>
+                </div>
+              </div>
+              <div class="chip-position" data-tool="Notion">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img src="./icons/notion.svg" alt="" width="22" height="22" loading="lazy"
+                  /></span>
+                  <span class="chip-label">Notion</span>
+                </div>
+              </div>
+              <div class="chip-position" data-tool="Fireflies">
+                <div class="chip">
+                  <span class="chip-icon"
+                    ><img src="./icons/fireflies.svg" alt="" width="22" height="22" loading="lazy"
+                  /></span>
+                  <span class="chip-label">Fireflies</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="arch section-shell" id="memory">
+        <div class="shell">
+          <div class="section-heading">
+            <h2>How Joel builds a memory.</h2>
+            <p class="section-lede">
+              Your tools feed in. Joel cleans them up, stores them three ways, links the
+              people and decisions — then answers with receipts.
+            </p>
+          </div>
+
+          <div class="arch-diagram" id="arch-diagram">
+            <svg class="arch-wires" id="arch-wires" aria-hidden="true"></svg>
+
+            <div class="arch-stage" data-stage="connect">
+              <p class="arch-stage-label">Connect</p>
+              <div class="arch-tools" data-node="connectors">
+                <span class="arch-tool" title="Slack"
+                  ><img src="./icons/slack.svg" alt="" width="20" height="20"
+                /></span>
+                <span class="arch-tool" title="Gmail"
+                  ><img src="./icons/gmail.svg" alt="" width="20" height="20"
+                /></span>
+                <span class="arch-tool" title="Jira"
+                  ><img src="./icons/jira.svg" alt="" width="20" height="20"
+                /></span>
+                <span class="arch-tool" title="Confluence"
+                  ><img src="./icons/confluence.svg" alt="" width="20" height="20"
+                /></span>
+                <span class="arch-tool" title="Notion"
+                  ><img src="./icons/notion.svg" alt="" width="20" height="20"
+                /></span>
+                <span class="arch-tool" title="GitHub"
+                  ><img src="./icons/github.svg" alt="" width="20" height="20"
+                /></span>
+                <span class="arch-tool" title="HubSpot"
+                  ><img src="./icons/hubspot.svg" alt="" width="20" height="20"
+                /></span>
+                <span class="arch-tool" title="Linear"
+                  ><img src="./icons/linear.svg" alt="" width="20" height="20"
+                /></span>
+                <span class="arch-tool" title="Drive"
+                  ><img src="./icons/googledrive.svg" alt="" width="20" height="20"
+                /></span>
+                <span class="arch-tool" title="Fireflies"
+                  ><img src="./icons/fireflies.svg" alt="" width="20" height="20"
+                /></span>
+              </div>
+            </div>
+
+            <div class="arch-stage" data-stage="normalize">
+              <article class="arch-card" data-node="normalize">
+                <h3>Normalize</h3>
+                <p>Every source becomes the same clean document shape.</p>
+              </article>
+            </div>
+
+            <div class="arch-stage" data-stage="distill">
+              <article class="arch-card" data-node="distill">
+                <h3>Distill</h3>
+                <p>Threads turn into one clear memory. Chatter falls away.</p>
+              </article>
+            </div>
+
+            <div class="arch-stage arch-stage-store" data-stage="store">
+              <p class="arch-stage-label">Remember — one write, three places</p>
+              <div class="arch-store-grid">
+                <article class="arch-card arch-card-sm" data-node="sqlite">
+                  <h3>SQLite</h3>
+                  <p>Exact words you can search</p>
+                </article>
+                <article class="arch-card arch-card-sm" data-node="vectors">
+                  <h3>Vectors</h3>
+                  <p>Meaning, even when wording changes</p>
+                </article>
+                <article class="arch-card arch-card-sm arch-card-feature" data-node="hydradb">
+                  <h3>HydraDB</h3>
+                  <p>People, decisions, and how they link</p>
+                </article>
+              </div>
+            </div>
+
+            <div class="arch-stage" data-stage="link">
+              <article class="arch-card" data-node="link">
+                <h3>Link</h3>
+                <p>Names resolve. Decisions connect across tools.</p>
+                <div class="arch-edges">
+                  <span>Decided</span>
+                  <span>Owns</span>
+                  <span>Committed</span>
+                  <span>Objected</span>
+                  <span>Assigned</span>
+                  <span>Depends</span>
+                  <span>Blocks</span>
+                  <span>Approved</span>
+                </div>
+              </article>
+            </div>
+
+            <div class="arch-stage arch-stage-ask" data-stage="ask">
+              <p class="arch-stage-label">Ask — searches all three at once</p>
+              <div class="arch-ask-grid">
+                <article class="arch-card arch-card-sm" data-node="question">
+                  <span class="arch-kicker">You ask</span>
+                  <p>
+                    After the auth outage last Tuesday, who decided we delay the Acme renewal —
+                    and did Morgan ever own it?
+                  </p>
+                </article>
+                <div class="arch-retrieve" data-node="retrieve">
+                  <span><b>Meaning</b>Vectors</span>
+                  <span><b>Words</b>SQLite</span>
+                  <span><b>Links</b>HydraDB</span>
+                </div>
+                <article class="arch-card arch-card-sm arch-card-answer" data-node="answer">
+                  <p>
+                    Priya decided in the Fireflies sync. Morgan still owns the deal in HubSpot —
+                    Slack #sales confirmed after AUTH-214 cleared.
+                  </p>
+                  <div class="arch-cites">
+                    <span class="arch-cite"
+                      ><img src="./icons/fireflies.svg" alt="" width="12" height="12" />Fireflies</span
+                    >
+                    <span class="arch-cite"
+                      ><img src="./icons/hubspot.svg" alt="" width="12" height="12" />HubSpot</span
+                    >
+                    <span class="arch-cite"
+                      ><img src="./icons/slack.svg" alt="" width="12" height="12" />Slack</span
+                    >
+                    <span class="arch-cite"
+                      ><img src="./icons/jira.svg" alt="" width="12" height="12" />Jira</span
+                    >
+                  </div>
+                </article>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="cta-final">
+        <div class="shell">
+          <h2>Give your team a memory.</h2>
+          <div class="cta-actions">
+            <a
+              class="btn btn-primary"
+              href="https://github.com/dupenodi/joel"
+              target="_blank"
+              rel="noreferrer"
+              >View on GitHub</a
+            >
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="shell footer-inner">
+        <a class="brand" href="#top">
+          <joel-logo variant="ink" label="Joel" class="brand-mark" aria-hidden="true"></joel-logo>
+          <span>Joel</span>
+        </a>
+        <p>MIT licensed. Built on HydraDB. Made for Hack Hydra.</p>
+      </div>
+    </footer>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

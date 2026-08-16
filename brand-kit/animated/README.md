@@ -3,7 +3,7 @@
 A zero-dependency web component with three composable effects:
 
 - `blink` — a single, simple blink
-- `spin-2d` — continuous flat rotation of the star mark
+- `spin-2d` — continuous flat rotation of the star behind a stable eye
 - `spin-3d` — perspective rotation of the star mark
 
 The rounded-square icon background always stays still.
