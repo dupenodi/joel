@@ -10,7 +10,11 @@ from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parent
-VARIANTS = ("red", "light", "dark")
+VARIANTS = ("red", "light", "dark", "ink")
+
+# Browser chrome and home screens get the ink-on-paper mark, matching the site.
+FAVICON_VARIANT = "ink"
+FAVICON_BACKGROUND = "#FAFAFA"
 PNG_SIZES = (16, 32, 48, 64, 128, 180, 192, 256, 512, 1024)
 RASTER_SIZES = (256, 512, 1024)
 
@@ -60,7 +64,7 @@ def save_presentation_exports() -> None:
 def save_favicons() -> None:
     output = ROOT / "favicons"
     output.mkdir(parents=True, exist_ok=True)
-    source = ROOT / "logo-red.svg"
+    source = ROOT / f"logo-{FAVICON_VARIANT}.svg"
 
     favicon_sizes = {
         "favicon-16x16.png": 16,
@@ -97,8 +101,8 @@ def save_favicons() -> None:
                 "type": "image/png",
             },
         ],
-        "theme_color": "#FF2D2D",
-        "background_color": "#FF2D2D",
+        "theme_color": FAVICON_BACKGROUND,
+        "background_color": FAVICON_BACKGROUND,
         "display": "standalone",
     }
     (output / "site.webmanifest").write_text(
