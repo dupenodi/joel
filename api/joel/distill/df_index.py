@@ -1,0 +1,1 @@
+"""Document-frequency index."""

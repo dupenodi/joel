@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#ff2d2d" />
+    <title>Joel — motion kit</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "Arial Narrow", "Roboto Condensed", Arial, sans-serif;
+        background: #090909;
+        color: #f7f5f2;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100svh;
+        margin: 0;
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+          #090909;
+        background-size: 40px 40px;
+      }
+
+      button {
+        font: inherit;
+      }
+
+      .shell {
+        width: min(1180px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 28px 0 40px;
+      }
+
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 24px;
+        padding-bottom: 18px;
+        border-bottom: 1px solid #333;
+      }
+
+      .wordmark {
+        margin: 0;
+        font-size: clamp(2.2rem, 7vw, 5.6rem);
+        font-weight: 900;
+        line-height: 0.82;
+        letter-spacing: -0.08em;
+        text-transform: uppercase;
+      }
+
+      .edition {
+        color: #ff2d2d;
+        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+        font-size: 0.72rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      main {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+        min-height: 670px;
+        border-bottom: 1px solid #333;
+      }
+
+      .stage {
+        display: grid;
+        min-height: 570px;
+        place-items: center;
+        overflow: hidden;
+        border-right: 1px solid #333;
+        background: radial-gradient(circle at center, #202020 0, #101010 48%, transparent 70%);
+      }
+
+      #logo {
+        --joel-logo-size: clamp(15rem, 42vw, 31rem);
+        filter: drop-shadow(0 34px 40px rgba(0, 0, 0, 0.42));
+      }
+
+      .controls {
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        padding: 28px;
+      }
+
+      .control-group + .control-group {
+        margin-top: 30px;
+      }
+
+      .label {
+        display: block;
+        margin-bottom: 12px;
+        color: #8e8e8e;
+        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+        font-size: 0.68rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .button-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+      }
+
+      .toggle,
+      .variant {
+        min-height: 54px;
+        border: 1px solid #3e3e3e;
+        border-radius: 0;
+        background: transparent;
+        color: #f7f5f2;
+        cursor: pointer;
+        transition:
+          border-color 160ms ease,
+          background 160ms ease,
+          color 160ms ease;
+      }
+
+      .toggle:hover,
+      .variant:hover,
+      .toggle:focus-visible,
+      .variant:focus-visible {
+        border-color: #ff2d2d;
+        outline: none;
+      }
+
+      .toggle[aria-pressed="true"] {
+        border-color: #ff2d2d;
+        background: #ff2d2d;
+        color: #000;
+      }
+
+      .variant[aria-pressed="true"] {
+        border-color: #f7f5f2;
+        background: #f7f5f2;
+        color: #090909;
+      }
+
+      .snippet {
+        margin: 0;
+        padding: 16px;
+        overflow-x: auto;
+        border-left: 3px solid #ff2d2d;
+        background: #151515;
+        color: #d8d8d8;
+        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+        font-size: 0.75rem;
+        line-height: 1.6;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+
+      .hint {
+        margin: 14px 0 0;
+        color: #777;
+        font-size: 0.78rem;
+        line-height: 1.5;
+      }
+
+      footer {
+        display: flex;
+        justify-content: space-between;
+        gap: 24px;
+        padding-top: 16px;
+        color: #777;
+        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+        font-size: 0.68rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      @media (max-width: 760px) {
+        main {
+          grid-template-columns: 1fr;
+        }
+
+        .stage {
+          min-height: 420px;
+          border-right: 0;
+          border-bottom: 1px solid #333;
+        }
+
+        .controls {
+          gap: 34px;
+          padding: 24px 0;
+        }
+
+        header {
+          align-items: flex-end;
+        }
+      }
+    </style>
+    <script type="module" src="./joel-logo.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <h1 class="wordmark">Motion kit</h1>
+        <span class="edition">Joel / 01</span>
+      </header>
+
+      <main>
+        <section class="stage" aria-label="Animation preview">
+          <joel-logo
+            id="logo"
+            variant="red"
+            effects="blink"
+            label="Animated Joel logo"
+            hover-pause
+          ></joel-logo>
+        </section>
+
+        <aside class="controls">
+          <div>
+            <div class="control-group">
+              <span class="label">Mix effects</span>
+              <div class="button-grid">
+                <button class="toggle" data-effect="blink" aria-pressed="true">Blink</button>
+                <button class="toggle" data-effect="spin-2d" aria-pressed="false">2D</button>
+                <button class="toggle" data-effect="spin-3d" aria-pressed="false">3D</button>
+              </div>
+            </div>
+
+            <div class="control-group">
+              <span class="label">Brand variant</span>
+              <div class="button-grid">
+                <button class="variant" data-variant="red" aria-pressed="true">Red</button>
+                <button class="variant" data-variant="light" aria-pressed="false">Light</button>
+                <button class="variant" data-variant="dark" aria-pressed="false">Dark</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <span class="label">Copy this</span>
+            <pre class="snippet" id="snippet">&lt;joel-logo variant="red" effects="blink"&gt;&lt;/joel-logo&gt;</pre>
+            <p class="hint">Hover the mark to pause. Motion is disabled automatically when reduced motion is enabled.</p>
+          </div>
+        </aside>
+      </main>
+
+      <footer>
+        <span>Composable by design</span>
+        <span>Zero dependencies</span>
+      </footer>
+    </div>
+
+    <script>
+      const logo = document.querySelector("#logo");
+      const snippet = document.querySelector("#snippet");
+      const effectButtons = [...document.querySelectorAll("[data-effect]")];
+      const variantButtons = [...document.querySelectorAll("[data-variant]")];
+
+      function updateSnippet() {
+        const variant = logo.getAttribute("variant");
+        const effects = logo.getAttribute("effects");
+        snippet.textContent = `<joel-logo variant="${variant}" effects="${effects}"></joel-logo>`;
+      }
+
+      effectButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          const effects = new Set((logo.getAttribute("effects") || "").split(" ").filter(Boolean));
+          const effect = button.dataset.effect;
+
+          effects.has(effect) ? effects.delete(effect) : effects.add(effect);
+          button.setAttribute("aria-pressed", String(effects.has(effect)));
+          logo.setAttribute("effects", [...effects].join(" "));
+          updateSnippet();
+        });
+      });
+
+      variantButtons.forEach((button) => {
+        button.addEventListener("click", () => {
+          variantButtons.forEach((item) => item.setAttribute("aria-pressed", "false"));
+          button.setAttribute("aria-pressed", "true");
+          logo.setAttribute("variant", button.dataset.variant);
+          updateSnippet();
+        });
+      });
+    </script>
+  </body>
+</html>
