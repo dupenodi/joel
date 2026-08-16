@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://joel-pi.vercel.app/sitemap.xml
+Sitemap: https://meetjoel.vercel.app/sitemap.xml
