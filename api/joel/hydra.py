@@ -32,6 +32,17 @@ class Hydra:
         *,
         strong: bool = False,
     ) -> dict[str, Any]:
+        """HTTP query endpoint.
+
+        On the local build verified for Checkpoint 0/1, this endpoint does
+        NOT bind `$param` values at all -- every parameterized query fails
+        with "missing OpenCypher query parameter", even though the HTTP body
+        carries `params` correctly. Use this only for the strong-consistency
+        read-after-write checks (literal, agent-controlled values), and use
+        `bolt()` for anything else -- especially anything containing
+        document text, where string-interpolating into Cypher would be an
+        injection risk as well as a correctness one.
+        """
         body: dict[str, Any] = {
             "cell_id": self.settings.hydra_cell,
             "query": cypher,
