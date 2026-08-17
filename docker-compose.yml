@@ -1,1 +1,25 @@
-# Service definitions will be added during implementation.
+services:
+  joel-api:
+    build: ./api
+    ports:
+      - "8000:8000"
+    volumes:
+      - joel-data:/app/data
+    environment:
+      JOEL_DATA: /app/data
+  joel-web:
+    build:
+      context: ./web
+      args:
+        JOEL_API_INTERNAL: http://joel-api:8000
+    ports:
+      - "3000:3000"
+    environment:
+      JOEL_API_INTERNAL: http://joel-api:8000
+      # Browser calls same-origin /api → Next rewrites to joel-api
+      NEXT_PUBLIC_API: ""
+    depends_on:
+      - joel-api
+
+volumes:
+  joel-data:

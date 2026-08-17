@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: "Satoshi";
+  src: url("/fonts/Satoshi-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 300 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Satoshi";
+  src: url("/fonts/Satoshi-VariableItalic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 300 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Ranade";
+  src: url("/fonts/Ranade-Variable.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 700;
+  font-display: swap;
+}
+
+/*
+  Product theme = landing theme.
+  Paper / ink / soft lines. Red is accent only (danger, abstention) — never the logo.
+*/
+:root {
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --ink: #131313;
+  --ink-soft: #4a4a4d;
+  --muted: #8b8b8e;
+  --line: #e6e6e8;
+  --line-strong: #d6d6d9;
+  --inset: #f0f0f1;
+  --accent: #ff2d2d;
+  --accent-soft: rgba(255, 45, 45, 0.1);
+  --ok: #1f7a4c;
+  --ok-soft: rgba(31, 122, 76, 0.1);
+  --warn: #9a6b00;
+  --warn-soft: rgba(154, 107, 0, 0.12);
+  --partial: #b45309;
+  --partial-soft: rgba(180, 83, 9, 0.1);
+  --absent: #6b6b70;
+  --absent-soft: rgba(107, 107, 112, 0.1);
+  --shadow-sm: 0 1px 2px rgba(19, 19, 19, 0.05), 0 2px 8px rgba(19, 19, 19, 0.04);
+  --shadow-md: 0 8px 24px rgba(19, 19, 19, 0.08), 0 2px 6px rgba(19, 19, 19, 0.04);
+  --shadow-hard: 4px 5px 0 rgba(19, 19, 19, 0.08);
+  --radius: 20px;
+  --radius-sm: 12px;
+  --radius-pill: 999px;
+  --nav-w: 232px;
+  --header-h: 64px;
+  --font-sans: "Satoshi", "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Satoshi", "Helvetica Neue", Arial, sans-serif;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-inset: var(--inset);
+  --color-accent: var(--accent);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --font-sans: var(--font-sans);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: rgba(19, 19, 19, 0.12);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
+
+.font-display {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+}

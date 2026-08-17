@@ -1,13 +1,13 @@
 {
   "cleanUrls": true,
   "rewrites": [
-    { "source": "/styles.css", "destination": "/web/styles.css" },
-    { "source": "/app.js", "destination": "/web/app.js" },
-    { "source": "/og.png", "destination": "/web/og.png" },
-    { "source": "/robots.txt", "destination": "/web/robots.txt" },
-    { "source": "/sitemap.xml", "destination": "/web/sitemap.xml" },
-    { "source": "/icons/:path*", "destination": "/web/icons/:path*" },
-    { "source": "/fonts/:path*", "destination": "/web/fonts/:path*" },
-    { "source": "/", "destination": "/web" }
+    { "source": "/styles.css", "destination": "/web/marketing/styles.css" },
+    { "source": "/app.js", "destination": "/web/marketing/app.js" },
+    { "source": "/og.png", "destination": "/web/marketing/og.png" },
+    { "source": "/robots.txt", "destination": "/web/marketing/robots.txt" },
+    { "source": "/sitemap.xml", "destination": "/web/marketing/sitemap.xml" },
+    { "source": "/icons/:path*", "destination": "/web/marketing/icons/:path*" },
+    { "source": "/fonts/:path*", "destination": "/web/marketing/fonts/:path*" },
+    { "source": "/", "destination": "/web/marketing" }
   ]
 }

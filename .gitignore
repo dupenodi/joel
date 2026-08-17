@@ -18,3 +18,4 @@ eval/results/*
 !eval/results/.gitkeep
 
 .DS_Store
+.vercel
