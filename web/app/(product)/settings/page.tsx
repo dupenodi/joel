@@ -62,7 +62,11 @@ export default function SettingsPage() {
   }
 
   if (loading) {
-    return <div className="px-6 py-10 text-sm text-muted">Loading…</div>;
+    return (
+      <div className="mx-auto max-w-2xl px-6 py-10 text-sm text-muted">
+        Loading…
+      </div>
+    );
   }
 
   return (

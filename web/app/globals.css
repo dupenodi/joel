@@ -74,40 +74,49 @@
   --font-sans: var(--font-sans);
 }
 
-* {
-  box-sizing: border-box;
-}
+/*
+  Base element resets live in Tailwind's `base` layer, not unlayered, so that
+  utility classes (e.g. `text-surface` on a <button>) always win the cascade.
+  Unlayered CSS beats every `@layer` regardless of source order, so leaving
+  these unlayered would silently override any text/color utility applied
+  directly to a <button> or <a>.
+*/
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
 
-html,
-body {
-  height: 100%;
-}
+  html,
+  body {
+    height: 100%;
+  }
 
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--ink);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-}
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
 
-a {
-  color: inherit;
-  text-decoration: none;
-}
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
 
-button {
-  font: inherit;
-  color: inherit;
-}
+  button {
+    font: inherit;
+    color: inherit;
+  }
 
-::selection {
-  background: rgba(19, 19, 19, 0.12);
-}
+  ::selection {
+    background: rgba(19, 19, 19, 0.12);
+  }
 
-:focus-visible {
-  outline: 2px solid var(--ink);
-  outline-offset: 3px;
+  :focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 3px;
+  }
 }
 
 .font-display {

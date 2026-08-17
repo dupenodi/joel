@@ -4,6 +4,13 @@ export function cn(...inputs: ClassValue[]) {
   return clsx(inputs);
 }
 
+/** Shared active/inactive tone for nav-style list items (AppNav, ConversationItem). */
+export function navItemTone(active?: boolean): string {
+  return active
+    ? "bg-inset font-medium text-ink"
+    : "text-ink-soft hover:bg-inset/70 hover:text-ink";
+}
+
 export function formatRelative(iso: string | null | undefined): string {
   if (!iso) return "—";
   const t = new Date(iso).getTime();

@@ -13,3 +13,4 @@ export * from "./progress";
 export * from "./skeleton";
 export * from "./icon-button";
 export * from "./chip";
+export * from "./drawer";

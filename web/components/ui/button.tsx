@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { cva, type VariantProps } from "class-variance-authority";
-import type { ButtonHTMLAttributes } from "react";
+import { forwardRef, type ButtonHTMLAttributes } from "react";
+import { Spinner } from "@/components/ui/spinner";
 
 const buttonVariants = cva(
   "inline-flex items-center justify-center gap-2 font-semibold transition-[transform,box-shadow,background,color,border-color] duration-160 disabled:pointer-events-none disabled:opacity-45",
@@ -19,7 +20,7 @@ const buttonVariants = cva(
         md: "min-h-[44px] rounded-[var(--radius-pill)] px-5 text-sm",
         sm: "min-h-[36px] rounded-[var(--radius-pill)] px-4 text-sm",
         lg: "min-h-[52px] rounded-[var(--radius-pill)] px-7 text-[0.95rem]",
-        icon: "h-10 w-10 rounded-full p-0",
+        icon: "h-9 w-9 rounded-full p-0",
       },
     },
     defaultVariants: {
@@ -30,15 +31,28 @@ const buttonVariants = cva(
 );
 
 export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> &
-  VariantProps<typeof buttonVariants>;
+  VariantProps<typeof buttonVariants> & {
+    loading?: boolean;
+  };
 
-export function Button({ className, variant, size, ...props }: ButtonProps) {
-  return (
-    <button
-      className={cn(buttonVariants({ variant, size }), className)}
-      {...props}
-    />
-  );
-}
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
+  function Button(
+    { className, variant, size, loading, disabled, children, ...props },
+    ref,
+  ) {
+    return (
+      <button
+        ref={ref}
+        className={cn(buttonVariants({ variant, size }), className)}
+        disabled={disabled || loading}
+        aria-busy={loading || undefined}
+        {...props}
+      >
+        {loading && <Spinner size={14} tone="current" />}
+        {children}
+      </button>
+    );
+  },
+);
 
 export { buttonVariants };

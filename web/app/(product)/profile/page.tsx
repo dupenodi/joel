@@ -32,7 +32,11 @@ export default function ProfilePage() {
   }, []);
 
   if (profile === undefined) {
-    return <div className="px-6 py-10 text-sm text-muted">Loading…</div>;
+    return (
+      <div className="mx-auto max-w-2xl px-6 py-10 text-sm text-muted">
+        Loading…
+      </div>
+    );
   }
 
   if (!profile) {
@@ -118,7 +122,7 @@ export default function ProfilePage() {
         <h2 className="mb-3 text-xs font-medium uppercase tracking-[0.06em] text-muted">
           Spend (30d LLM calls)
         </h2>
-        <dl className="grid grid-cols-3 gap-3 sm:grid-cols-5">
+        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-5">
           {Object.entries(profile.spend_30d).map(([stage, n]) => (
             <Stat key={stage} label={stage} value={n} />
           ))}

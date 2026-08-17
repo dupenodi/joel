@@ -1,23 +1,35 @@
 import { cn } from "@/lib/utils";
-import type { SelectHTMLAttributes } from "react";
+import { ChevronDown } from "lucide-react";
+import { forwardRef, type SelectHTMLAttributes } from "react";
 
-export function Select({
-  className,
-  children,
-  ...props
-}: SelectHTMLAttributes<HTMLSelectElement>) {
+export const Select = forwardRef<
+  HTMLSelectElement,
+  SelectHTMLAttributes<HTMLSelectElement>
+>(function Select(
+  { className, children, "aria-invalid": ariaInvalid, ...props },
+  ref,
+) {
   return (
-    <select
-      className={cn(
-        "w-full appearance-none rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--inset)] bg-[length:12px] bg-[right_12px_center] bg-no-repeat px-3.5 py-2.5 pr-9 text-[15px] text-ink outline-none focus:border-[var(--line-strong)] focus:bg-surface focus:shadow-[var(--shadow-sm)]",
-        className,
-      )}
-      style={{
-        backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b8b8e' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E")`,
-      }}
-      {...props}
-    >
-      {children}
-    </select>
+    <div className="relative">
+      <select
+        ref={ref}
+        aria-invalid={ariaInvalid}
+        data-invalid={
+          ariaInvalid === true || ariaInvalid === "true" ? "true" : undefined
+        }
+        className={cn(
+          "w-full appearance-none rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--inset)] px-3.5 py-2.5 pr-9 text-[15px] text-ink outline-none transition-[border-color,background,box-shadow] focus:border-[var(--line-strong)] focus:bg-surface focus:shadow-[var(--shadow-sm)] disabled:cursor-not-allowed disabled:opacity-50 data-[invalid=true]:border-accent data-[invalid=true]:bg-[var(--accent-soft)] data-[invalid=true]:focus:border-accent",
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </select>
+      <ChevronDown
+        size={14}
+        aria-hidden="true"
+        className="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-muted"
+      />
+    </div>
   );
-}
+});

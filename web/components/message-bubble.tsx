@@ -4,8 +4,13 @@ import { ConflictBlock } from "@/components/conflict-block";
 import { ReasoningPath } from "@/components/reasoning-path";
 import { ToolCallCard } from "@/components/tool-call";
 import { Chip } from "@/components/ui/chip";
-import { cn } from "@/lib/utils";
+import { cn, formatRelative } from "@/lib/utils";
 import type { Message } from "@/lib/types";
+
+/** Shared shell so an in-progress streaming turn matches a persisted assistant message. */
+export const ASSISTANT_BUBBLE_CLASS = "max-w-2xl space-y-3";
+export const ASSISTANT_TEXT_CLASS =
+  "text-[15px] leading-relaxed whitespace-pre-wrap text-ink";
 
 export function MessageBubble({ message }: { message: Message }) {
   if (message.role === "user") {
@@ -14,21 +19,24 @@ export function MessageBubble({ message }: { message: Message }) {
         <div className="rounded-[var(--radius)] bg-inset px-4 py-3 text-[15px] text-ink">
           {message.content}
         </div>
+        {message.created_at && (
+          <p className="mt-1 text-right text-xs text-muted">
+            {formatRelative(message.created_at)}
+          </p>
+        )}
       </div>
     );
   }
 
   return (
-    <div className="max-w-2xl space-y-3">
+    <div className={ASSISTANT_BUBBLE_CLASS}>
       {message.status && <AnswerBadge status={message.status} />}
       {message.status === "absent" ? (
         <p className="font-display text-lg font-semibold tracking-tight text-accent">
           {message.content || "Not in the company's memory."}
         </p>
       ) : (
-        <p className="text-[15px] leading-relaxed whitespace-pre-wrap text-ink">
-          {message.content}
-        </p>
+        <p className={ASSISTANT_TEXT_CLASS}>{message.content}</p>
       )}
       {message.conflicts?.map((c, i) => (
         <ConflictBlock
@@ -67,6 +75,9 @@ export function MessageBubble({ message }: { message: Message }) {
             </Chip>
           ))}
         </div>
+      )}
+      {message.created_at && (
+        <p className="text-xs text-muted">{formatRelative(message.created_at)}</p>
       )}
     </div>
   );

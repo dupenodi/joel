@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { Progress } from "@/components/ui/progress";
 
 export function StepIndicator({
   step,
@@ -12,17 +12,11 @@ export function StepIndicator({
   return (
     <div>
       {label && <p className="text-sm text-muted">{label}</p>}
-      <div className="mt-3 flex gap-1.5">
-        {Array.from({ length: total }, (_, i) => (
-          <div
-            key={i}
-            className={cn(
-              "h-1 flex-1 rounded-full transition-colors",
-              i < step ? "bg-ink" : "bg-[var(--line)]",
-            )}
-          />
-        ))}
-      </div>
+      <Progress
+        value={total > 0 ? (step / total) * 100 : 0}
+        segments={total}
+        className="mt-3"
+      />
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
 import { Check } from "lucide-react";
 
@@ -7,6 +8,7 @@ export function Checklist({
   items: { key: string; label: string; done: boolean }[];
 }) {
   const doneCount = items.filter((i) => i.done).length;
+  const percent = items.length === 0 ? 0 : (doneCount / items.length) * 100;
 
   return (
     <div>
@@ -16,12 +18,7 @@ export function Checklist({
           {doneCount}/{items.length}
         </span>
       </div>
-      <div className="mb-5 h-1.5 overflow-hidden rounded-full bg-inset">
-        <div
-          className="h-full rounded-full bg-ink transition-[width] duration-500"
-          style={{ width: `${(doneCount / items.length) * 100}%` }}
-        />
-      </div>
+      <Progress value={percent} className="mb-5" />
       <ul className="space-y-3">
         {items.map((item) => (
           <li key={item.key} className="flex items-center gap-3 text-[15px]">

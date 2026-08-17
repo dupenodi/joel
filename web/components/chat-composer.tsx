@@ -1,28 +1,53 @@
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { Square } from "lucide-react";
+import type { FormEvent } from "react";
 
 export function ChatComposer({
-  value = "",
+  value,
+  onChange,
+  onSubmit,
+  onStop,
   placeholder = "Ask the company's memory…",
+  disabled = false,
+  busy = false,
   className,
 }: {
-  value?: string;
+  value: string;
+  onChange: (value: string) => void;
+  onSubmit: (e: FormEvent<HTMLFormElement>) => void;
+  onStop?: () => void;
   placeholder?: string;
+  disabled?: boolean;
+  busy?: boolean;
   className?: string;
 }) {
   return (
-    <div className={cn("border-t border-[var(--line)] p-4", className)}>
+    <form
+      className={cn("border-t border-[var(--line)] p-4", className)}
+      onSubmit={onSubmit}
+    >
       <div className="mx-auto flex max-w-2xl gap-2">
-        <input
-          readOnly
+        <Input
           value={value}
+          onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
-          className="flex-1 rounded-[var(--radius-sm)] border border-[var(--line)] bg-inset px-3.5 py-2.5 text-[15px] text-ink outline-none placeholder:text-muted"
+          disabled={disabled}
+          aria-label="Ask the company's memory"
+          className="flex-1"
         />
-        <Button type="button" disabled={!value.trim()}>
-          Ask
-        </Button>
+        {busy && onStop ? (
+          <Button type="button" variant="ghost" onClick={onStop}>
+            <Square size={14} />
+            Stop
+          </Button>
+        ) : (
+          <Button type="submit" disabled={disabled || !value.trim()}>
+            Ask
+          </Button>
+        )}
       </div>
-    </div>
+    </form>
   );
 }

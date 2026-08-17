@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn, formatRelative, navItemTone } from "@/lib/utils";
 import type { Conversation } from "@/lib/types";
 
 export function ConversationItem({
@@ -14,14 +14,16 @@ export function ConversationItem({
     <button
       type="button"
       onClick={onClick}
+      aria-current={active ? "true" : undefined}
       className={cn(
         "w-full rounded-[var(--radius-sm)] px-3 py-2.5 text-left text-sm transition-colors",
-        active
-          ? "bg-inset font-medium text-ink"
-          : "text-ink-soft hover:bg-inset/70 hover:text-ink",
+        navItemTone(active),
       )}
     >
       <span className="line-clamp-2">{conversation.title}</span>
+      <span className="mt-0.5 block text-xs text-muted">
+        {formatRelative(conversation.created_at)}
+      </span>
     </button>
   );
 }
