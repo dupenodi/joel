@@ -9,6 +9,7 @@ place to get wrong.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime
 from typing import Any
@@ -33,6 +34,11 @@ def build_artifact_id(source_type: str, thread_id: str) -> str:
 
 def build_code_doc_id(source_type: str, path: str, index: int) -> str:
     return f"{source_type}__code_{slug(path)}_c{index}"
+
+
+def compute_content_hash(title: str, body: str) -> str:
+    """sha256(title + "\\n" + body). Change detection only — never an identity."""
+    return hashlib.sha256(f"{title}\n{body}".encode()).hexdigest()
 
 
 def period_of(ts: datetime | None) -> str:
@@ -68,6 +74,11 @@ class CanonicalDoc(BaseModel):
     thread_id: str | None = None
     parent_id: str | None = None
     linked_ids: list[str] = Field(default_factory=list)
+    # lifecycle — how joel knows what changed without re-reading everything
+    content_hash: str = ""  # sha256(title+"\n"+body); CHANGE DETECTION ONLY
+    ingested_via: str = "sync"  # sync | backfill | live
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
     # filled by later phases
     actor_id: str | None = None
     artifact_class: str = "document"
@@ -76,6 +87,8 @@ class CanonicalDoc(BaseModel):
     resolved: str = "na"
 
     _check_timestamp = field_validator("timestamp")(_require_tz_aware)
+    _check_first_seen = field_validator("first_seen")(_require_tz_aware)
+    _check_last_seen = field_validator("last_seen")(_require_tz_aware)
 
 
 class Burst(BaseModel):
@@ -134,5 +147,6 @@ __all__ = [
     "build_doc_id",
     "build_artifact_id",
     "build_code_doc_id",
+    "compute_content_hash",
     "period_of",
 ]
