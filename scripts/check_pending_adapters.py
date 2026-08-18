@@ -45,12 +45,23 @@ def parse_args() -> argparse.Namespace:
         "--providers",
         nargs="*",
         default=[],
-        help="Optional provider ids to check. Defaults to likely pending adapters.",
+        help="Provider ids to check. Omit with --all to check every allowlisted adapter.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Check all allowlisted providers (default without --all: likely-pending subset).",
     )
     parser.add_argument(
         "--sync",
         action="store_true",
         help="Trigger sync-now for connected adapters that are ready or in error.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=600,
+        help="Seconds to wait for each sync job (default 600; GitHub/Gmail can take several minutes).",
     )
     parser.add_argument(
         "--api-base",
@@ -113,9 +124,16 @@ def wait_job(conn: sqlite3.Connection, job_id: str, timeout_sec: int = 120) -> s
 
 def main() -> int:
     args = parse_args()
-    providers = args.providers or [
-        p for p in ALLOWLIST if p not in {"slack", "github", "gmail", "notion", "googledrive", "jira"}
-    ]
+    if args.all:
+        providers = list(ALLOWLIST)
+    elif args.providers:
+        providers = args.providers
+    else:
+        providers = [
+            p
+            for p in ALLOWLIST
+            if p not in {"slack", "github", "gmail", "notion", "googledrive", "jira"}
+        ]
     conn = db()
     rows = {
         row["provider"]: row
@@ -158,7 +176,7 @@ def main() -> int:
             print("sync trigger failed:", exc.code, body[:500])
             continue
         print("triggered:", job_id)
-        job = wait_job(conn, job_id)
+        job = wait_job(conn, job_id, timeout_sec=args.timeout)
         if job is None:
             print("job did not finish in time")
             continue
