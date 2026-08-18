@@ -296,12 +296,23 @@ def remove_docs(
     index: LiveIndex,
     hydra_store: HydraStore,
     doc_ids: Iterable[str],
+    *,
+    keep_row: bool = False,
 ) -> list[str]:
-    """Remove docs from all three destinations. Used today by §7.5's
-    dropped-burst cleanup (a burst that stops being kept on re-distillation);
-    the owner's explicit forget (§14.5/5.7) will reuse this directly once it
-    also rewrites the canonical JSONL line to a tombstone, which this
-    function deliberately does not know about."""
+    """Purge FTS, vectors and the graph node for each doc id. Used today by
+    §7.5's dropped-burst cleanup (a burst that stops being kept on
+    re-distillation), where `keep_row=False` (the default) also hard-deletes
+    the SQLite row since a burst/artifact has no tombstone concept.
+
+    The owner's explicit forget (§14.5/5.7) reuses this with `keep_row=True`
+    instead: forget must leave a `forgotten=1` tombstone row behind in
+    `docs` (checked by `_persist_canonical_docs`'s `forgotten_ids` so a
+    later re-sync can't resurrect it) rather than deleting it outright, and
+    it also rewrites the canonical JSONL line to a tombstone, which this
+    function deliberately does not know about. Call this BEFORE blanking
+    the docs row's title/body — the FTS 'delete' command needs the OLD
+    text that was actually indexed, not whatever the caller is about to
+    overwrite it with."""
     doc_ids = list(doc_ids)
     removed: list[str] = []
     for doc_id in doc_ids:
@@ -311,7 +322,8 @@ def remove_docs(
         had_fts_row = conn.execute("SELECT 1 FROM docs_fts WHERE rowid=?", (row["rowid"],)).fetchone() is not None
         if had_fts_row:
             _fts_delete(conn, row["rowid"], row["title"], row["body"])
-        conn.execute("DELETE FROM docs WHERE id=?", (doc_id,))
+        if not keep_row:
+            conn.execute("DELETE FROM docs WHERE id=?", (doc_id,))
         conn.execute("DELETE FROM graph_written WHERE id=?", (doc_id,))
         hydra_store.delete_node(DOC_LABEL, doc_id)
         removed.append(doc_id)

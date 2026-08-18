@@ -7,7 +7,9 @@ wired against these endpoints with empty corpus semantics.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -17,6 +19,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+from dotenv import load_dotenv
+
+# Every scripts/check_*.py loads .env itself before touching Settings.from_env()
+# or Composio; this app is normally started directly via `uvicorn joel.app:app`
+# with no such wrapper, so HYDRA_HTTP/HYDRA_BOLT/HYDRA_TOKEN/COMPOSIO_API_KEY
+# etc. must be loaded here instead — otherwise _runtime()'s first real call
+# (e.g. the first /api/ask) raises a raw KeyError deep in Settings.from_env()
+# the moment retrieval actually needs Hydra, no matter how well *that* call
+# path degrades LLM/network failures elsewhere.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -70,7 +83,10 @@ from joel.live_index import LiveIndex
 from joel.llm import make_openrouter_caller
 from joel.models import CanonicalDoc
 from joel.pipeline import run_store_pipeline
+from joel.retrieve import RetrievalTrace, answer_question, log_trace
+from joel.retrieve.planner import QueryPlan
 from joel.store import HydraStore
+from joel.store_sql import remove_docs
 
 DATA_DIR = Path(os.getenv("JOEL_DATA", "data"))
 DB_PATH = DATA_DIR / "index" / "joel.db"
@@ -103,8 +119,22 @@ def _runtime() -> dict[str, Any]:
         return _RUNTIME
 
 
+# `run_lanes` (retrieve/lanes.py) deliberately runs its lanes concurrently
+# via ThreadPoolExecutor, and two of them (vector + vec-artifacts) both call
+# this on the *same* SentenceTransformer instance for the same question.
+# torch's CPU/MPS inference path isn't safe against concurrent `.encode()`
+# calls from separate Python threads on one model instance — hitting it that
+# way segfaults the whole worker process (reproduced live: a real /api/ask
+# call against the real embedding model crashed the server, not just raised
+# a catchable exception, which the try/except around answer_question in the
+# /api/ask route can't help with). Serialize with a lock; embedding a few
+# short strings is fast enough that this isn't a real throughput bottleneck.
+_EMBED_LOCK = threading.Lock()
+
+
 def _embed_fn(texts: list[str]):
-    return _runtime()["embed_model"].encode(texts, normalize_embeddings=True)
+    with _EMBED_LOCK:
+        return _runtime()["embed_model"].encode(texts, normalize_embeddings=True)
 
 PROVIDER_LABELS = {item.id: item.name for item in INTEGRATIONS}
 DEFAULT_INTERVAL = {item.id: item.default_interval_min for item in INTEGRATIONS}
@@ -1456,6 +1486,48 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+_CHITCHAT_RE = re.compile(
+    r"^(hi|hello|hey|yo|sup|hiya|howdy|thanks|thank you|thx|ty|ok|okay|k|cool|"
+    r"nice|great|got it|sounds good|bye|goodbye)[!.?\s]*$",
+    re.IGNORECASE,
+)
+
+
+def _is_chitchat(question: str) -> bool:
+    return bool(_CHITCHAT_RE.match(question.strip()))
+
+
+def _assistant_payload(
+    content: str,
+    *,
+    status: str,
+    citations: list[dict[str, Any]] | None = None,
+    lanes: list[str] | None = None,
+    reasoning_path: list[str] | None = None,
+    conflicts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": content,
+        "status": status,
+        "citations": citations or [],
+        "lanes": lanes or [],
+        "reasoning_path": reasoning_path or [],
+        "tool_calls": [],
+        "conflicts": conflicts or [],
+        "not_found": [],
+    }
+
+
+def _save_assistant_message(conn: sqlite3.Connection, conversation_id: str, assistant: dict[str, Any]) -> None:
+    mid = f"m_{uuid.uuid4().hex[:12]}"
+    conn.execute(
+        """INSERT INTO messages(id, conversation_id, role, content_json, created_at)
+           VALUES (?,?,?,?,?)""",
+        (mid, conversation_id, "assistant", json.dumps(assistant), _now()),
+    )
+
+
 @app.post("/api/ask")
 def ask(body: AskIn) -> StreamingResponse:
     question = body.question.strip()
@@ -1500,89 +1572,120 @@ def ask(body: AskIn) -> StreamingResponse:
         )
 
     def stream() -> Iterator[str]:
-        # Agent pipeline events — empty corpus → honest absent
         yield _sse("status", {"stage": "rewriting"})
-        time.sleep(0.15)
-        yield _sse(
-            "rewritten",
-            {"question": question, "kind": "knowledge"},
-        )
-        yield _sse("status", {"stage": "planning"})
-        time.sleep(0.1)
-        yield _sse(
-            "plan",
-            {
-                "lanes": ["vector", "fts", "artifacts", "phrase", "graph", "who_knows"],
-                "intent": "knowledge",
-            },
-        )
-        for lane in ("vector", "fts", "artifacts", "phrase", "graph", "who_knows"):
-            yield _sse(
-                "lane",
-                {
-                    "lane": lane,
-                    "status": "done",
-                    "hits": 0,
-                    "provider": None,
-                },
+
+        if _is_chitchat(question):
+            # §13.2's cheap-path spirit: a bare greeting/ack costs zero
+            # retrieval and zero LLM calls, not just a cheap one. Real
+            # intent classification (meta questions like "what did you
+            # just say") is CP10 scope and isn't built yet — anything past
+            # a plain greeting/ack falls through to full retrieval below.
+            answer_text = (
+                "Hey! Ask me anything about the company and I'll answer from "
+                "what's been ingested — or say honestly when it's not in there."
             )
-            time.sleep(0.05)
-        yield _sse("status", {"stage": "reranking"})
-        time.sleep(0.1)
-        yield _sse(
-            "tool_call",
-            {
-                "id": "t_live_1",
-                "name": "live_lookup",
-                "provider": None,
-                "status": "skipped",
-                "detail": "No authorized live target for an empty corpus",
-            },
-        )
-        yield _sse("status", {"stage": "answering"})
-        answer = "Not in the company's memory."
-        for token in answer.split(" "):
-            yield _sse("token", {"text": token + " "})
-            time.sleep(0.03)
-        assistant = {
-            "role": "assistant",
-            "content": answer,
-            "status": "absent",
-            "citations": [],
-            "lanes": [],
-            "reasoning_path": [],
-            "tool_calls": [
-                {
-                    "id": "t_live_1",
-                    "name": "live_lookup",
-                    "provider": None,
-                    "status": "skipped",
-                    "detail": "No authorized live target for an empty corpus",
-                }
-            ],
-            "conflicts": [],
-            "not_found": [],
-        }
-        yield _sse("citations", {"citations": []})
-        yield _sse("reasoning_path", {"paths": []})
-        yield _sse("done", {"status": "absent", "message": assistant})
+            yield _sse("rewritten", {"question": question, "kind": "chitchat"})
+            yield _sse("status", {"stage": "answering"})
+            for token in answer_text.split(" "):
+                yield _sse("token", {"text": token + " "})
+            assistant = _assistant_payload(answer_text, status="answered")
+            yield _sse("citations", {"citations": []})
+            yield _sse("reasoning_path", {"paths": []})
+            yield _sse("done", {"status": "answered", "message": assistant})
+            with db() as conn:
+                _save_assistant_message(conn, body.conversation_id, assistant)
+            return
+
+        # No conversation-level follow-up rewrite yet (CP10 gap — every
+        # question is retrieved standalone); "rewritten" still fires so the
+        # UI's trace has something to show for this stage.
+        yield _sse("rewritten", {"question": question, "kind": "knowledge"})
+        yield _sse("status", {"stage": "planning"})
 
         with db() as conn:
-            mid = f"m_{uuid.uuid4().hex[:12]}"
-            conn.execute(
-                """INSERT INTO messages(id, conversation_id, role, content_json, created_at)
-                   VALUES (?,?,?,?,?)""",
-                (
-                    mid,
-                    body.conversation_id,
-                    "assistant",
-                    json.dumps(assistant),
-                    _now(),
-                ),
+            settings_map = _settings_map(conn)
+        llm_call = make_openrouter_caller(settings_map) if settings_map.get("llm_api_key") else None
+        call_counts: dict[str, int] = {}
+
+        def tracked_llm(stage: str, system_prompt: str, user_prompt: str) -> str:
+            raw = llm_call(stage, system_prompt, user_prompt)
+            call_counts[stage] = call_counts.get(stage, 0) + 1
+            return raw
+
+        try:
+            rt = _runtime()
+            with db() as conn:
+                trace = answer_question(
+                    conn, rt["live_index"], _embed_fn, tracked_llm if llm_call else None, question
+                )
+        except Exception:
+            # Retrieval must never crash the stream — an unexpected failure
+            # (a store/model/network fault none of the per-stage LLMError
+            # handling caught) degrades to the same honest "absent" a weak
+            # context would, not a dropped connection the UI can't recover
+            # from. Logged server-side; not surfaced to the user as a stack
+            # trace.
+            logging.getLogger(__name__).exception("answer_question failed for %r", question)
+            trace = RetrievalTrace(question=question, plan=QueryPlan(intent="lookup"))
+
+        yield _sse("plan", {"lanes": list(trace.lane_results.keys()), "intent": trace.plan.intent})
+        for lane, docs in trace.lane_results.items():
+            yield _sse("lane", {"lane": lane, "status": "done", "hits": len(docs), "provider": None})
+        yield _sse("status", {"stage": "reranking"})
+        yield _sse("status", {"stage": "answering"})
+
+        answer_text = trace.answer.answer
+        for token in answer_text.split(" "):
+            yield _sse("token", {"text": token + " "})
+
+        doc_lookup = {r.doc.id: r.doc for r in trace.reranked} or {d.id: d for d in trace.fused}
+        citations = [
+            {
+                "doc_id": doc_id,
+                "title": doc_lookup[doc_id].title if doc_id in doc_lookup else doc_id,
+                "url": doc_lookup[doc_id].url if doc_id in doc_lookup else None,
+                "live": False,
+                "provider": None,
+                "source_type": doc_lookup[doc_id].source_type if doc_id in doc_lookup else None,
+            }
+            for doc_id in trace.answer.citations
+        ]
+        conflicts = []
+        if trace.answer.conflict is not None:
+            conflicts = [
+                {
+                    "assessment": trace.answer.conflict.assessment,
+                    "positions": [
+                        {"claim": p.claim, "date": p.when, "source": p.source_type, "url": None}
+                        for p in trace.answer.conflict.positions
+                    ],
+                }
+            ]
+
+        assistant = _assistant_payload(
+            answer_text,
+            status=trace.answer.status,
+            citations=citations,
+            lanes=list(trace.lane_results.keys()),
+            reasoning_path=trace.answer.reasoning_path,
+            conflicts=conflicts,
+        )
+        yield _sse("citations", {"citations": citations})
+        yield _sse("reasoning_path", {"paths": trace.answer.reasoning_path})
+        yield _sse("done", {"status": trace.answer.status, "message": assistant})
+
+        with db() as conn:
+            _save_assistant_message(conn, body.conversation_id, assistant)
+            for stage, n in call_counts.items():
+                conn.execute("UPDATE spend SET calls = calls + ? WHERE stage=?", (n, stage))
+        try:
+            log_trace(
+                DATA_DIR / "state" / "traces.jsonl",
+                trace,
+                extra={"conversation_id": body.conversation_id},
             )
-            conn.execute(
-                "UPDATE spend SET calls = calls + 1 WHERE stage='answer'"
-            )
+        except OSError:
+            pass  # traces are diagnostic only — never fail the answer over a log write
 
     return StreamingResponse(stream(), media_type="text/event-stream")
 
@@ -1590,6 +1693,7 @@ def ask(body: AskIn) -> StreamingResponse:
 @app.post("/api/docs/{doc_id}/forget")
 def forget_doc(doc_id: str) -> dict[str, str]:
     forgotten_at = _now()
+    rt = _runtime()
     with db() as conn:
         row = conn.execute(
             "SELECT source_type FROM docs WHERE id=?", (doc_id,)
@@ -1597,6 +1701,13 @@ def forget_doc(doc_id: str) -> dict[str, str]:
         if row is None:
             raise HTTPException(404, "Document not found")
         source_type = row["source_type"]
+        # Purge FTS/vectors/graph BEFORE blanking the row below — the FTS5
+        # 'delete' command needs the title/body that's actually indexed,
+        # not the blanked-out text this function is about to write. The
+        # docs row itself is kept (keep_row=True): forgotten=1 is the
+        # tombstone `_persist_canonical_docs` checks so a later re-sync
+        # can't resurrect this doc (§5.7/CP11.4).
+        remove_docs(conn, rt["live_index"], rt["hydra_store"], [doc_id], keep_row=True)
         conn.execute(
             """UPDATE docs SET title='[forgotten]', body='', content_hash='',
                url=NULL, timestamp=NULL, thread_id=NULL, parent_id=NULL,

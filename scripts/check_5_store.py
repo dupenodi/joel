@@ -32,6 +32,7 @@ from joel.store_sql import (  # noqa: E402
     from_burst,
     from_canonical_doc,
     from_thread_artifact,
+    remove_docs,
     upsert_docs,
 )
 
@@ -332,6 +333,37 @@ def check_consistency(conn: sqlite3.Connection, index: LiveIndex, hydra_store: H
     print("ok  5.5b: re-running the batch changes no counts")
 
 
+def check_forget_keeps_tombstone_row(conn: sqlite3.Connection, index: LiveIndex, hydra_store: HydraStore) -> None:
+    """5.7: the owner's forget must purge FTS/vectors/graph (`keep_row=True`)
+    while LEAVING the SQLite row in place as a tombstone -- unlike the
+    hard-delete `remove_docs` does for dropped bursts/artifacts (§7.5),
+    `_persist_canonical_docs` keys off a row's `forgotten` flag existing to
+    stop a later re-sync from resurrecting a forgotten doc (CP11.4). A real
+    bug this test guards against: `/api/docs/{id}/forget` used to only
+    blank the SQLite row and never touched FTS/vectors/graph at all."""
+    doc = _doc(6, "Forget me", "this body must not survive in FTS, vectors, or the graph")
+    sd = from_canonical_doc(doc)
+    upsert_docs(conn, index, hydra_store, [sd], embed_fn=_fake_embed, now="t0")
+
+    rowid = conn.execute("SELECT rowid FROM docs WHERE id=?", (sd.id,)).fetchone()[0]
+    assert conn.execute("SELECT 1 FROM docs_fts WHERE rowid=?", (rowid,)).fetchone() is not None
+    assert hydra_store.get_node_strong("Doc", sd.id, ["title"]) is not None
+
+    removed = remove_docs(conn, index, hydra_store, [sd.id], keep_row=True)
+    assert removed == [sd.id]
+
+    row = conn.execute("SELECT id FROM docs WHERE id=?", (sd.id,)).fetchone()
+    assert row is not None, "keep_row=True must leave the docs row in place as a tombstone"
+    assert conn.execute("SELECT 1 FROM docs_fts WHERE rowid=?", (rowid,)).fetchone() is None, (
+        "forget must delete the FTS row"
+    )
+    snap = index.snapshot()
+    assert snap.forgotten[snap.row_of[sd.id]], "forget must tombstone the vector"
+    assert hydra_store.get_node_strong("Doc", sd.id, ["title"]) is None, "forget must delete the graph node"
+    assert conn.execute("SELECT 1 FROM graph_written WHERE id=?", (sd.id,)).fetchone() is None
+    print("ok  5.7: forget purges FTS/vectors/graph but leaves the SQLite tombstone row in place")
+
+
 def main() -> None:
     load_dotenv(ROOT / ".env")
     settings = Settings.from_env()
@@ -356,6 +388,7 @@ def main() -> None:
                 check_graph_create_update_skip(conn, index, hydra_store)
                 check_distilled_from_edges(conn, index, hydra_store)
                 check_consistency(conn, index, hydra_store)
+                check_forget_keeps_tombstone_row(conn, index, hydra_store)
 
     check_semantic_ranking()
 

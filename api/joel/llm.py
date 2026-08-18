@@ -43,30 +43,46 @@ def openrouter_call(
     user_prompt: str,
     timeout: int = 60,
 ) -> str:
-    """One OpenAI-compatible chat completion call. Returns raw text content."""
+    """One OpenAI-compatible chat completion call. Returns raw text content.
+
+    Every failure mode raises `LLMError` — including raw network exceptions
+    (`requests.RequestException`: DNS, timeout, connection reset, TLS) —
+    never lets `requests`' own exception types escape. Every caller in this
+    codebase (`plan_query`, `rerank_candidates`, `synthesize_answer`,
+    `distill_thread`) only catches `LLMError` and degrades gracefully
+    (fallback plan, empty rerank, "absent" answer); a raw `ConnectionError`
+    slipping through instead crashes the whole SSE stream mid-response on
+    a transient network blip, which is exactly the kind of outage this is
+    supposed to degrade honestly through, not crash on."""
     if not api_key:
         raise LLMError("LLM API key not set — add one in Settings")
     if not model:
         raise LLMError("no model configured for this stage")
-    resp = requests.post(
-        f"{base_url.rstrip('/')}/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "temperature": 0,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        },
-        timeout=timeout,
-    )
+    try:
+        resp = requests.post(
+            f"{base_url.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "temperature": 0,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            },
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise LLMError(f"LLM request failed: {exc}") from exc
     if resp.status_code >= 400:
         raise LLMError(f"LLM API error: HTTP {resp.status_code} {resp.text[:300]}")
-    data = resp.json()
+    try:
+        data = resp.json()
+    except ValueError as exc:  # requests raises simplejson/json's JSONDecodeError, a ValueError subclass
+        raise LLMError(f"LLM response was not valid JSON: {resp.text[:300]!r}") from exc
     try:
         return str(data["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as exc:

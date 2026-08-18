@@ -1860,35 +1860,47 @@ Built as its own testable unit, same as CP3/CP4, then wired: `_run_ingest` now c
 
 ### CP 7 — Retrieval and answering (§10)
 
+Built reduced-lane first, on purpose: VECTOR, VEC-ARTIFACTS, FTS and PHRASE need nothing CP6 (ontology) doesn't already provide, so `retrieve/{planner,lanes,fuse,rerank,synthesize}.py` + the `answer_question` orchestrator ship and get wired into `/api/ask` now; GRAPH and WHO_KNOWS stay unbuilt until CP6 exists (`lanes.py`'s own docstring says so). `scripts/check_7_retrieve.py` is all green, including one real-LLM smoke test, and it's wired end-to-end into `/api/ask` (SSE `plan`/`lane`/`token`/`citations` events) and re-verified against the real 930-doc corpus below.
+
+**Four real bugs found only by testing against the live server and real data — none of `check_7_retrieve.py`'s synthetic fixtures caught any of them:**
+1. **`config.py` never loaded `.env`, only every `scripts/check_*.py` did.** Every check script calls `load_dotenv(ROOT / ".env")` itself before touching `Settings.from_env()`; `app.py` never did, so a plain `uvicorn joel.app:app` (exactly how the dev server is normally started, with no wrapper) ran with `HYDRA_HTTP`/`HYDRA_BOLT`/etc. missing from its actual process environment. `_runtime()` is lazy, so this stayed invisible until the *first* call that actually needed it — the first real `/api/ask` — which then raised a raw `KeyError` deep in `Settings.from_env()`, outside every LLM-specific error handler. Fixed by calling `load_dotenv()` at the top of `app.py` itself, before any other project import.
+2. **Concurrent `SentenceTransformer.encode()` calls segfault the worker.** `run_lanes` runs VECTOR and VEC-ARTIFACTS concurrently via `ThreadPoolExecutor`, and both call `embed_fn` for the same question at (almost) the same instant on the one shared model instance. That reproduced a hard `SIGSEGV` (exit 139) against the real model and real corpus, not a catchable Python exception — so the `try/except Exception` wrapped around `answer_question` in `/api/ask` (added for bug 1) could not have helped either. Fixed with a plain `threading.Lock` around the `.encode()` call in `app._embed_fn`; embedding a handful of short strings is fast enough that serializing it isn't a real throughput cost.
+3. **The FTS lane quoted the entire question as one exact phrase.** `fts_lane` reused `PHRASE`'s `_quote_fts()` helper on the *whole* natural-language question, turning `docs_fts MATCH` into "every word must appear consecutively in this exact order" — which a real question essentially never satisfies, so FTS silently returned 0 hits against the real 930-doc corpus every time, even for a question copied almost verbatim from a real doc's title. §10.2 wants FTS to be bm25-ranked term overlap ("rare tokens (IDF)"), not a phrase match — that's PHRASE's job. Fixed with `_or_of_quoted_tokens()`: each word is still individually quoted (so a bare `OR`/`NEAR`/`*` in the question still can't act as an FTS5 operator, keeping §18's "quote user text" rule intact) but joined with `OR` instead of concatenated into one phrase, restoring real bm25 ranking. Verified live: the same question that returned 0 FTS hits before the fix returns 15 after it, against the real corpus.
+4. **`openrouter_call` let raw network exceptions escape.** It only wrapped HTTP-status and response-shape errors in `LLMError`; a bare `requests.RequestException` (timeout, connection reset, DNS failure) or a non-JSON response body propagated straight up and crashed the SSE generator mid-stream — every caller (`plan_query`, `rerank_candidates`, `synthesize_answer`, `distill_thread`) only ever catches `LLMError` and degrades gracefully otherwise. Fixed by wrapping the `requests.post` call and the `resp.json()` call each in their own `try/except`, re-raising as `LLMError` either way.
+
+All four are now regression-covered live (repeated real `/api/ask` calls against the real 930-doc corpus, no crashes/hangs, real lane hit counts, a real cited answer for a question matching real ingested GitHub data) and `check_5_store.py`/`check_7_retrieve.py` stay green.
+
 **7.1 Lanes individually**
-- [ ] each of the six lanes returns sensible results in isolation
-- [ ] lanes run concurrently, not serially
-- [ ] every lane excludes `forgotten=1`
+- [x] each of the four built lanes (VECTOR, VEC-ARTIFACTS, FTS, PHRASE) returns sensible results in isolation — *`check_lanes_individually`, plus live against the real corpus (bug 3 above)*
+- [x] lanes run concurrently, not serially — *`ThreadPoolExecutor` in `run_lanes`; this is exactly what surfaced bug 2 against the real embedding model*
+- [x] every lane excludes `forgotten=1`
+- [ ] GRAPH, WHO_KNOWS — **not built, blocked on CP6 (ontology)**
 
 **7.2 Fusion**
-- [ ] a doc mid-rank in ≥3 lanes outranks a single-lane #1 (log per-lane ranks to prove it)
-- [ ] `PER_SOURCE_CAP` is enforced
-- [ ] age decay only reorders inside a tie window
+- [x] a doc mid-rank in ≥3 lanes outranks a single-lane #1 (log per-lane ranks to prove it)
+- [x] `PER_SOURCE_CAP` is enforced
+- [x] age decay only reorders inside a tie window
 
 **7.3 Rerank**
-- [ ] a topically-related non-answering doc scores ≤3 and drops out
-- [ ] an exact-identifier match gets its boost
+- [x] rerank scores are clamped and sorted on the 0–10 scale, never the ~0.09 RRF scale
+- [ ] a topically-related non-answering doc scores ≤3 and drops out — not asserted as its own case yet, only implicitly via 7.4's abstention checks
+- [ ] an exact-identifier match gets its boost — not asserted as its own case yet
 
 **7.4 Abstention** — the important one
-- [ ] `reranked[0].rerank_score` is asserted to be on the 0–10 scale before comparison
-- [ ] five different invented-unanswerable questions all return `absent`
-- [ ] a fabricated citation triggers the gate
-- [ ] `answered` with no citations triggers the gate
+- [x] `reranked[0].rerank_score` is asserted to be on the 0–10 scale before comparison
+- [x] five different invented-unanswerable questions all return `absent`
+- [x] a fabricated citation triggers the gate
+- [x] `answered` with no citations triggers the gate
 
 **7.5 Modifiers**
-- [ ] a temporal-history question returns the superseded state
-- [ ] a current-state question returns the current one
-- [ ] a conflict question returns both positions, dated and sourced
-- [ ] an exact token via PHRASE survives fusion into the final set
+- [ ] a temporal-history question returns the superseded state — masks exist (`_vector_mask`) but untested against real superseded data
+- [ ] a current-state question returns the current one — same
+- [ ] a conflict question returns both positions, dated and sourced — `Conflict`/`ConflictPosition` exist in `synthesize.py` but untested against a real conflicting pair
+- [x] an exact token via PHRASE survives fusion into the final set
 
 **7.6 Traces**
-- [ ] every question appends a full trace line
-- [ ] the file rotates rather than growing forever
+- [x] every question appends a full trace line — `log_trace` to `data/state/traces.jsonl`
+- [ ] the file rotates rather than growing forever — **not built**, appends unboundedly today
 
 ---
 
