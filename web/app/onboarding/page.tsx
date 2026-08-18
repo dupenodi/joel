@@ -3,16 +3,14 @@
 import { BrandMark } from "@/components/brand-mark";
 import { Checklist } from "@/components/checklist";
 import { Field } from "@/components/field";
+import { IntegrationsPanel } from "@/components/integrations/integrations-panel";
 import { OrgCard } from "@/components/org-card";
-import { StatusPill } from "@/components/status-pill";
 import { StepIndicator } from "@/components/step-indicator";
 import { Surface } from "@/components/surface";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { connectProvider, createOrg, getOrg } from "@/lib/api";
-import { PROVIDER_META, SHIPPED_PROVIDERS } from "@/lib/connectors";
+import { createOrg, getOrg } from "@/lib/api";
 import type { Org, ReadinessChecklist } from "@/lib/types";
-import { cn } from "@/lib/utils";
 import { ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
@@ -35,7 +33,6 @@ export default function OnboardingPage() {
   const [step, setStep] = useState<Step>(1);
   const [domain, setDomain] = useState("");
   const [org, setOrg] = useState<Org | null>(null);
-  const [provider, setProvider] = useState<string | null>(null);
   const [checklist, setChecklist] = useState<ReadinessChecklist | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -95,27 +92,16 @@ export default function OnboardingPage() {
     }
   }, [domain]);
 
-  const onConnect = useCallback(async (p: string) => {
-    setError(null);
-    setBusy(true);
-    setProvider(p);
-    try {
-      await connectProvider(p, "composio");
-      setStep(3);
-      setChecklist({
-        fetched: false,
-        distilled: false,
-        people_resolved: false,
-        graph_linked: false,
-        indexes_consistent: false,
-        ready: false,
-      });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Connect failed");
-      setProvider(null);
-    } finally {
-      setBusy(false);
-    }
+  const onSlackReady = useCallback(() => {
+    setStep(3);
+    setChecklist({
+      fetched: false,
+      distilled: false,
+      people_resolved: false,
+      graph_linked: false,
+      indexes_consistent: false,
+      ready: false,
+    });
   }, []);
 
   return (
@@ -177,46 +163,11 @@ export default function OnboardingPage() {
               Connect your first tool
             </h1>
             <p className="mt-2 text-[15px] leading-relaxed text-ink-soft">
-              Slack, GitHub, or Gmail. No empty demo — memory starts with real
-              data (or an empty ready gate for now).
+              Start with Slack. Save a Composio key, then connect. Memory starts
+              when the first fetch lands.
             </p>
           </div>
-          <div className="grid gap-3">
-            {SHIPPED_PROVIDERS.map((p) => {
-              const meta = PROVIDER_META[p];
-              return (
-                <button
-                  key={p}
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void onConnect(p)}
-                  className={cn(
-                    "flex items-start gap-3 rounded-[var(--radius)] border border-[var(--line)] bg-surface p-4 text-left shadow-[var(--shadow-sm)] transition-colors hover:border-[var(--line-strong)] disabled:opacity-60",
-                    provider === p && "border-ink",
-                  )}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={meta.icon}
-                    alt=""
-                    width={28}
-                    height={28}
-                    className="mt-0.5"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="font-medium">{meta.label}</p>
-                      <StatusPill status="pending_auth" />
-                    </div>
-                    <p className="mt-1 text-sm leading-relaxed text-ink-soft">
-                      {meta.blurb}
-                    </p>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-          {error && <p className="text-sm text-accent">{error}</p>}
+          <IntegrationsPanel surface="onboarding" onFirstIngest={onSlackReady} />
         </section>
       )}
 

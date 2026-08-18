@@ -1,82 +1,44 @@
 import type { ConnectorCard } from "./types";
+import { INTEGRATIONS } from "./integrations";
 
-export const SHIPPED_PROVIDERS = ["slack", "github", "gmail"] as const;
+/** Ids that have a fetcher. Derived from the allowlist so this cannot drift. */
+export const SHIPPED_PROVIDERS = INTEGRATIONS.filter((item) => item.ingest).map(
+  (item) => item.id,
+);
 
-export const COMING_SOON_PROVIDERS = [
-  "jira",
-  "linear",
-  "notion",
-  "confluence",
-  "googledrive",
-  "hubspot",
-  "fireflies",
-] as const;
+export const COMING_SOON_PROVIDERS = INTEGRATIONS.filter(
+  (item) => !item.connectable,
+).map((item) => item.id);
+
+const BLURBS: Record<string, string> = {
+  slack:
+    "Channels and threads — decisions, commitments, the hallway talk that never made it into a doc.",
+  github: "Issues, PRs, review comments, and language-aware code chunks.",
+  gmail:
+    "Mail threads that hold the real answer when the ticket just says 'see email'.",
+  jira: "Issues and comments.",
+  linear: "Issues and comments.",
+  notion: "Pages you’re authorized for.",
+  confluence: "Spaces and pages you’re authorized for.",
+  googledrive: "Docs, text files, and PDFs you’re authorized for.",
+  hubspot: "Deals in pipelines you’re authorized for.",
+  fireflies: "Meeting transcripts.",
+};
 
 export const PROVIDER_META: Record<
   string,
   { label: string; blurb: string; icon: string; defaultInterval: number }
-> = {
-  slack: {
-    label: "Slack",
-    blurb: "Channels and threads — decisions, commitments, the hallway talk that never made it into a doc.",
-    icon: "/icons/slack.svg",
-    defaultInterval: 15,
-  },
-  github: {
-    label: "GitHub",
-    blurb: "Issues, PRs, and review comments — plus language-aware code chunks.",
-    icon: "/icons/github.svg",
-    defaultInterval: 30,
-  },
-  gmail: {
-    label: "Gmail",
-    blurb: "Mail threads that hold the real answer when the ticket just says 'see email'.",
-    icon: "/icons/gmail.svg",
-    defaultInterval: 20,
-  },
-  jira: {
-    label: "Jira",
-    blurb: "Coming soon",
-    icon: "/icons/jira.svg",
-    defaultInterval: 30,
-  },
-  linear: {
-    label: "Linear",
-    blurb: "Coming soon",
-    icon: "/icons/linear.svg",
-    defaultInterval: 30,
-  },
-  notion: {
-    label: "Notion",
-    blurb: "Coming soon",
-    icon: "/icons/notion.svg",
-    defaultInterval: 60,
-  },
-  confluence: {
-    label: "Confluence",
-    blurb: "Coming soon",
-    icon: "/icons/confluence.svg",
-    defaultInterval: 60,
-  },
-  googledrive: {
-    label: "Google Drive",
-    blurb: "Coming soon",
-    icon: "/icons/googledrive.svg",
-    defaultInterval: 60,
-  },
-  hubspot: {
-    label: "HubSpot",
-    blurb: "Coming soon",
-    icon: "/icons/hubspot.svg",
-    defaultInterval: 60,
-  },
-  fireflies: {
-    label: "Fireflies",
-    blurb: "Coming soon",
-    icon: "/icons/fireflies.svg",
-    defaultInterval: 60,
-  },
-};
+> = Object.fromEntries(
+  INTEGRATIONS.map((item) => [
+    item.id,
+    {
+      label: item.name,
+      blurb: BLURBS[item.id] ?? item.scope,
+      icon: `/icons/${item.id}.svg`,
+      defaultInterval: item.defaultIntervalMin,
+    },
+  ]),
+);
 
 export function emptyConnectorCards(): ConnectorCard[] {
   const shipped = SHIPPED_PROVIDERS.map((provider) => ({

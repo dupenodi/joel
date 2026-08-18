@@ -14,3 +14,4 @@ export * from "./skeleton";
 export * from "./icon-button";
 export * from "./chip";
 export * from "./drawer";
+export * from "./dialog";

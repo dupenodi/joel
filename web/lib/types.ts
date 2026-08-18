@@ -2,6 +2,7 @@
 
 export type ConnectorStatus =
   | "pending_auth"
+  | "pending_setup"
   | "backfilling"
   | "distilling"
   | "linking"
@@ -11,7 +12,7 @@ export type ConnectorStatus =
   | "error"
   | "coming_soon";
 
-export type AuthMode = "composio" | "oauth";
+export type AuthMode = "composio" | "oauth" | "token";
 
 export type AnswerStatus = "answered" | "partial" | "conflicted" | "absent";
 
@@ -44,7 +45,10 @@ export interface ConnectorCard {
   backfill_progress: number | null;
   error: string | null;
   interval_min: number;
+  lookback_days?: number;
+  channel_ids?: string[];
   coming_soon: boolean;
+  ingest?: boolean;
   checklist?: ReadinessChecklist;
 }
 
@@ -87,15 +91,26 @@ export interface Settings {
   llm_model_resolve: string;
   llm_model_rerank: string;
   sync_enabled: boolean;
-  sync_default_interval_min: number;
-  history_floor: string | null;
-  composio_api_key_set: boolean;
+  sync_default_interval_min?: number;
+  history_floor?: string | null;
+  composio_api_key_set?: boolean;
   embed_model: string;
-  oauth: Record<
-    string,
-    { client_id_set: boolean; client_secret_set: boolean }
-  >;
   raw?: Record<string, string>;
+}
+
+export interface ComposioAccount {
+  id: string;
+  toolkit: string;
+  status: string;
+  label: string | null;
+}
+
+export interface ComposioStatus {
+  configured: boolean;
+  key_source: "settings" | "env" | "none";
+  masked_key: string | null;
+  accounts: ComposioAccount[];
+  error?: string;
 }
 
 export interface Health {

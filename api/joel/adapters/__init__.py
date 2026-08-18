@@ -1,4 +1,4 @@
-"""Source adapters — raw provider payloads → CanonicalDoc via manifests."""
+"""Source adapters — one `adapt()` + manifests. No per-provider adapter modules."""
 
 from joel.adapters.base import (
     SourceManifest,
@@ -13,7 +13,16 @@ from joel.adapters.manifests import (
     GITHUB_ISSUE,
     GITHUB_ISSUE_COMMENT,
     GITHUB_PR,
+    GITHUB_PR_REVIEW,
+    GITHUB_CODE,
     GMAIL,
+    LINEAR_ISSUE,
+    JIRA_ISSUE,
+    NOTION_PAGE,
+    CONFLUENCE_PAGE,
+    GDRIVE_FILE,
+    HUBSPOT_DEAL,
+    FIREFLIES_CHUNK,
     SLACK,
 )
 
@@ -29,5 +38,14 @@ __all__ = [
     "GITHUB_ISSUE",
     "GITHUB_ISSUE_COMMENT",
     "GITHUB_PR",
+    "GITHUB_PR_REVIEW",
+    "GITHUB_CODE",
     "GMAIL",
+    "LINEAR_ISSUE",
+    "JIRA_ISSUE",
+    "NOTION_PAGE",
+    "CONFLUENCE_PAGE",
+    "GDRIVE_FILE",
+    "HUBSPOT_DEAL",
+    "FIREFLIES_CHUNK",
 ]

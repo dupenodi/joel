@@ -26,16 +26,7 @@ export default function SettingsPage() {
           llm_model_resolve: s.llm_model_resolve,
           llm_model_rerank: s.llm_model_rerank,
           sync_enabled: s.sync_enabled ? "true" : "false",
-          sync_default_interval_min: String(s.sync_default_interval_min),
-          history_floor: s.history_floor ?? "",
-          composio_api_key: "",
           embed_model: s.embed_model,
-          oauth_slack_client_id: "",
-          oauth_slack_client_secret: "",
-          oauth_github_client_id: "",
-          oauth_github_client_secret: "",
-          oauth_gmail_client_id: "",
-          oauth_gmail_client_secret: "",
         });
         setLoading(false);
       })
@@ -76,7 +67,7 @@ export default function SettingsPage() {
     >
       <PageHeader
         title="Settings"
-        description="Persisted in SQLite, overrides env at runtime."
+        description="Models and ingestion pause. Tools live on Integrations."
       />
       {error && <p className="text-sm text-accent">{error}</p>}
       {saved && <p className="text-sm text-[var(--ok)]">Saved.</p>}
@@ -131,50 +122,6 @@ export default function SettingsPage() {
             }
           />
         </label>
-        <Field label="Default interval (minutes)">
-          <Input
-            type="number"
-            value={values.sync_default_interval_min ?? "15"}
-            onChange={(e) => set("sync_default_interval_min", e.target.value)}
-          />
-        </Field>
-        <Field label="History floor">
-          <Input
-            placeholder="Optional ISO date"
-            value={values.history_floor ?? ""}
-            onChange={(e) => set("history_floor", e.target.value)}
-          />
-        </Field>
-      </Section>
-
-      <Section title="Auth brokers">
-        <Field label="Composio API key">
-          <Input
-            type="password"
-            placeholder="Optional"
-            value={values.composio_api_key ?? ""}
-            onChange={(e) => set("composio_api_key", e.target.value)}
-          />
-        </Field>
-        {(["slack", "github", "gmail"] as const).map((p) => (
-          <div key={p} className="grid gap-3 sm:grid-cols-2">
-            <Field label={`${p} client id`}>
-              <Input
-                value={values[`oauth_${p}_client_id`] ?? ""}
-                onChange={(e) => set(`oauth_${p}_client_id`, e.target.value)}
-              />
-            </Field>
-            <Field label={`${p} client secret`}>
-              <Input
-                type="password"
-                value={values[`oauth_${p}_client_secret`] ?? ""}
-                onChange={(e) =>
-                  set(`oauth_${p}_client_secret`, e.target.value)
-                }
-              />
-            </Field>
-          </div>
-        ))}
       </Section>
 
       <Section title="Embeddings">

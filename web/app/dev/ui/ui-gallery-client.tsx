@@ -57,7 +57,7 @@ const mockConnectors: ConnectorCardType[] = emptyConnectorCards().map((c, i) => 
     return {
       ...c,
       id: "conn_gh",
-      mode: "oauth",
+      mode: "composio",
       status: "needs_reauth",
       doc_count: 310,
       last_sync_at: new Date(Date.now() - 86_400_000).toISOString(),

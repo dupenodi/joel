@@ -14,8 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "api"))
 
 from joel.adapters import (  # noqa: E402
+    CONFLUENCE_PAGE,
+    FIREFLIES_CHUNK,
     GITHUB_ISSUE,
     GITHUB_PR,
+    GMAIL,
+    HUBSPOT_DEAL,
+    JIRA_ISSUE,
+    LINEAR_ISSUE,
     SLACK,
     adapt,
     adapt_many,
@@ -23,6 +29,13 @@ from joel.adapters import (  # noqa: E402
     triage,
     triage_batch,
 )
+from joel.adapters.manifests import html_to_markdown, split_document_on_h2, strip_gmail_quotes  # noqa: E402
+from joel.syncer import ingest_is_schedulable  # noqa: E402
+from joel.adapters.code_chunk import chunk_code  # noqa: E402
+from joel.connectors.catalog import fetch_gdrive_docs, fetch_linear_docs
+from joel.connectors.fireflies import fetch_fireflies_docs
+from joel.connectors.github import fetch_github_docs  # noqa: E402
+from joel.connectors.gmail import fetch_gmail_docs, gmail_plain_body  # noqa: E402
 from joel.models import CanonicalDoc, compute_content_hash  # noqa: E402
 
 
@@ -266,14 +279,489 @@ def check_github_identity() -> None:
             "merged": False,
         },
     )
-    assert issue is not None and pr is not None
+    other = adapt(
+        GITHUB_PR,
+        {
+            "number": 42,
+            "title": "SEO audit report for the marketing site",
+            "body": "",
+            "user": {"login": "soham"},
+            "repository": {"full_name": "dupenodi/dupenodi"},
+            "created_at": "2026-08-02T12:00:00Z",
+            "html_url": "https://github.com/dupenodi/dupenodi/pull/42",
+            "state": "open",
+        },
+    )
+    assert issue is not None and pr is not None and other is not None
     assert issue.doc_id != pr.doc_id
-    assert issue.doc_id == "github__issue_42"
-    assert pr.doc_id == "github__pr_42"
-    assert issue.thread_id == "issue_42"
-    assert pr.thread_id == "pr_42"
+    assert pr.doc_id != other.doc_id
+    assert issue.doc_id == "github__issue_acme_hydra_42"
+    assert pr.doc_id == "github__pr_acme_hydra_42"
+    assert other.doc_id == "github__pr_dupenodi_dupenodi_42"
+    assert issue.thread_id == "issue_acme/hydra#42"
+    assert pr.thread_id == "pr_acme/hydra#42"
     assert issue.author_raw == "soham"
     print("ok  github issue/PR identity")
+
+
+def check_gmail_quotes() -> None:
+    raw = {
+        "id": "m1",
+        "threadId": "t1",
+        "subject": "Restore hang on NFS",
+        "from": "soham@acme.dev",
+        "to": ["alice@acme.dev"],
+        "internalDate": "1755000000000",
+        "mailbox": "you@acme.dev",
+        "body": (
+            "Setting CKPT_PREFETCH=4 unblocked restore on the NFS mount.\n"
+            "--\nSoham Ratnaparkhi\n"
+            "\nOn Mon, Aug 1, 2026 at 12:00 PM Alice wrote:\n"
+            "> still hanging after manifest load\n"
+        ),
+    }
+    cleaned = strip_gmail_quotes(raw)
+    assert "CKPT_PREFETCH=4" in cleaned["body"]
+    assert "Soham Ratnaparkhi" in cleaned["body"]
+    assert "still hanging" not in cleaned["body"]
+    doc = adapt(GMAIL, raw)
+    assert doc is not None
+    assert "still hanging" not in doc.body
+    assert doc.author_raw == "soham@acme.dev"
+    print("ok  gmail quote strip")
+
+
+def check_github_fetch() -> None:
+    def request(method: str, endpoint: str, params: dict) -> tuple[object, dict]:
+        del method, params
+        if endpoint.startswith("/user/repos"):
+            return (
+                [
+                    {
+                        "full_name": "acme/app",
+                        "fork": False,
+                        "archived": False,
+                        "default_branch": "main",
+                    },
+                    {
+                        "full_name": "acme/forked",
+                        "fork": True,
+                        "archived": False,
+                    },
+                ],
+                {},
+            )
+        if "/issues/comments" in endpoint:
+            return (
+                [
+                    {
+                        "id": 99,
+                        "body": "Confirmed on staging after the prefetch bump landed.",
+                        "user": {"login": "alice"},
+                        "created_at": "2026-08-10T00:00:00Z",
+                        "html_url": "https://github.com/acme/app/issues/7#issuecomment-99",
+                        "issue_url": "https://api.github.com/repos/acme/app/issues/7",
+                    }
+                ],
+                {},
+            )
+        if "/pulls/comments" in endpoint:
+            return ([], {})
+        if endpoint.rstrip("/").endswith("/reviews"):
+            return (
+                [
+                    {
+                        "id": 77,
+                        "body": "Please keep CKPT_PREFETCH=4 or restore hangs on NFS.",
+                        "user": {"login": "alice"},
+                        "submitted_at": "2026-08-11T00:00:00Z",
+                        "html_url": "https://github.com/acme/app/pull/8#pullrequestreview-77",
+                        "state": "CHANGES_REQUESTED",
+                    }
+                ],
+                {},
+            )
+        if "/git/trees/" in endpoint:
+            src = (
+                "class Hydra:\n"
+                "    def restore(self):\n"
+                "        return CKPT_PREFETCH\n"
+            )
+            return (
+                {
+                    "tree": [
+                        {
+                            "path": "src/restore.py",
+                            "type": "blob",
+                            "sha": "abc",
+                            "size": len(src),
+                        }
+                    ]
+                },
+                {},
+            )
+        if "/git/blobs/" in endpoint:
+            import base64
+
+            src = (
+                "class Hydra:\n"
+                "    def restore(self):\n"
+                "        return CKPT_PREFETCH\n"
+            )
+            return (
+                {
+                    "encoding": "base64",
+                    "content": base64.b64encode(src.encode()).decode(),
+                },
+                {},
+            )
+        if endpoint.endswith("/issues") or "/issues?" in endpoint:
+            return (
+                [
+                    {
+                        "number": 7,
+                        "title": "Restore hangs on NFS",
+                        "body": "After manifest load the restore stalls forever on the NFS mount.",
+                        "user": {"login": "soham"},
+                        "created_at": "2026-08-01T12:00:00Z",
+                        "html_url": "https://github.com/acme/app/issues/7",
+                        "state": "open",
+                        "labels": ["bug"],
+                    },
+                    {
+                        "number": 8,
+                        "title": "Fix CKPT_PREFETCH default",
+                        "body": "Sets CKPT_PREFETCH=4 so restore does not hang on NFS.",
+                        "user": {"login": "soham"},
+                        "created_at": "2026-08-02T12:00:00Z",
+                        "html_url": "https://github.com/acme/app/pull/8",
+                        "state": "open",
+                        "pull_request": {
+                            "url": "https://api.github.com/repos/acme/app/pulls/8"
+                        },
+                    },
+                ],
+                {},
+            )
+        raise AssertionError(f"unexpected GitHub endpoint {endpoint}")
+
+    docs = fetch_github_docs(since="2026-07-01T00:00:00Z", request=request)
+    kinds = {doc.external_id.split("_", 1)[0] for doc in docs}
+    assert "issue" in kinds
+    assert "comment" in kinds
+    issue = next(doc for doc in docs if doc.external_id.startswith("issue_"))
+    comment = next(doc for doc in docs if doc.external_id.startswith("comment_"))
+    review = next(doc for doc in docs if doc.external_id.startswith("review_"))
+    code = next(doc for doc in docs if doc.granularity == "code")
+    assert issue.doc_id == "github__issue_acme_app_7"
+    assert comment.parent_id == issue.thread_id
+    assert issue.container == "acme/app"
+    assert "CKPT_PREFETCH" in review.body
+    assert "restore.py" in code.title
+    print(f"ok  github fetch ({len(docs)} docs)")
+
+
+def check_gmail_fetch() -> None:
+    payload = {
+        "mimeType": "text/plain",
+        "body": {
+            "data": __import__("base64").urlsafe_b64encode(
+                b"Setting CKPT_PREFETCH=4 unblocked restore on NFS.\n"
+            ).decode()
+        },
+        "headers": [
+            {"name": "Subject", "value": "Restore hang"},
+            {"name": "From", "value": "Soham <soham@acme.dev>"},
+            {"name": "To", "value": "Alice <alice@acme.dev>"},
+        ],
+    }
+    assert "CKPT_PREFETCH" in gmail_plain_body(payload)
+
+    def request(method: str, endpoint: str, params: dict) -> tuple[object, dict]:
+        del method, params
+        if endpoint.endswith("/profile"):
+            return ({"emailAddress": "you@acme.dev"}, {})
+        if endpoint.endswith("/messages"):
+            return ({"messages": [{"id": "m1", "threadId": "t1"}]}, {})
+        if endpoint.endswith("/messages/m1"):
+            return (
+                {
+                    "id": "m1",
+                    "threadId": "t1",
+                    "internalDate": "1755000000000",
+                    "labelIds": ["INBOX"],
+                    "payload": payload,
+                },
+                {},
+            )
+        raise AssertionError(f"unexpected Gmail endpoint {endpoint}")
+
+    from datetime import datetime, timezone
+
+    docs = fetch_gmail_docs(
+        after=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        request=request,
+    )
+    assert len(docs) == 1
+    assert docs[0].source_type == "gmail"
+    assert docs[0].author_raw == "soham@acme.dev"
+    assert docs[0].container == "you@acme.dev"
+    print("ok  gmail fetch")
+
+
+def check_extra_adapters() -> None:
+    issue = adapt(
+        LINEAR_ISSUE,
+        {
+            "identifier": "ENG-9",
+            "title": "Restore hangs on NFS",
+            "description": "After manifest load the restore stalls forever on the NFS mount.",
+            "creator": {"name": "soham"},
+            "team": {"key": "ENG"},
+            "createdAt": "2026-08-01T12:00:00Z",
+            "url": "https://linear.app/acme/issue/ENG-9",
+            "state": "In Progress",
+            "priority": 2,
+        },
+    )
+    assert issue is not None
+    assert issue.doc_id == "linear__eng-9"
+    assert issue.container == "ENG"
+
+    jira = adapt(
+        JIRA_ISSUE,
+        {
+            "key": "AUTH-123",
+            "summary": "SSO callback rejects the state param",
+            "body": {"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "The callback 400s when state is missing from the cookie jar."}]}]},
+            "assignee": "alice",
+            "project": "AUTH",
+            "created": "2026-08-01T12:00:00Z",
+            "status": "Open",
+            "priority": "High",
+            "url": "https://acme.atlassian.net/browse/AUTH-123",
+        },
+    )
+    assert jira is not None
+    assert jira.doc_id == "jira__auth-123"
+    assert "cookie jar" in jira.body
+
+    html = html_to_markdown("<h1>Runbook</h1><p>Set <code>CKPT_PREFETCH=4</code>.</p>")
+    assert "# Runbook" in html
+    assert "CKPT_PREFETCH=4" in html
+    page = adapt(
+        CONFLUENCE_PAGE,
+        {
+            "id": "42",
+            "title": "NFS restore runbook",
+            "body": {"storage": {"value": "<h2>Fix</h2><p>Set CKPT_PREFETCH=4 on the restore host.</p>"}},
+            "author": "soham",
+            "space": "OPS",
+            "when": "2026-08-01T12:00:00Z",
+            "url": "https://acme.atlassian.net/wiki/spaces/OPS/pages/42",
+        },
+    )
+    assert page is not None
+    assert page.extra.get("doc_type") == "runbook"
+
+    deal = adapt(
+        HUBSPOT_DEAL,
+        {
+            "id": "55",
+            "properties": {
+                "dealname": "Acme renewal",
+                "dealstage": "negotiation",
+                "amount": "50000",
+                "pipeline": "default",
+                "hubspot_owner_id": "morgan",
+                "description": "Waiting on legal redlines.",
+            },
+            "updatedAt": "2026-08-01T12:00:00Z",
+            "owner": "morgan",
+        },
+    )
+    assert deal is not None
+    assert "Acme renewal" in deal.body
+    assert deal.extra["data"]["amount"] == "50000"
+
+    chunk = adapt(
+        FIREFLIES_CHUNK,
+        {
+            "id": "m1_c0",
+            "thread_id": "m1",
+            "title": "Restore incident",
+            "body": "soham: We should set CKPT_PREFETCH=4 before the next restore.\nalice: Agreed, I'll change the default.",
+            "host": "soham@acme.dev",
+            "date": 1755000000000,
+            "url": "https://app.fireflies.ai/view/m1",
+        },
+    )
+    assert chunk is not None
+    assert chunk.timestamp is not None and chunk.timestamp.tzinfo
+
+    def linear_request(method: str, endpoint: str, params: dict, body=None):
+        del method, params
+        assert endpoint == "/graphql"
+        assert body and "issues" in body["query"]
+        return (
+            {
+                "data": {
+                    "issues": {
+                        "nodes": [
+                            {
+                                "identifier": "ENG-9",
+                                "title": "Restore hangs on NFS",
+                                "description": "After manifest load the restore stalls forever on the NFS mount.",
+                                "createdAt": "2026-08-01T12:00:00Z",
+                                "updatedAt": "2026-08-10T12:00:00Z",
+                                "url": "https://linear.app/acme/issue/ENG-9",
+                                "priority": 2,
+                                "state": {"name": "In Progress"},
+                                "assignee": {"name": "soham"},
+                                "team": {"key": "ENG"},
+                                "comments": {
+                                    "nodes": [
+                                        {
+                                            "id": "c1",
+                                            "body": "Setting CKPT_PREFETCH=4 unblocked it on staging.",
+                                            "createdAt": "2026-08-10T13:00:00Z",
+                                            "url": "https://linear.app/acme/issue/ENG-9#c1",
+                                            "user": {"name": "alice"},
+                                        }
+                                    ]
+                                },
+                            }
+                        ],
+                        "pageInfo": {"hasNextPage": False},
+                    }
+                }
+            },
+            {},
+        )
+
+    linear_docs = fetch_linear_docs(since="2026-07-01T00:00:00Z", request=linear_request)
+    assert {doc.source_type for doc in linear_docs} == {"linear"}
+    assert any(doc.external_id == "ENG-9" for doc in linear_docs)
+
+    def fake_execute_tool(composio, slug, arguments, *, account_id=None, user_id="joel-owner"):
+        del composio, arguments, account_id, user_id
+        assert slug == "FIREFLIES_GET_TRANSCRIPTS"
+        return {
+            "transcripts": [
+                {
+                    "id": "m1",
+                    "title": "Restore incident",
+                    "date": 1755000000000,
+                    "host_email": "soham@acme.dev",
+                    "sentences": [
+                        {
+                            "speaker": "soham",
+                            "text": "We should set CKPT_PREFETCH=4 before the next restore.",
+                        },
+                        {
+                            "speaker": "alice",
+                            "text": "Agreed, I will change the default in the runbook today.",
+                        },
+                    ],
+                    "summary": {"overview": "Decide prefetch default"},
+                }
+            ]
+        }
+
+    from datetime import datetime, timezone
+
+    import joel.connectors.composio_conn as composio_conn
+
+    original_execute = composio_conn.execute_tool
+    composio_conn.execute_tool = fake_execute_tool
+    try:
+        flies = fetch_fireflies_docs(
+            after=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            composio=object(),
+            account_id="acc_test",
+        )
+    finally:
+        composio_conn.execute_tool = original_execute
+    assert len(flies) == 1
+    assert flies[0].source_type == "fireflies"
+    print("ok  extra adapters (linear/jira/confluence/hubspot/fireflies)")
+
+
+def check_document_ingest() -> None:
+    filler = "Set CKPT_PREFETCH=4 on the restore host. " * 200
+    page = {
+        "id": "42",
+        "title": "NFS restore runbook",
+        "body": {
+            "storage": {
+                "value": (
+                    f"<h2>Symptoms</h2><p>{filler}</p>"
+                    f"<h2>Fix</h2><p>{filler}</p>"
+                )
+            }
+        },
+        "author": "soham",
+        "space": "OPS",
+        "when": "2026-08-01T12:00:00Z",
+        "url": "https://acme.atlassian.net/wiki/spaces/OPS/pages/42",
+    }
+    parts = split_document_on_h2(page)
+    assert len(parts) >= 2
+    assert parts[0]["id"] == "42_s0"
+    assert parts[1]["parent_id"] == "42"
+    assert all(part.get("linked_to") == "42" for part in parts)
+
+    from unittest.mock import patch
+
+    def drive_request(method: str, endpoint: str, params: dict) -> tuple[object, dict]:
+        del method
+        if endpoint.endswith("/files") and "alt" not in params:
+            return (
+                {
+                    "files": [
+                        {
+                            "id": "doc1",
+                            "name": "Restore notes",
+                            "mimeType": "application/vnd.google-apps.document",
+                            "modifiedTime": "2026-08-10T00:00:00Z",
+                            "owners": [{"emailAddress": "soham@acme.dev"}],
+                            "webViewLink": "https://docs.google.com/document/d/doc1",
+                            "parents": ["folder1"],
+                            "size": 1200,
+                        },
+                        {
+                            "id": "pdf1",
+                            "name": "Restore runbook.pdf",
+                            "mimeType": "application/pdf",
+                            "modifiedTime": "2026-08-11T00:00:00Z",
+                            "owners": [{"emailAddress": "alice@acme.dev"}],
+                            "webViewLink": "https://drive.google.com/file/d/pdf1",
+                            "parents": ["folder1"],
+                            "size": 8000,
+                        },
+                    ]
+                },
+                {},
+            )
+        if endpoint.endswith("/export"):
+            return ("Setting CKPT_PREFETCH=4 unblocked restore on the NFS mount.", {})
+        if endpoint.endswith("/pdf1"):
+            return (b"%PDF-fake", {})
+        raise AssertionError(f"unexpected Drive endpoint {endpoint} {params}")
+
+    with patch(
+        "joel.connectors.catalog._pdf_text",
+        return_value="PDF extract: keep CKPT_PREFETCH=4 or restore hangs.",
+    ):
+        docs = fetch_gdrive_docs(since="2026-07-01T00:00:00Z", request=drive_request)
+    kinds = {doc.external_id for doc in docs}
+    assert "doc1" in kinds
+    assert "pdf1" in kinds
+    assert ingest_is_schedulable("github", [])
+    assert ingest_is_schedulable("gmail", [])
+    assert not ingest_is_schedulable("slack", [])
+    assert ingest_is_schedulable("slack", ["C123"])
+    print(f"ok  document ingest ({len(parts)} confluence parts, {len(docs)} drive docs)")
 
 
 def check_doc_id_collisions(docs: list[CanonicalDoc]) -> None:
@@ -300,6 +788,24 @@ def check_doc_id_collisions(docs: list[CanonicalDoc]) -> None:
     print("ok  zero doc_id collisions")
 
 
+def check_code_chunk() -> None:
+    src = (
+        "class Foo:\n"
+        "    def bar(self):\n"
+        "        return 1\n"
+        "\n"
+        "class Baz:\n"
+        "    def qux(self):\n"
+        "        return 2\n"
+    )
+    chunks = chunk_code("mod.py", src)
+    assert len(chunks) >= 2
+    huge = "def big():\n" + ("    x = 1\n" * 200)
+    parts = chunk_code("big.py", huge)
+    assert len(parts) == 1
+    print("ok  code chunk boundaries")
+
+
 def main() -> None:
     check_hash_stability()
     docs = check_slack_adapt()
@@ -307,8 +813,13 @@ def main() -> None:
     check_change_detection(docs)
     check_github_identity()
     check_doc_id_collisions(docs)
+    check_gmail_quotes()
+    check_code_chunk()
+    check_github_fetch()
+    check_gmail_fetch()
+    check_extra_adapters()
+    check_document_ingest()
     print("\nCP 3 adapter core: all automated checks passed.")
-    print("👁 still needed on real data: code chunk boundaries, gmail quote-strip.")
 
 
 if __name__ == "__main__":

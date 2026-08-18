@@ -1,1 +1,0 @@
-"""Fireflies adapter."""

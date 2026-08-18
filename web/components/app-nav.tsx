@@ -18,7 +18,7 @@ import { cn, navItemTone } from "@/lib/utils";
 
 const links = [
   { href: "/chat", label: "Chat", icon: MessageSquare },
-  { href: "/connectors", label: "Connectors", icon: Cable },
+  { href: "/connectors", label: "Integrations", icon: Cable },
   { href: "/settings", label: "Settings", icon: Settings },
   { href: "/profile", label: "Profile", icon: UserRound },
 ] as const;

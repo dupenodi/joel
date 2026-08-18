@@ -10,6 +10,7 @@ import type {
   Profile,
   ReadinessChecklist,
   Settings,
+  ComposioStatus,
 } from "./types";
 
 const API = process.env.NEXT_PUBLIC_API ?? "";
@@ -59,16 +60,6 @@ export async function listConnectors(): Promise<ConnectorCard[]> {
   return api("/api/connectors");
 }
 
-export async function connectProvider(
-  provider: string,
-  mode: "composio" | "oauth" = "composio",
-): Promise<ConnectorCard> {
-  return api("/api/connectors", {
-    method: "POST",
-    body: JSON.stringify({ provider, mode }),
-  });
-}
-
 export async function disconnectConnector(id: string): Promise<void> {
   await api(`/api/connectors/${id}`, { method: "DELETE" });
 }
@@ -79,7 +70,12 @@ export async function syncConnector(id: string): Promise<{ job_id: string }> {
 
 export async function patchConnector(
   id: string,
-  body: { interval_min?: number; paused?: boolean },
+  body: {
+    interval_min?: number;
+    paused?: boolean;
+    lookback_days?: number;
+    channel_ids?: string[];
+  },
 ): Promise<ConnectorCard> {
   return api(`/api/connectors/${id}`, {
     method: "PATCH",
@@ -87,8 +83,46 @@ export async function patchConnector(
   });
 }
 
+export async function listSlackChannels(
+  connectionId: string,
+): Promise<Array<{ id: string; name: string; is_private: boolean }>> {
+  const data = await api<{
+    channels: Array<{ id: string; name: string; is_private: boolean }>;
+  }>(`/api/connectors/${connectionId}/channels`);
+  return data.channels;
+}
+
 export async function listJobs(connectionId: string): Promise<JobRow[]> {
   return api(`/api/connectors/${connectionId}/jobs`);
+}
+
+export async function getComposio(): Promise<ComposioStatus> {
+  return api("/api/composio");
+}
+
+export async function setComposioKey(
+  apiKey: string | null,
+): Promise<Pick<ComposioStatus, "configured" | "key_source" | "masked_key">> {
+  return api("/api/composio/key", {
+    method: "PUT",
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
+export async function connectComposioToolkit(input: {
+  toolkit: string;
+  returnTo: "connectors" | "onboarding";
+  lookbackDays?: number;
+}): Promise<{ redirect_url: string }> {
+  return api("/api/composio/connect", {
+    method: "POST",
+    body: JSON.stringify({
+      toolkit: input.toolkit,
+      return_to: input.returnTo,
+      origin: window.location.origin,
+      lookback_days: input.lookbackDays ?? 30,
+    }),
+  });
 }
 
 export async function listConversations(): Promise<Conversation[]> {

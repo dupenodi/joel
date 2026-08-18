@@ -34,7 +34,8 @@ Each risky step carries a guardrail table — **the ❌ column is a mistake an i
 | Can the agent act | **Read-only.** It looks things up live; it never writes to your tools. |
 | Live-fetched data | **Becomes memory** — but only through the same filter every other document passes. Nothing skips distillation and the noise filter. |
 | Upstream deletes | **Ignored.** Memory is append-only. The one removal path is the owner explicitly forgetting a document. |
-| Connectors that ship | **Slack · GitHub · Gmail.** Everything else is a "coming soon" card behind the same interface. |
+| Connectors that ship | **Slack · GitHub · Gmail · Linear · Jira · Notion · Confluence · Google Drive · HubSpot · Fireflies.** Connect through Composio only. Custom OAuth is cut. |
+| What “shipped” means today | Connect + lookback ingest into canonical JSONL + SQLite `docs`, kept current by the background scheduler. Not CP-C green: no poll/backfill cursors, no conformance suite, no live lookup, chat is still a stub. |
 
 Consequences worth stating out loud, because they are load-bearing everywhere below: no login means **no per-user visibility filtering** anywhere in retrieval; append-only means **`validity='superseded'` is how things stop being true**, never deletion; read-only means the agent needs no confirmation UI and no audit trail of writes.
 
@@ -91,9 +92,10 @@ Onboarding shows the live checklist for the **first connector only** (`fetched �
 ## 2. Architecture
 
 ```
-   Connectors: Slack · GitHub · Gmail        (composio-brokered token, or your own OAuth app)
-        ▲ scheduler tick (§11) ──── cursors · backoff · deep-backfill · token refresh
-        │  raw docs
+   Connectors: Slack · GitHub · Gmail · Linear · Jira · Notion · Confluence · Drive · HubSpot · Fireflies
+        (Composio hosted OAuth + tools.proxy — joel never holds provider tokens)
+        ▲ scheduler tick (§11) ──── NOT BUILT. Ingest is on-demand Sync now / first connect.
+        │  raw docs via fetch_*_docs(request=Composio proxy)
         ▼
    ┌──────────────────────────────────────────┐
    │ Change detection: content_hash — skip    │  §6.1   ← the thing that makes
@@ -243,14 +245,15 @@ joel/
 │   └── joel/
 │       ├── config.py hydra.py store.py models.py
 │       ├── migrations/ 001_init.sql 002_*.sql …   # §14.3
-│       ├── adapters/   base.py slack.py github.py gmail.py code_chunk.py
-│       │               # later: jira linear confluence gdrive hubspot fireflies
-│       ├── distill/    bursts.py artifact.py df_index.py
-│       ├── ontology/   extract.py resolve.py reconcile.py
-│       ├── retrieve/   planner.py lanes.py fuse.py rerank.py synthesize.py
-│       ├── connectors/ base.py composio_conn.py oauth.py tokens.py
-│       ├── sync/       scheduler.py queue.py jobs.py backfill.py     # §11
-│       ├── agent/      working_memory.py live_lookup.py              # §13
+│       ├── adapters/   base.py  manifests.py  code_chunk.py
+│       │               # one adapt() + one SourceManifest per source. No per-provider adapter modules.
+│       ├── distill/    bursts.py artifact.py df_index.py     # stubs
+│       ├── ontology/   extract.py resolve.py reconcile.py    # stubs
+│       ├── retrieve/   planner.py lanes.py fuse.py rerank.py synthesize.py  # stubs
+│       ├── connectors/ gate.py composio_conn.py oauth.py http.py
+│       │               slack.py github.py gmail.py catalog.py
+│       ├── syncer.py   # background ingest scheduler (§11 interval ticks)
+│       ├── agent/      # not created — live lookup is §13.2, chat still stubs it
 │       ├── routes.py health.py
 │       └── prompts/    *.md (7 — §18)
 ├── web/                      # 5 app pages + the landing page
@@ -456,11 +459,32 @@ class ThreadArtifact(BaseModel):
 def period_of(ts): return f"{ts.year}Q{(ts.month-1)//3+1}" if ts else "unknown"
 ```
 
-**doc_id rules:** `{source_type}__{slug(external_id)}`, slug `[a-z0-9_.-]` · artifacts `art__{source_type}__{slug(thread_id)}` · GitHub prefixes by item type (`github__issue_123` vs `github__pr_123` — numbers collide) · code `github__code_{slug(path)}_c{i}` · **the id is never derived from content** — `content_hash` is a separate column precisely so that an edited message keeps its identity instead of orphaning every edge pointing at it.
+**doc_id rules:** `{source_type}__{slug(external_id)}`, slug `[a-z0-9_.-]` · artifacts `art__{source_type}__{slug(thread_id)}` · GitHub **must include the repo**: `github__issue_{slug(owner/repo)}_N` / `github__pr_{slug(owner/repo)}_N` (issue vs PR prefixes are not enough — two repos both have a `#1`) · comments use the provider’s globally unique id · code `github__code_{slug(path)}_c{i}` · **the id is never derived from content** — `content_hash` is a separate column precisely so that an edited message keeps its identity instead of orphaning every edge pointing at it.
 
 ---
 
 ## 6. Phase 3 — Source adapters
+
+**Status 2026-08-18 — adapter core is done; fetchers exist; the Connector ABC is not the shipped seam.**
+
+| Layer | Where | State |
+|---|---|---|
+| `adapt()` / `triage()` / `group_threads()` | `adapters/base.py` | done |
+| Manifests + `pre` hooks | `adapters/manifests.py` | done for all 10 sources |
+| Fetch | `connectors/{slack,github,gmail}.py` + `catalog.py` | lookback window via Composio `tools.proxy` |
+| Allowlist | `connectors/gate.py` ↔ `web/lib/integrations.ts` | done; keep these two in lockstep |
+| Code chunks | `adapters/code_chunk.py` | class then function split; oversized functions stay whole |
+| `poll` / `backfill` / cursors | — | **not built**. Every sync re-fetches the lookback window. Scheduler ticks due connectors. |
+| `scripts/conformance.py` | — | **not built**. `scripts/check_3_adapters.py` covers synthetic manifests + fetch fakes. |
+| Distill / retrieve / chat | — | stubs. Do not wire chat until this section is still true and CP 3 stays green. |
+
+Seams that actually exist:
+
+1. **`RequestFn`** (`connectors/http.py`) — `(method, endpoint, params, body?) → (data, headers)`. Production injects Composio proxy. Tests inject a fake.
+2. **`fetch_*_docs(...)` → `list[CanonicalDoc]`** — fetchers enrich raw payloads, then call `adapt_many(manifest, raws)`.
+3. **`SourceManifest` + `adapt()`** — the only normalization path.
+
+Do not add `adapters/slack.py`-style modules. Provider-specific code is a `pre` hook in `manifests.py` or enrichment inside the fetcher.
 
 One adapter = `raw dict → CanonicalDoc | list[CanonicalDoc]`; thread-emitting adapters also return `dict[thread_id, list[CanonicalDoc]]` for distillation. A thread-like container = anything with `thread_id` and ≥3 items: Slack thread, email thread, ticket+comments, PR+reviews, meeting.
 
@@ -541,12 +565,12 @@ def triage(doc: CanonicalDoc, known: dict[str, str]) -> str:
       return "\n".join(l for l in body[:cut].splitlines()
                        if not l.lstrip().startswith(">")).strip()
   ```
-*The six below ship in waves 3–5 (§16.2). Their specs are researched and correct — treat each as the manifest content for its archetype, not as a reason to write a new adapter.*
+*The six below have fetchers in `connectors/catalog.py`. Specs are still the target shape — 250-item cap, no poll/backfill cursors. They are **not** CP-C green.*
 
 - **Linear / Jira:** ticket + each comment as separate docs; comments carry `parent_id = ticket key`, `thread_id = ticket key`. Jira `external_id` = the **issue key** (`AUTH-123`) — questions cite keys, never the numeric internal id. `status/priority/assignee` live in `extra` (they churn); only distiller-set `resolved` is a hot property. Container = project/team.
-- **Confluence:** HTML → markdown with a real parser (`markdownify`/bs4), preserve headings + code blocks. Keep page hierarchy via `parent_id`. Infer `doc_type` (runbook|spec|policy|notes) into `extra` — feeds conflict precedence (§9.4). Split >3K-token pages on H2 boundaries into `_s{i}` parts with `LINKED_TO` between.
-- **Google Drive:** corpus ships extracted text (expected) → normal doc. If binary, extract locally (pypdf/mammoth) — nothing manages parsing for you.
-- **GitHub:** issues/PRs as docs (`github__issue_N` / `github__pr_N`), review comments as comment docs (`parent_id` = PR), PR+reviews = a thread grouping. **Code files: language-aware chunks, never split a function body** — an oversized function becomes one oversized chunk, never a bisected one:
+- **Confluence:** HTML → markdown with a real parser (`markdownify`/bs4), preserve headings + code blocks. Keep page hierarchy via `parent_id`. Infer `doc_type` (runbook|spec|policy|notes) into `extra` — feeds conflict precedence (§9.4). Split >3K-token pages on H2 boundaries into `_s{i}` parts with `linked_to` between.
+- **Google Drive:** corpus ships extracted text (expected) → normal doc. PDFs extracted locally with pypdf. Binary Office files still skipped.
+- **GitHub:** issues/PRs as docs (`github__issue_{slug(repo)}_N` / `github__pr_{slug(repo)}_N` — repo is part of the id), review/issue comments as comment docs (`parent_id` = qualified thread key). Empty PR/issue bodies fall back to the title (otherwise they vanish). **Code files:** default-branch blobs, language-aware chunks, never split a function body — an oversized function becomes one oversized chunk, never a bisected one. Live “is PR 118 merged?” is §13.2, not ingest:
   ```python
   BOUNDARIES = [re.compile(r'^(class|struct|interface|impl)\s+\w+', re.M),
                 re.compile(r'^\s{0,4}(def |fn |func |function |[A-Za-z_:<>~]+\s+\w+\s*\()', re.M)]
@@ -1222,50 +1246,36 @@ SQLite tables: `orgs` (single row: domain, name, logo_url), `connections` (§11.
 
 Every page is a thin view over queries this spec already builds — the product layer is presentation, connectors and scheduling, not new intelligence.
 
-### 12.4 Connectors — two auth modes, one interface
+### 12.4 Connectors — Composio proxy, one fetch interface
+
+The original `Connector` ABC (`poll` / `backfill` / `refresh` / `auth_status`) is **not implemented**. Do not introduce it until cursors exist. The shipped contract is smaller:
 
 ```python
-class Connector(ABC):
-    provider: str      # slack | github | gmail | jira | …
-    mode: str          # composio | oauth
-    manifest: SourceManifest          # §6.0 — declares the archetype and field mapping
-    def auth_status(self) -> str: ...                          # ok | needs_reauth
-    def refresh(self) -> None: ...                             # §11.4
-    def poll(self, cursor) -> tuple[list[dict], str]: ...      # forward: new + edited since cursor
-    def backfill(self, cursor) -> tuple[list[dict], str|None]: ...  # backward: one page, None = done
-    # Connectors FETCH and paginate. Adapters normalize. Nothing else belongs here —
-    # every connector that grows a fifth method is a leak in the abstraction.
+RequestFn = Callable[..., tuple[Any, dict[str, str]]]
+# fetch_*_docs(..., request: RequestFn) -> list[CanonicalDoc]
 ```
 
-**The conformance suite is the contract.** `scripts/conformance.py --provider X` runs the same battery against every connector (checklist CP-C at the end of this document). A connector is not "done" because it returned documents once; it is done when it passes conformance. This is what keeps connector #12 as cheap as connector #4 instead of accumulating twelve subtly different half-integrations.
+`app._provider_request` wraps `composio.tools.proxy`. Fetchers never see an access token. `oauth.py` only Fernet-encrypts `{composio_account_id}` at rest.
 
-| Mode | Who | Setup |
+**Composio is the auth broker AND the fetch transport.** The earlier plan (“retrieve the token, hit provider APIs directly”) is wrong against Composio: `connected_accounts.get()` masks tokens and Slack returns `invalid_auth`. Proxy is the path. Rate-limit / `Retry-After` handling is weaker than a direct client; live with it until proven otherwise. Slack still honours `Retry-After` on its leftover direct-token branch (tests); production always uses `caller=`.
+
+**Custom OAuth is cut.** One connect path: paste Composio API key → hosted OAuth per toolkit → callback stores the connected account id.
+
+**Incremental fetch today** — lookback window, full re-fetch, `content_hash` triage. Not provider cursors:
+
+| Provider | What a sync actually does | Catches edits? |
 |---|---|---|
-| **composio** | anyone who wants to connect a tool in two minutes | paste a free Composio API key → hosted OAuth per tool |
-| **oauth** | anyone who won't route through a third party | own OAuth app: paste client id + secret |
-
-**Composio as auth broker, not as a fetch layer.** Composio's actions are directly executable via SDK without any agent, but for bulk ingestion the cleaner pattern is: user completes hosted OAuth → joel retrieves the connected account's **access token** → ingestion hits the **provider APIs directly** (Slack `conversations.history`, Gmail `messages.list` + `history.list`, GitHub REST + `since=`) with full pagination, real cursors, and rate-limit headers joel can actually read. Fallback if token retrieval is unavailable: loop Composio actions and handle pagination yourself — workable, but you lose `Retry-After`, which matters a great deal when you're syncing forever rather than once.
-
-**Verify token retrieval on day one, not on the day you wire connectors.** It decides which branch every connector is written against.
-
-**Incremental fetch per provider** — the part that makes polling cheap:
-
-| Provider | Forward cursor | Catches edits? |
-|---|---|---|
-| Slack | per-channel `oldest` ts + `conversations.history` cursor | No — edits don't move `ts`. Re-fetch the last N days of active threads each run and let `content_hash` decide. |
-| Gmail | `historyId` via `users.history.list` | Yes — history includes label/message changes |
-| GitHub | `since=` on issues/PRs, ETag on repo endpoints | Yes — `updated_at` moves on edit |
-
-Slack is the one that needs the re-fetch window, and it's cheap precisely because §6.1 discards unchanged messages before any LLM sees them.
-
-**Custom OAuth path:** generic authorization-code flow — per-provider `{auth_url, token_url, scopes}` → `GET /oauth/{provider}/start` with `redirect_uri=http://localhost:8000/oauth/{provider}/callback` → token exchange → SQLite, **Fernet-encrypted with `JOEL_SECRET`** (generated on first boot) → refresh per §11.4. Ship it fully for all three. README states it plainly: self-hosted, single-user, tokens at rest on your disk encrypted with a key on the same disk — honest local-first security, not a claim of more.
+| Slack | `conversations.history` + replies for picked channels, `oldest=` lookback | Yes, via re-fetch window |
+| Gmail | `messages.list` `after:YYYY/MM/DD` then `messages.get` | Yes for new mail; not Gmail `historyId` |
+| GitHub | `/user/repos` (skip fork/archived, cap 80) then issues + comments + `/pulls/{n}/reviews` `since=`, plus default-branch code chunks (8 repos / 30 files) | Yes for those endpoints |
+| Linear / Jira / Notion / Confluence / Drive / HubSpot / Fireflies | lookback + **hard cap 250** (HubSpot 100) | Yes if `updated` moved |
 
 | ✅ DO | ❌ DON'T |
 |---|---|
 | Live progress on the card (`backfilling 340 docs → distilling 12 threads → linking → ready`) | A silent 15-minute first sync — people assume it's broken and kill it |
 | One shared LLM queue with a concurrency cap across all connectors | Let two backfills fan 200 parallel distill calls into your key |
 | Surface the last error verbatim on the card, with Retry | Bury sync failures in logs |
-| Treat "connector complete" as: pagination + rate limits + cursor resume + token refresh + incremental re-sync | Ship a happy-path fetch and call the connector done |
+| Treat "connector complete" as: pagination + rate limits + cursor resume + token refresh + incremental re-sync | Ship a happy-path fetch and call the connector CP-C done — **today's fetchers are lookback ingest, not complete** |
 
 ### 12.5 Live lookups
 
@@ -1438,24 +1448,35 @@ abstain floor on the rerank scale (§10.5) · FTS5 delete-before-insert (§8.2) 
 
 ### 16.2 Connector track — waves
 
-| Phase | Wave | Connectors | Archetypes | Why this wave |
+| Phase | Wave | Connectors | Fetchers | Conformance |
 |---|---|---|---|---|
-| 12 | Harness | *(Slack hardened)* | conversation | Extract the pattern from Slack into manifest + conformance suite. Nothing after this is bespoke. |
-| 13 | 1 | GitHub, Gmail | tracker, code, conversation | Three archetypes exercised. Proves the harness against genuinely different shapes. |
-| 14 | 2 | Jira, Linear, Notion | tracker, document | Where decisions and specs live. Jira/Linear are the same archetype — the second should take an afternoon. |
-| 15 | 3 | Confluence, Google Drive, Fireflies | document, transcript | Formal docs (conflict precedence, §9.3) and meetings (where the "why" is spoken, never written). |
-| 16 | 4 | HubSpot, Zendesk, Intercom | record, tracker, conversation | Customer-facing memory: commitments made to customers. |
-| 17 | 5 | Discord, Teams, Outlook, GitLab, Asana, ClickUp, Dropbox, Box, Zoom, Salesforce | all existing | The long tail. Each is a manifest against an archetype that already works. Ship them as they pass conformance, in any order, indefinitely. |
+| 12 | Harness | Slack | yes (channels + threads) | **no** — no `conformance.py`, no cursors |
+| 13 | 1 | GitHub, Gmail | yes. GitHub = issues/PRs/comments only (**no code chunks, no review bodies**) | no |
+| 14 | 2 | Jira, Linear, Notion | yes, lookback + 250 cap | no |
+| 15 | 3 | Confluence, Google Drive, Fireflies | yes. Drive = Google Docs + text + PDF extract. Confluence = H2 split on long pages | no |
+| 16 | 4 | HubSpot | deals only (Zendesk/Intercom not started) | no |
+| 17 | 5 | Discord, Teams, Outlook, GitLab, … | not started | — |
 
-Waves are cumulative and independent: a wave that isn't done doesn't block anything except itself. **Ship each connector the day it goes green** rather than batching a wave.
+Waves 1–4 **fetch**. They are not shipped in the CP-C sense. Do not add wave 5 until Slack/GitHub pass CP-C or you are explicitly expanding the allowlist.
+
+**GitHub ingest now includes** language-aware code chunks and `GET /pulls/{n}/reviews` bodies. **Not ingest (live §13.2):** current PR/issue state — whitelist those reads when the agent is built; do not ingest merge-state for that.
+
+**Next after adapters, not chat:** keep this section honest. Chat stays unwired until retrieval exists. The adapter miss list above is the remaining connector work.
+
+**Deferred adapter follow-ups from the first real-data pass (come back later):**
+- Re-run a full second-pass sync review across connected adapters and verify `content_hash` triage is honestly producing `unchanged` on real data, not just fixtures.
+- Add a small conformance / smoke layer for Composio proxy endpoint shapes so path mismatches like Google Drive's double `/drive/v3` prefix fail fast.
+- Keep Google auth on the plain documented Composio session flow; do not re-introduce custom Gmail / Drive scope shaping on managed auth without a dedicated repro, because that was the path that triggered the blocked-app screen.
+- Revisit Google Drive coverage: consider exporting Sheets/Slides and making file-type / size limits configurable once CP 3 is stable on real data.
+- Do a second real-data quality pass on Gmail / Slack / GitHub bodies and thread grouping before moving on to distillation.
 
 ### 16.3 Adding connector N — the recipe
 
 1. Pick the archetype (§6.0). If none fits, stop and think hard before adding a seventh.
-2. Write the manifest — field mapping, thread rule, container, url builder, `pre` hooks.
-3. Auth entry: scopes, `auth_url`/`token_url`, or the Composio slug.
-4. Two fetch functions: `poll(cursor)` forward, `backfill(cursor)` backward. Note in the manifest whether the API surfaces edits (`updated_at`/history) or needs a re-fetch window like Slack.
-5. Run `scripts/conformance.py --provider X` until CP-C is fully green.
+2. Write the manifest in `adapters/manifests.py` — field mapping, thread rule, container, url builder, `pre` hooks. No new `adapters/{provider}.py`.
+3. Allowlist: `connectors/gate.py` **and** `web/lib/integrations.ts` (same id/toolkit/ingest).
+4. One fetch function `fetch_{provider}_docs(*, since|after, request: RequestFn)`. Note whether the API surfaces edits or needs a Slack-style re-fetch window.
+5. Run `scripts/check_3_adapters.py`. When `scripts/conformance.py --provider X` exists, that is the ship bar (CP-C).
 6. Icon in `web/icons/`, card copy, default interval.
 7. Ship it. Then the next one.
 
@@ -1659,25 +1680,29 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 ### CP 3 — Adapters + change detection (§6)
 
 **3.1 Archetypes parse**
-- [ ] 20 real docs through each implemented archetype adapter, zero exceptions
-- [ ] every output doc has a non-empty body, a valid `granularity`, and a non-empty `content_hash`
-- [ ] bodies under 20 chars are skipped
+- [x] synthetic docs through each implemented manifest, zero exceptions (`scripts/check_3_adapters.py`)
+- [ ] 20 **real** docs through each implemented archetype adapter, zero exceptions
+- [x] every output doc has a non-empty body, a valid `granularity`, and a non-empty `content_hash`
+- [x] bodies under 20 chars are skipped (GitHub: title used as body so empty PRs still keep)
 
 **3.2 Identity**
-- [ ] zero `doc_id` collisions across every connected source
-- [ ] GitHub issues and PRs with the same number produce different ids
+- [x] zero `doc_id` collisions in the synthetic suite, including two GitHub repos both numbered `#1`
+- [x] GitHub issues and PRs with the same number produce different ids
+- [x] GitHub ids include `owner/repo` (`github__pr_acme_hydra_42`, not `github__pr_42`)
 
 **3.3 Threads group**
-- [ ] thread grouping is non-trivial for every conversation/tracker source (Slack showing ~0 threads means the `thread_id` mapping is broken — fix before Phase 4)
-- [ ] 👁 raw handles are preserved exactly (`@soham`, not `soham`)
+- [x] Slack fixture grouping is non-trivial (`group_threads`)
+- [ ] 👁 raw handles are preserved exactly on **real** Slack (`@soham`, not `soham`)
 
 **3.4 Change detection**
-- [ ] parse the same 20 docs twice: second pass reports 20 unchanged
-- [ ] second pass issues **zero** LLM calls and zero embeddings
-- [ ] the hash map loads in one query, not one query per doc
+- [x] parse the same fixture twice: second pass reports unchanged
+- [x] hash map loads in one query, not one query per doc (`_persist_canonical_docs`)
+- [ ] second pass issues **zero** LLM calls and zero embeddings — N/A until distill exists
 
 **3.5 Special cases**
+- [x] synthetic code file chunked, no function body split across chunks
 - [ ] 👁 one real code file chunked, no function body split across chunks
+- [x] synthetic email: quoted chain stripped, signature kept
 - [ ] 👁 one real email: quoted chain stripped, signature kept
 
 ---
@@ -1938,11 +1963,12 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 
 ### CP 12 — Connector harness (§12.4)
 
-- [ ] the `Connector` contract is exactly the five members listed, no provider-specific extras
-- [ ] `SourceManifest` drives every field mapping; provider-specific code is limited to `pre` hooks
+- [x] `SourceManifest` drives field mapping; provider-specific code is `pre` hooks or fetcher enrichment
+- [x] Composio proxy is the production `RequestFn` (no raw provider tokens)
+- [ ] the `Connector` ABC / `poll`+`backfill` is **not** the shipped contract — lookback re-fetch instead
 - [ ] `scripts/conformance.py --provider X` exists and runs
 - [ ] the first three connectors pass it unmodified
-- [ ] 👁 the newest connector was added by writing a manifest, not an adapter — if it wasn't, the abstraction is wrong and fixing it now is cheaper than at connector #10
+- [x] 👁 later connectors were added as a manifest + fetch function, not a new adapter module
 
 ---
 

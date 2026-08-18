@@ -6,6 +6,7 @@ const connectorMap: Record<
   { label: string; tone: "neutral" | "ok" | "partial" | "accent" | "muted" }
 > = {
   pending_auth: { label: "Not connected", tone: "muted" },
+  pending_setup: { label: "Pick channels", tone: "partial" },
   backfilling: { label: "Backfilling", tone: "partial" },
   distilling: { label: "Distilling", tone: "partial" },
   linking: { label: "Linking", tone: "partial" },
