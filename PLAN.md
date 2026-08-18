@@ -253,6 +253,7 @@ joel/
 │       ├── retrieve/   planner.py lanes.py fuse.py rerank.py synthesize.py  # stubs
 │       ├── connectors/ gate.py composio_conn.py oauth.py http.py
 │       │               slack.py github.py gmail.py catalog.py
+│       │               jira.py confluence.py fireflies.py   # tool-execute, not proxy — §6 deviation
 │       ├── syncer.py   # background ingest scheduler (§11 interval ticks)
 │       ├── agent/      # not created — live lookup is §13.2, chat still stubs it
 │       ├── routes.py health.py
@@ -343,7 +344,7 @@ No schema API exists — **the model is conventions enforced in `store.py`.**
 | `:REPLY_TO` / `:COMMENT_ON` / `:LINKED_TO` | Doc → Doc | — | structure |
 | `:DISTILLED_FROM` | Doc(artifact) → Doc(burst) | — | provenance |
 | `:REVERSED` | Doc(winner) → Doc(loser) | `ts` | decision-reversal ledger |
-| `:DECIDED :OWNS :COMMITTED_TO :OBJECTED_TO :RESOLVED :ASSIGNED_TO :DEPENDS_ON :BLOCKS :APPROVED :ESCALATED :AFFECTS` | Entity → Entity | `doc_id, ctx (≤200), ts` | the ontology — **the Best-Use-of-HydraDB exhibit** |
+| `:DECIDED :OWNS :COMMITTED_TO :OBJECTED_TO :RESOLVED :ASSIGNED_TO :DEPENDS_ON :BLOCKS :APPROVED :ESCALATED :AFFECTS :REPORTED` | Entity → Entity | `doc_id, ctx (≤200), ts` | the ontology — **the Best-Use-of-HydraDB exhibit** |
 
 ### 4.3 Write/read patterns
 
@@ -473,6 +474,7 @@ def period_of(ts): return f"{ts.year}Q{(ts.month-1)//3+1}" if ts else "unknown"
 | `adapt()` / `triage()` / `group_threads()` | `adapters/base.py` | done |
 | Manifests + `pre` hooks | `adapters/manifests.py` | done for all 10 sources |
 | Fetch | `connectors/{slack,github,gmail}.py` + `catalog.py` | lookback window via Composio `tools.proxy` |
+| Fetch (deviation) | `connectors/{jira,confluence,fireflies}.py` | proxy 401s/403s/doubles-the-path on these three — lookback window via Composio `tools.execute` instead (named tools, see §16.2) |
 | Allowlist | `connectors/gate.py` ↔ `web/lib/integrations.ts` | done; keep these two in lockstep |
 | Code chunks | `adapters/code_chunk.py` | class then function split; oversized functions stay whole |
 | `poll` / `backfill` / cursors | — | **not built**. Every sync re-fetches the lookback window. Scheduler ticks due connectors. |
@@ -481,7 +483,7 @@ def period_of(ts): return f"{ts.year}Q{(ts.month-1)//3+1}" if ts else "unknown"
 
 Seams that actually exist:
 
-1. **`RequestFn`** (`connectors/http.py`) — `(method, endpoint, params, body?) → (data, headers)`. Production injects Composio proxy. Tests inject a fake.
+1. **`RequestFn`** (`connectors/http.py`) — `(method, endpoint, params, body?) → (data, headers)`. Production injects Composio proxy. Tests inject a fake. **Not universal:** Jira, Confluence, and Fireflies take `(composio, account_id)` and call `tool_request()` (also in `http.py`) instead — the generic proxy fails for each of them in a different way. See the deviation note in §16.2 before assuming every fetcher takes a `RequestFn`.
 2. **`fetch_*_docs(...)` → `list[CanonicalDoc]`** — fetchers enrich raw payloads, then call `adapt_many(manifest, raws)`.
 3. **`SourceManifest` + `adapt()`** — the only normalization path.
 
@@ -566,7 +568,7 @@ def triage(doc: CanonicalDoc, known: dict[str, str]) -> str:
       return "\n".join(l for l in body[:cut].splitlines()
                        if not l.lstrip().startswith(">")).strip()
   ```
-*The six below have fetchers in `connectors/catalog.py`. Specs are still the target shape — 250-item cap, no poll/backfill cursors. They are **not** CP-C green.*
+*Of the six below, Linear, Google Drive, and HubSpot have fetchers in `connectors/catalog.py`. Jira, Confluence, and Fireflies have their own `connectors/{provider}.py` and go through `tool_request()`, not the proxy — see §16.2. Specs below are still the target shape — 250-item cap, no poll/backfill cursors. They are **not** CP-C green.*
 
 - **Linear / Jira:** ticket + each comment as separate docs; comments carry `parent_id = ticket key`, `thread_id = ticket key`. Jira `external_id` = the **issue key** (`AUTH-123`) — questions cite keys, never the numeric internal id. `status/priority/assignee` live in `extra` (they churn); only distiller-set `resolved` is a hot property. Container = project/team.
 - **Confluence:** HTML → markdown with a real parser (`markdownify`/bs4), preserve headings + code blocks. Keep page hierarchy via `parent_id`. Infer `doc_type` (runbook|spec|policy|notes) into `extra` — feeds conflict precedence (§9.4). Split >3K-token pages on H2 boundaries into `_s{i}` parts with `linked_to` between.
@@ -670,6 +672,8 @@ Source: {source_type}   Container: {container}   Items: {n}
 [1] ...
 ---
 ```
+
+**`artifact_class` note:** this 7-value list is an intentional subset of §4.1's 9-value `:Doc.artifact_class` enum (`decision|commitment|objection|incident|qa|status_update|reference|document|noise`) — `reference` and `document` are dropped here because a *thread* never produces them; those two only come out of `extract_ontology` (§9.1) running on singleton documents. §9.1's own `artifact_class` field must use the full 9-value enum, not a third variant — this was previously inconsistent (had `question` instead of `qa`, and was missing `document`) and is fixed there.
 
 ### 7.3 Noise filter
 
@@ -826,12 +830,12 @@ Return ONLY a JSON object. No prose, no markdown fences.
 ## Schema
 {
   "entities": [{"key":"<local key>","name":"<surface form AS WRITTEN>",
-    "type":"PERSON|TEAM|PROJECT|CUSTOMER|SERVICE|POLICY|METRIC|DECISION|COMMITMENT|OBJECTION|INCIDENT|DOCUMENT",
+    "type":"PERSON|TEAM|PROJECT|CUSTOMER|SERVICE|POLICY|METRIC|INCIDENT",
     "identifier":"<email/handle/ticket-key if present, else null>"}],
   "relations": [{"source":"<key>","target":"<key>","predicate":"<UPPER_SNAKE>",
     "context":"<one sentence, <=200 chars, grounded in the text>",
     "temporal_details":"<'since 2021'|'2026-05-20'|null>"}],
-  "artifact_class": "decision|commitment|objection|status_update|incident|question|reference|noise",
+  "artifact_class": "decision|commitment|objection|incident|qa|status_update|reference|document|noise",
   "supersedes": "<verbatim quote of the prior statement this overturns, or null>",
   "confidence": 0.0-1.0
 }
@@ -841,12 +845,18 @@ Return ONLY a JSON object. No prose, no markdown fences.
    the document does not state or clearly imply.
 2. SURFACE FORMS exactly as written ("@soham", "S. Ratnaparkhi", "Sam"). Do NOT
    normalize or merge — a later stage does that.
-3. PREDICATES — prefer: OWNS, DECIDED, COMMITTED_TO, OBJECTED_TO, DEPENDS_ON, BLOCKS,
-   ASSIGNED_TO, REPORTED, ESCALATED, APPROVED, REVERSED, RESOLVED, MENTIONS, AFFECTS.
-4. CONDITIONALS: "ship Friday if legal signs off" = COMMITMENT + DEPENDS_ON, not DECISION.
-5. SUPERSEDES only on explicit overturning; quote this document's reference to it.
-6. Ambiguity lowers confidence; do not guess.
-7. Limits: <=25 entities, <=40 relations.
+3. ENTITY TYPE is what the thing IS (a person, team, project…), never what
+   happened to it. A decision, commitment, or objection is never an entity —
+   it's this document's artifact_class, or a relation between two entities below.
+4. PREDICATES — prefer: OWNS, DECIDED, COMMITTED_TO, OBJECTED_TO, DEPENDS_ON, BLOCKS,
+   ASSIGNED_TO, REPORTED, ESCALATED, APPROVED, RESOLVED, AFFECTS (§4.2's Entity→Entity
+   edge set). Never emit MENTIONS (that's the automatic Doc→Entity edge, not something
+   to extract) or REVERSED (that's a Doc→Doc edge written by §9.3's supersession
+   logic, never asserted directly by extraction).
+5. CONDITIONALS: "ship Friday if legal signs off" = COMMITMENT + DEPENDS_ON, not DECISION.
+6. SUPERSEDES only on explicit overturning; quote this document's reference to it.
+7. Ambiguity lowers confidence; do not guess.
+8. Limits: <=25 entities, <=40 relations.
 
 ## Document
 Source: {source_type}  Container: {container}  Time: {timestamp}  Author: {author_raw}
@@ -1092,20 +1102,26 @@ This section is the difference between a demo and a tool. Everything above descr
 
 ### 11.1 Model
 
-```sql
--- connections (extends §12.2)
-interval_min INTEGER DEFAULT 15,   next_run_at TEXT,   last_run_at TEXT,
-cursor TEXT,                       -- provider pagination/delta token, forward direction
-backfill_cursor TEXT,              -- separate, walks BACKWARD through history
-backfill_done INTEGER DEFAULT 0,
-consecutive_failures INTEGER DEFAULT 0,
-paused INTEGER DEFAULT 0
+**The `jobs` table already exists** (built in Phase 3, verified against real syncs on 2026-08-18) with columns `id, connection_id, started_at, finished_at, status, new_count, changed_count, unchanged_count, duration_ms, error`. CP8 does **not** redefine it — it's a migration adding columns, not a fresh `CREATE TABLE` with different names for the same things:
 
-CREATE TABLE jobs(id TEXT PRIMARY KEY, connection_id TEXT, kind TEXT,  -- sync|backfill|reconcile
-  state TEXT,                                                          -- queued|running|ok|failed
-  started_at TEXT, finished_at TEXT,
-  docs_new INTEGER, docs_changed INTEGER, docs_unchanged INTEGER,
-  threads_distilled INTEGER, llm_calls INTEGER, error TEXT);
+```sql
+-- connections: new columns for the sync engine (extends §12.2's existing table)
+ALTER TABLE connections ADD COLUMN interval_min INTEGER DEFAULT 15;
+ALTER TABLE connections ADD COLUMN next_run_at TEXT;
+ALTER TABLE connections ADD COLUMN last_run_at TEXT;
+ALTER TABLE connections ADD COLUMN cursor TEXT;              -- provider pagination/delta token, forward direction
+ALTER TABLE connections ADD COLUMN backfill_cursor TEXT;     -- separate, walks BACKWARD through history
+ALTER TABLE connections ADD COLUMN backfill_done INTEGER DEFAULT 0;
+ALTER TABLE connections ADD COLUMN consecutive_failures INTEGER DEFAULT 0;
+ALTER TABLE connections ADD COLUMN paused INTEGER DEFAULT 0;
+
+-- jobs: new columns on the EXISTING table (id/connection_id/started_at/finished_at/
+-- status/new_count/changed_count/unchanged_count/duration_ms/error already there)
+ALTER TABLE jobs ADD COLUMN kind TEXT DEFAULT 'sync';         -- sync|backfill|reconcile
+ALTER TABLE jobs ADD COLUMN threads_distilled INTEGER DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN llm_calls INTEGER DEFAULT 0;
+-- status already uses running|ok|error, not queued|running|ok|failed — keep using
+-- the existing values, don't introduce a second vocabulary for the same column
 ```
 
 ### 11.2 The loop
@@ -1249,7 +1265,7 @@ Every page is a thin view over queries this spec already builds — the product 
 
 ### 12.4 Connectors — Composio proxy, one fetch interface
 
-The original `Connector` ABC (`poll` / `backfill` / `refresh` / `auth_status`) is **not implemented**. Do not introduce it until cursors exist. The shipped contract is smaller:
+The original `Connector` ABC (`poll` / `backfill` / `refresh` / `auth_status`) is **not implemented**. Do not introduce it until cursors exist. The shipped contract for 7 of the 10 connectors is:
 
 ```python
 RequestFn = Callable[..., tuple[Any, dict[str, str]]]
@@ -1258,7 +1274,9 @@ RequestFn = Callable[..., tuple[Any, dict[str, str]]]
 
 `app._provider_request` wraps `composio.tools.proxy`. Fetchers never see an access token. `oauth.py` only Fernet-encrypts `{composio_account_id}` at rest.
 
-**Composio is the auth broker AND the fetch transport.** The earlier plan (“retrieve the token, hit provider APIs directly”) is wrong against Composio: `connected_accounts.get()` masks tokens and Slack returns `invalid_auth`. Proxy is the path. Rate-limit / `Retry-After` handling is weaker than a direct client; live with it until proven otherwise. Slack still honours `Retry-After` on its leftover direct-token branch (tests); production always uses `caller=`.
+**Jira, Confluence, and Fireflies are the exception.** The generic proxy fails for each in a different way — Jira 401s, Confluence 403s ("not permitted to use Confluence"), Fireflies double-posts to `/graphql/graphql`. Their fetchers instead take `(composio, account_id)` and call `tool_request()` (`connectors/http.py`), which wraps `composio.tools.execute()` against named tools (`JIRA_SEARCH_ISSUES`, `CONFLUENCE_GET_PAGES`, `FIREFLIES_GET_TRANSCRIPTS`). Same auth broker, different transport for these three. See §16.2 for the full story.
+
+**Composio is the auth broker AND the fetch transport** for every connector — via `tools.proxy` for most, `tools.execute` for the three above. The earlier plan (“retrieve the token, hit provider APIs directly”) is wrong against Composio: `connected_accounts.get()` masks tokens and Slack returns `invalid_auth`. Rate-limit / `Retry-After` handling is weaker than a direct client; live with it until proven otherwise. Slack still honours `Retry-After` on its leftover direct-token branch (tests); production always uses `caller=`.
 
 **Custom OAuth is cut.** One connect path: paste Composio API key → hosted OAuth per toolkit → callback stores the connected account id.
 
@@ -1269,7 +1287,9 @@ RequestFn = Callable[..., tuple[Any, dict[str, str]]]
 | Slack | `conversations.history` + replies for picked channels, `oldest=` lookback | Yes, via re-fetch window |
 | Gmail | `messages.list` `after:YYYY/MM/DD` then `messages.get` | Yes for new mail; not Gmail `historyId` |
 | GitHub | `/user/repos` (skip fork/archived, cap 80) then issues + comments + `/pulls/{n}/reviews` `since=`, plus default-branch code chunks (8 repos / 30 files) | Yes for those endpoints |
-| Linear / Jira / Notion / Confluence / Drive / HubSpot / Fireflies | lookback + **hard cap 250** (HubSpot 100) | Yes if `updated` moved |
+| Linear / Notion / Drive (proxy) | lookback + **hard cap 250** | Yes if `updated` moved |
+| Jira / Confluence / Fireflies (tool-execute, not proxy) | lookback + **hard cap 250** | Yes if `updated` moved |
+| HubSpot (proxy) | lookback + **hard cap 100** | Yes if `updated` moved |
 
 | ✅ DO | ❌ DON'T |
 |---|---|
@@ -1422,6 +1442,8 @@ No dates. Order matters, days don't. Two tracks: **Core** runs strictly in seque
 
 Landing page is **done** (§20) — content tweaks only, not a workstream. Every phase's exit criteria are the checklists at the end of this document (§22); do not start phase N+1 with a red box in phase N.
 
+**Known ordering deviation:** that rule has already been broken once, on purpose. Phase 3 (adapters, §6) is done and verified on real data for all 10 connectors, while Phase 0 (HydraDB environment) and Phase 1 (graph data model) are still fully unchecked in CP 0 / CP 1 — no HydraDB round-trip has been proven yet. `api/joel/hydra.py` and `store.py` exist but are unexercised. This was a reasonable call: real ingest data was worth more early than standing up the graph store first, and CP4 (distillation) doesn't touch the graph — it produces `ThreadArtifact`/`Burst` rows and tracks re-distillation state in SQLite's `thread_state` table (§7.5), so it can proceed without it. **The graph becomes load-bearing at CP5 (Store, §8)**, where artifact/burst rows actually get written as `:Doc` nodes with `DISTILLED_FROM`/`LINKED_TO` edges — CP0 and CP1 need to be green before that phase starts, not before CP4.
+
 ### 16.0 Phase −1 — Fix what's already specified and wrong
 
 Small, and everything downstream inherits them, so they come before new work:
@@ -1479,14 +1501,14 @@ Waves 1–4 **fetch** and are now verified against real data end to end. They ar
 - Add a small conformance / smoke layer for Composio proxy endpoint shapes so path mismatches like Google Drive's fail fast instead of at sync time.
 - Keep Google auth on the plain documented Composio session flow; do not re-introduce custom Gmail / Drive scope shaping on managed auth without a dedicated repro, because that was the path that triggered the blocked-app screen.
 - Revisit Google Drive coverage: consider exporting Sheets/Slides and making file-type / size limits configurable once CP 3 is stable on real data.
-- Do a second real-data quality pass (👁 eyeball, not automatable) on Gmail / Slack / GitHub bodies and thread grouping — CP 3.5/3.6 in §22 are still open.
+- Do a second real-data quality pass (👁 eyeball, not automatable) on Gmail / Slack / GitHub bodies and thread grouping — CP 3's §22 items 3.3 (real Slack handles), 3.5 (real code file, real email) are still open.
 
 ### 16.3 Adding connector N — the recipe
 
 1. Pick the archetype (§6.0). If none fits, stop and think hard before adding a seventh.
 2. Write the manifest in `adapters/manifests.py` — field mapping, thread rule, container, url builder, `pre` hooks. No new `adapters/{provider}.py`.
 3. Allowlist: `connectors/gate.py` **and** `web/lib/integrations.ts` (same id/toolkit/ingest).
-4. One fetch function `fetch_{provider}_docs(*, since|after, request: RequestFn)`. Note whether the API surfaces edits or needs a Slack-style re-fetch window.
+4. One fetch function, normally `fetch_{provider}_docs(*, since|after, request: RequestFn)`. If the generic Composio proxy 401s/403s or mangles the endpoint path for this provider (it has for 3 of 10 so far — see §16.2), fall back to `fetch_{provider}_docs(*, since|after, composio, account_id)` calling `tool_request()` against named Composio tools instead. Note whether the API surfaces edits or needs a Slack-style re-fetch window.
 5. Run `scripts/check_3_adapters.py`. When `scripts/conformance.py --provider X` exists, that is the ship bar (CP-C).
 6. Icon in `web/icons/`, card copy, default interval.
 7. Ship it. Then the next one.
