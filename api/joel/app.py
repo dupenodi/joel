@@ -232,6 +232,13 @@ def init_db() -> None:
               stage TEXT PRIMARY KEY,
               calls INTEGER NOT NULL DEFAULT 0
             );
+            CREATE TABLE IF NOT EXISTS thread_state (
+              thread_id TEXT PRIMARY KEY,
+              source_type TEXT NOT NULL,
+              artifact_id TEXT NOT NULL,
+              kept_bursts_json TEXT NOT NULL DEFAULT '{}',
+              last_distilled_at TEXT NOT NULL
+            );
             """
         )
         row = conn.execute("SELECT version FROM schema_version").fetchone()

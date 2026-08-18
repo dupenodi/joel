@@ -248,7 +248,8 @@ joel/
 │       ├── migrations/ 001_init.sql 002_*.sql …   # §14.3
 │       ├── adapters/   base.py  manifests.py  code_chunk.py
 │       │               # one adapt() + one SourceManifest per source. No per-provider adapter modules.
-│       ├── distill/    bursts.py artifact.py df_index.py     # stubs
+│       ├── distill/    bursts.py artifact.py df_index.py state.py   # §7, done — not wired to the sync job yet
+│       ├── llm.py      # generic JSON-mode LLM caller + repair retry, shared by every prompted stage
 │       ├── ontology/   extract.py resolve.py reconcile.py    # stubs
 │       ├── retrieve/   planner.py lanes.py fuse.py rerank.py synthesize.py  # stubs
 │       ├── connectors/ gate.py composio_conn.py oauth.py http.py
@@ -1743,9 +1744,11 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 
 ### CP 4 — Distillation (§7)
 
+**Status 2026-08-18 — the module is built and unit-verified against synthetic fixtures; nothing has run against a real LLM or real threads yet.** `llm.py` (generic JSON-mode caller + repair retry), `distill/bursts.py`, `distill/df_index.py`, `distill/artifact.py` (`distill_thread` + `diff_kept_set`), `distill/state.py` (`thread_state` persistence), and `prompts/distill_thread.md` are all implemented per §7.1–§7.5. `scripts/check_4_distill.py` exercises all of it with a fake `LLMCallFn` — no API key, no network, deterministic. **Not done:** wiring into `_run_ingest` (still a phase stub in `app.py`, intentionally — see §16.0's phase-ordering note, the store layer this would write to isn't built), `failed_distill.jsonl`, and anything requiring a real model call or real threads (4.1's 5%-failure bar, all of 4.2, embeddings in 4.4).
+
 **4.1 Reliability**
-- [ ] 15 real threads, under 5% JSON failure after one repair retry
-- [ ] failures land in `failed_distill.jsonl` and leave any previous artifact intact
+- [ ] 15 real threads, under 5% JSON failure after one repair retry — *not run; repair-retry mechanism itself is verified synthetically (malformed-then-valid, and double-malformed raises) in `check_4_distill.py`*
+- [ ] failures land in `failed_distill.jsonl` and leave any previous artifact intact — *not built; no sync-job wiring yet*
 
 **4.2 Quality** 👁
 - [ ] all 15 eyeballed: questions are question-shaped, not the first message verbatim
@@ -1755,19 +1758,20 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 - [ ] class distribution is sane (>60% `qa` means loose definitions)
 
 **4.3 Noise filter**
-- [ ] a thanks-burst is dropped
-- [ ] a pasted-error burst is kept
-- [ ] a whole chit-chat thread classifies as `noise` and is not indexed
+- [x] a thanks-burst is dropped — *`check_noise_filter`: "sounds good, thanks! will try that" (short/common/unreacted) → dropped*
+- [x] a pasted-error burst is kept — *`check_distill_thread_happy_path`: the `CKPT_PREFETCH`/`ERR_MANIFEST_TIMEOUT` resolution burst is kept regardless of length via `role="resolution"`; a separate long+rare-vocabulary context burst is kept via the length+rarity path in `check_noise_filter`*
+- [x] a whole chit-chat thread classifies as `noise` and is not indexed — *`check_distill_thread_noise_and_low_confidence`: `artifact_class="noise"` → `distill_thread` returns `None`*
+- Verified with a fake LLM against hand-built fixtures, not real distilled threads — re-check once 4.2's real pass exists.
 
 **4.4 Burst context**
-- [ ] burst embeddings include the thread question as a prefix
+- [ ] burst embeddings include the thread question as a prefix — *not built; embedding happens in the Store phase (§8), which isn't wired yet*
 - [ ] the stored `body` is the bare text (prefix is embedding-only)
 
 **4.5 Re-distillation**
-- [ ] re-run the same 15 threads: zero LLM calls
-- [ ] append one message to one thread: exactly one distill call
-- [ ] a burst that stops being kept is removed from all three stores
-- [ ] `thread_state` lives in SQLite, not a JSON file
+- [ ] re-run the same 15 threads: zero LLM calls — *not run against real threads; the underlying diff (`diff_kept_set`) is verified synthetically for the identical-input case in `check_redistill_diff`*
+- [ ] append one message to one thread: exactly one distill call — *needs the dirty-thread-set wiring from §6.1/§7.5 into the sync job, not built yet*
+- [ ] a burst that stops being kept is removed from all three stores — *can't be true until the store exists (Phase 5); `diff_kept_set`'s `to_delete` bucket is verified synthetically*
+- [x] `thread_state` lives in SQLite, not a JSON file — *`thread_state` table added to `app.py`'s `init_db`, `distill/state.py` load/save round-tripped and upsert-tested in `check_thread_state_persistence`*
 
 ---
 
