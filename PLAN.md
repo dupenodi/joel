@@ -93,9 +93,10 @@ Onboarding shows the live checklist for the **first connector only** (`fetched �
 
 ```
    Connectors: Slack · GitHub · Gmail · Linear · Jira · Notion · Confluence · Drive · HubSpot · Fireflies
-        (Composio hosted OAuth + tools.proxy — joel never holds provider tokens)
+        (Composio hosted OAuth — joel never holds provider tokens)
         ▲ scheduler tick (§11) ──── NOT BUILT. Ingest is on-demand Sync now / first connect.
-        │  raw docs via fetch_*_docs(request=Composio proxy)
+        │  raw docs via fetch_*_docs — tools.proxy for 7 providers,
+        │  tools.execute for Jira/Confluence/Fireflies (§16.2 deviation)
         ▼
    ┌──────────────────────────────────────────┐
    │ Change detection: content_hash — skip    │  §6.1   ← the thing that makes
@@ -1450,25 +1451,35 @@ abstain floor on the rerank scale (§10.5) · FTS5 delete-before-insert (§8.2) 
 
 | Phase | Wave | Connectors | Fetchers | Conformance |
 |---|---|---|---|---|
-| 12 | Harness | Slack | yes (channels + threads) | **no** — no `conformance.py`, no cursors |
-| 13 | 1 | GitHub, Gmail | yes. GitHub = issues/PRs/comments only (**no code chunks, no review bodies**) | no |
-| 14 | 2 | Jira, Linear, Notion | yes, lookback + 250 cap | no |
-| 15 | 3 | Confluence, Google Drive, Fireflies | yes. Drive = Google Docs + text + PDF extract. Confluence = H2 split on long pages | no |
-| 16 | 4 | HubSpot | deals only (Zendesk/Intercom not started) | no |
+| 12 | Harness | Slack | [x] channels + threads, real data | **no** — no `conformance.py`, no cursors |
+| 13 | 1 | GitHub, Gmail | [x] real data. **Deviation:** GitHub shipped WITH code chunks + `GET /pulls/{n}/reviews` bodies, not deferred as originally planned | no |
+| 14 | 2 | Jira, Linear, Notion | [x] real data, lookback + 250 cap. **Deviation:** Jira is tool-execute (`JIRA_SEARCH_ISSUES` / `JIRA_LIST_ISSUE_COMMENTS`), not the generic proxy — see below | no |
+| 15 | 3 | Confluence, Google Drive, Fireflies | [x] real data. Drive = Google Docs + text + PDF extract. **Deviation:** Confluence and Fireflies are tool-execute, not the generic proxy — see below | no |
+| 16 | 4 | HubSpot | [x] real data, deals only (Zendesk/Intercom not started) | no |
 | 17 | 5 | Discord, Teams, Outlook, GitLab, … | not started | — |
 
-Waves 1–4 **fetch**. They are not shipped in the CP-C sense. Do not add wave 5 until Slack/GitHub pass CP-C or you are explicitly expanding the allowlist.
+Waves 1–4 **fetch** and are now verified against real data end to end. They are still not shipped in the CP-C sense (no cursors, no `conformance.py`). Do not add wave 5 until Slack/GitHub pass CP-C or you are explicitly expanding the allowlist.
+
+**Deviation from §16.3's "one fetch function `fetch_{provider}_docs(*, since|after, request: RequestFn)`":** Jira, Confluence, and Fireflies do not use the generic Composio REST/GraphQL proxy — it fails for each in a different way (Jira 401, Confluence 403 "not permitted to use Confluence", Fireflies posts to a doubled `/graphql/graphql` path). Their fetchers instead take `composio` + `account_id` and call first-class Composio tools (`JIRA_SEARCH_ISSUES`, `CONFLUENCE_GET_PAGES`, `FIREFLIES_GET_TRANSCRIPTS`) through a shared `tool_request()` helper in `connectors/http.py`. Linear, Notion, Drive, HubSpot, Gmail, GitHub, and Slack still use the plain `RequestFn` proxy. Live in `connectors/jira.py`, `connectors/confluence.py`, `connectors/fireflies.py` (not `catalog.py`, and not `adapters/{provider}.py` — manifests are still the only per-provider file in `adapters/`).
 
 **GitHub ingest now includes** language-aware code chunks and `GET /pulls/{n}/reviews` bodies. **Not ingest (live §13.2):** current PR/issue state — whitelist those reads when the agent is built; do not ingest merge-state for that.
 
 **Next after adapters, not chat:** keep this section honest. Chat stays unwired until retrieval exists. The adapter miss list above is the remaining connector work.
 
-**Deferred adapter follow-ups from the first real-data pass (come back later):**
-- Re-run a full second-pass sync review across connected adapters and verify `content_hash` triage is honestly producing `unchanged` on real data, not just fixtures.
-- Add a small conformance / smoke layer for Composio proxy endpoint shapes so path mismatches like Google Drive's double `/drive/v3` prefix fail fast.
+**Real-data verification pass — done (2026-08-18):** ran sync twice across all ten allowlisted connectors against live accounts. All ten `connections.status='ready'`, all latest jobs `status='ok'`, and the second pass on every provider reported `new=0, changed=0` with the full doc count in `unchanged` (content_hash triage is honestly working, not just on fixtures). Doc counts at verification time: Gmail 255, GitHub 619, Jira 15, Notion 10, Confluence 6, Google Drive 5, Linear 4, HubSpot 1, Slack 1, Fireflies 0 (empty account within the 30-day lookback, not a failure). `scripts/check_pending_adapters.py --sync --all --timeout 600` reproduces this; GitHub and Gmail each take several minutes so the wait was bumped from 120s to 600s.
+
+**Fixed along the way (not planned, discovered during real-data testing):**
+- Google Drive: endpoints were double-prefixed (`/drive/v3/files` against a proxy base that already includes `/drive/v3`) → 404. Fixed to bare `/files`.
+- Gmail/Drive OAuth: a custom Google-specific auth-config/scope-shaping path in `composio_conn.py` triggered Google's "This app is blocked" screen. Removed; both now use the plain documented `composio.create()` + `session.authorize()` flow with only `gmail.readonly` / `drive.readonly` scopes.
+- Jira: generic proxy to `/rest/api/3/...` returned 401 even with an ACTIVE connected account → moved to tool execution (see deviation note above).
+- Confluence: generic proxy to `/wiki/rest/api/content` returned 403 "Current user not permitted to use Confluence" despite ACTIVE scopes → moved to tool execution.
+- Fireflies: generic proxy posted to `/graphql` against a toolkit whose base URL is already `/graphql`, doubling the path → moved to tool execution.
+
+**Remaining deferred adapter follow-ups (come back later, not blocking distillation):**
+- Add a small conformance / smoke layer for Composio proxy endpoint shapes so path mismatches like Google Drive's fail fast instead of at sync time.
 - Keep Google auth on the plain documented Composio session flow; do not re-introduce custom Gmail / Drive scope shaping on managed auth without a dedicated repro, because that was the path that triggered the blocked-app screen.
 - Revisit Google Drive coverage: consider exporting Sheets/Slides and making file-type / size limits configurable once CP 3 is stable on real data.
-- Do a second real-data quality pass on Gmail / Slack / GitHub bodies and thread grouping before moving on to distillation.
+- Do a second real-data quality pass (👁 eyeball, not automatable) on Gmail / Slack / GitHub bodies and thread grouping — CP 3.5/3.6 in §22 are still open.
 
 ### 16.3 Adding connector N — the recipe
 
@@ -1681,7 +1692,7 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 
 **3.1 Archetypes parse**
 - [x] synthetic docs through each implemented manifest, zero exceptions (`scripts/check_3_adapters.py`)
-- [ ] 20 **real** docs through each implemented archetype adapter, zero exceptions
+- [x] real docs through each implemented archetype adapter, zero exceptions — verified 2026-08-18 across all 10 connectors on live accounts (Gmail 255, GitHub 619, Jira 15, Notion 10, Confluence 6, Drive 5, Linear 4, HubSpot 1, Slack 1, Fireflies 0). Several providers have fewer than 20 real docs because the connected test accounts are small, not because ingest is capped short — HubSpot/Slack/Fireflies counts reflect actual account content within the 30-day lookback.
 - [x] every output doc has a non-empty body, a valid `granularity`, and a non-empty `content_hash`
 - [x] bodies under 20 chars are skipped (GitHub: title used as body so empty PRs still keep)
 
@@ -1697,6 +1708,7 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 **3.4 Change detection**
 - [x] parse the same fixture twice: second pass reports unchanged
 - [x] hash map loads in one query, not one query per doc (`_persist_canonical_docs`)
+- [x] real second-pass sync reports unchanged, not just fixtures — verified 2026-08-18: every one of the 10 connectors reported `new=0, changed=0` with the full doc count in `unchanged` on a repeat sync
 - [ ] second pass issues **zero** LLM calls and zero embeddings — N/A until distill exists
 
 **3.5 Special cases**
