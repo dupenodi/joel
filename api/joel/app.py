@@ -131,119 +131,42 @@ def db() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
+
+
+def run_migrations(conn: sqlite3.Connection) -> None:
+    """Numbered SQL files in `migrations/`, applied in order, each inside
+    its own transaction (§14.3). `schema_version` is the one unavoidable
+    `CREATE TABLE IF NOT EXISTS` in this codebase -- there is no way to ask
+    "which migrations have already run" before the table that answers that
+    question exists, and every migration framework (Rails, Django, Alembic)
+    carries the identical bootstrap exception for its own ledger table.
+    Every *application* table below this point comes from a numbered file.
+    """
+    conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)")
+    row = conn.execute("SELECT version FROM schema_version").fetchone()
+    if row is None:
+        conn.execute("INSERT INTO schema_version(version) VALUES (0)")
+        current = 0
+    else:
+        current = row[0]
+
+    for path in sorted(MIGRATIONS_DIR.glob("[0-9]*.sql")):
+        version = int(path.name.split("_", 1)[0])
+        if version <= current:
+            continue
+        # Each file wraps itself in its own BEGIN/COMMIT (executescript runs
+        # the file's text verbatim rather than adding its own transaction
+        # machinery, so a mid-script failure rolls back to the file's own
+        # BEGIN and this migration is retried whole on the next boot).
+        conn.executescript(path.read_text())
+        conn.execute("UPDATE schema_version SET version = ?", (version,))
+        current = version
+
+
 def init_db() -> None:
     with db() as conn:
-        conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
-            CREATE TABLE IF NOT EXISTS orgs (
-              id INTEGER PRIMARY KEY CHECK (id = 1),
-              domain TEXT NOT NULL,
-              name TEXT NOT NULL,
-              logo_url TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS connections (
-              id TEXT PRIMARY KEY,
-              provider TEXT NOT NULL UNIQUE,
-              mode TEXT,
-              status TEXT NOT NULL,
-              doc_count INTEGER NOT NULL DEFAULT 0,
-              last_sync_at TEXT,
-              next_sync_at TEXT,
-              backfill_done INTEGER NOT NULL DEFAULT 0,
-              backfill_progress REAL,
-              error TEXT,
-              interval_min INTEGER NOT NULL DEFAULT 15,
-              paused INTEGER NOT NULL DEFAULT 0,
-              checklist_json TEXT NOT NULL DEFAULT '{}',
-              created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS connector_credentials (
-              connection_id TEXT PRIMARY KEY,
-              encrypted_json TEXT NOT NULL,
-              updated_at TEXT NOT NULL,
-              FOREIGN KEY(connection_id) REFERENCES connections(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS oauth_states (
-              state TEXT PRIMARY KEY,
-              provider TEXT NOT NULL,
-              redirect_uri TEXT NOT NULL,
-              return_to TEXT NOT NULL,
-              expires_at REAL NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS pending_connects (
-              toolkit TEXT PRIMARY KEY,
-              lookback_days INTEGER NOT NULL DEFAULT 30,
-              return_to TEXT NOT NULL,
-              origin TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS jobs (
-              id TEXT PRIMARY KEY,
-              connection_id TEXT NOT NULL,
-              started_at TEXT NOT NULL,
-              finished_at TEXT,
-              status TEXT NOT NULL,
-              new_count INTEGER NOT NULL DEFAULT 0,
-              changed_count INTEGER NOT NULL DEFAULT 0,
-              unchanged_count INTEGER NOT NULL DEFAULT 0,
-              duration_ms INTEGER,
-              error TEXT,
-              FOREIGN KEY(connection_id) REFERENCES connections(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS docs (
-              id TEXT PRIMARY KEY,
-              source_type TEXT NOT NULL,
-              external_id TEXT NOT NULL,
-              title TEXT NOT NULL,
-              body TEXT NOT NULL,
-              content_hash TEXT NOT NULL,
-              url TEXT,
-              timestamp TEXT,
-              thread_id TEXT,
-              parent_id TEXT,
-              author_raw TEXT,
-              container TEXT,
-              extra_json TEXT NOT NULL DEFAULT '{}',
-              first_seen TEXT NOT NULL,
-              last_seen TEXT NOT NULL,
-              forgotten INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS docs_hash ON docs(id, content_hash);
-            CREATE TABLE IF NOT EXISTS conversations (
-              id TEXT PRIMARY KEY,
-              title TEXT NOT NULL,
-              created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS messages (
-              id TEXT PRIMARY KEY,
-              conversation_id TEXT NOT NULL,
-              role TEXT NOT NULL,
-              content_json TEXT NOT NULL,
-              created_at TEXT NOT NULL,
-              FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS settings (
-              key TEXT PRIMARY KEY,
-              value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS spend (
-              stage TEXT PRIMARY KEY,
-              calls INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS thread_state (
-              thread_id TEXT PRIMARY KEY,
-              source_type TEXT NOT NULL,
-              artifact_id TEXT NOT NULL,
-              kept_bursts_json TEXT NOT NULL DEFAULT '{}',
-              last_distilled_at TEXT NOT NULL
-            );
-            """
-        )
-        row = conn.execute("SELECT version FROM schema_version").fetchone()
-        if row is None:
-            conn.execute("INSERT INTO schema_version(version) VALUES (1)")
+        run_migrations(conn)
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
@@ -253,18 +176,6 @@ def init_db() -> None:
             conn.execute(
                 "INSERT OR IGNORE INTO spend(stage, calls) VALUES (?, 0)",
                 (stage,),
-            )
-        cols = {
-            row[1]
-            for row in conn.execute("PRAGMA table_info(connections)").fetchall()
-        }
-        if "lookback_days" not in cols:
-            conn.execute(
-                "ALTER TABLE connections ADD COLUMN lookback_days INTEGER NOT NULL DEFAULT 30"
-            )
-        if "channel_ids_json" not in cols:
-            conn.execute(
-                "ALTER TABLE connections ADD COLUMN channel_ids_json TEXT NOT NULL DEFAULT '[]'"
             )
 
 
@@ -1783,9 +1694,12 @@ def health() -> dict[str, Any]:
         spend = {
             r["stage"]: r["calls"] for r in conn.execute("SELECT * FROM spend")
         }
+        schema_version_row = conn.execute(
+            "SELECT version FROM schema_version"
+        ).fetchone()
     return {
         "hydra": "ok",  # stub — real hydra wire comes later
-        "schema_version": 1,
+        "schema_version": schema_version_row[0] if schema_version_row else 0,
         "sync_enabled": s.get("sync_enabled", "true") == "true",
         "queue_depth": 0,
         "llm_error": None
