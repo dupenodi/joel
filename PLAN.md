@@ -246,9 +246,10 @@ joel/
 │   └── joel/
 │       ├── config.py hydra.py store.py store_sql.py live_index.py models.py
 │       ├── migrations/ 001_init.sql 002_store_layer.sql …   # §14.3, done
+│       ├── pipeline.py # ingest -> distill -> store wiring, called once per sync from _run_ingest
 │       ├── adapters/   base.py  manifests.py  code_chunk.py
 │       │               # one adapt() + one SourceManifest per source. No per-provider adapter modules.
-│       ├── distill/    bursts.py artifact.py df_index.py state.py   # §7, done — not wired to the sync job yet
+│       ├── distill/    bursts.py artifact.py df_index.py state.py   # §7, done and wired (pipeline.py)
 │       ├── llm.py      # generic JSON-mode LLM caller + repair retry, shared by every prompted stage
 │       ├── ontology/   extract.py resolve.py reconcile.py    # stubs
 │       ├── retrieve/   planner.py lanes.py fuse.py rerank.py synthesize.py  # stubs
@@ -1748,11 +1749,11 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 
 ### CP 4 — Distillation (§7)
 
-**Status 2026-08-18 — the module is built and unit-verified against synthetic fixtures; nothing has run against a real LLM or real threads yet.** `llm.py` (generic JSON-mode caller + repair retry), `distill/bursts.py`, `distill/df_index.py`, `distill/artifact.py` (`distill_thread` + `diff_kept_set`), `distill/state.py` (`thread_state` persistence), and `prompts/distill_thread.md` are all implemented per §7.1–§7.5. `scripts/check_4_distill.py` exercises all of it with a fake `LLMCallFn` — no API key, no network, deterministic. **Not done:** wiring into `_run_ingest` (still a phase stub in `app.py`, intentionally — the store layer this would write to is now built (CP5) with mappers ready — `store_sql.py::from_thread_artifact`/`from_burst` — but the ingest job doesn't call distillation yet; that end-to-end wiring is the next integration pass), `failed_distill.jsonl`, and anything requiring a real model call or real threads (4.1's 5%-failure bar, all of 4.2, embeddings in 4.4).
+**Status 2026-08-18 — built, unit-verified against synthetic fixtures (`scripts/check_4_distill.py`, fake `LLMCallFn`), and now wired into `_run_ingest` via `pipeline.py`, smoke-tested against a real LLM and real Slack threads.** `llm.py` (generic JSON-mode caller + repair retry), `distill/bursts.py`, `distill/df_index.py`, `distill/artifact.py` (`distill_thread` + `diff_kept_set`), `distill/state.py` (`thread_state` persistence), and `prompts/distill_thread.md` are all implemented per §7.1–§7.5. Every sync now calls `pipeline.run_store_pipeline()` for whatever's new/changed, which re-groups the WHOLE touched thread (not just the delta), calls `distill_thread`, and writes the result through CP5's `upsert_docs`/`from_thread_artifact`/`from_burst` — `scripts/check_pipeline_wiring.py` exercises all of that with a queued fake LLM against real HydraDB. Separately smoke-tested once against a real LLM call and the app's real, already-synced Slack data (scratch SQLite/vector copies, real Hydra, cleaned up after): 5 real threads in, 4 correctly dropped as noise (single throwaway messages), 1 produced a genuine `commitment`-class artifact. **Not done:** `failed_distill.jsonl` (a repair-retry failure today is recorded in the pipeline's in-memory report, not persisted to a file), and anything needing a *labeled* real-thread sample (4.1's 5%-failure bar over 15 threads, all of 4.2's eyeball pass — one real thread isn't a sample).
 
 **4.1 Reliability**
-- [ ] 15 real threads, under 5% JSON failure after one repair retry — *not run; repair-retry mechanism itself is verified synthetically (malformed-then-valid, and double-malformed raises) in `check_4_distill.py`*
-- [ ] failures land in `failed_distill.jsonl` and leave any previous artifact intact — *not built; no sync-job wiring yet*
+- [ ] 15 real threads, under 5% JSON failure after one repair retry — *only 1 real thread run so far (the real-LLM smoke test); repair-retry mechanism itself is verified synthetically (malformed-then-valid, and double-malformed raises) in `check_4_distill.py`. Needs a real backfill with enough threaded volume (Slack has only 6 real messages total right now) to get a sample of 15.*
+- [ ] failures land in `failed_distill.jsonl` and leave any previous artifact intact — *partially built: `pipeline.py` catches `DistillFailure` per-thread, records it in `PipelineReport.distill_errors`, and leaves the previous artifact/kept-bursts untouched (verified in `check_distill_error_recorded_not_raised`) — but nothing persists these to `failed_distill.jsonl` yet, so they're visible in a job's `error` column, not queryable as their own log.*
 
 **4.2 Quality** 👁
 - [ ] all 15 eyeballed: questions are question-shaped, not the first message verbatim
@@ -1768,20 +1769,22 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 - Verified with a fake LLM against hand-built fixtures, not real distilled threads — re-check once 4.2's real pass exists.
 
 **4.4 Burst context**
-- [ ] burst embeddings include the thread question as a prefix — *not built; embedding happens in the Store phase (§8), which isn't wired yet*
-- [ ] the stored `body` is the bare text (prefix is embedding-only)
+- [x] burst embeddings include the thread question as a prefix — *`store_sql.py::from_burst` sets `embed_text="Thread: {question}\n{burst.text}"`, wired end-to-end via `pipeline.py`*
+- [x] the stored `body` is the bare text (prefix is embedding-only) — *`from_burst`'s `body=burst.text`; only `embed_text` carries the prefix*
 
 **4.5 Re-distillation**
-- [ ] re-run the same 15 threads: zero LLM calls — *not run against real threads; the underlying diff (`diff_kept_set`) is verified synthetically for the identical-input case in `check_redistill_diff`*
-- [ ] append one message to one thread: exactly one distill call — *needs the dirty-thread-set wiring from §6.1/§7.5 into the sync job, not built yet*
-- [ ] a burst that stops being kept is removed from all three stores — *can't be true until the store exists (Phase 5); `diff_kept_set`'s `to_delete` bucket is verified synthetically*
+- [ ] re-run the same 15 threads: zero LLM calls — *not run at 15-thread scale against real threads; `pipeline.py` currently re-distills every dirty thread on every sync that touches it (no zero-LLM-call short circuit when nothing in the thread actually changed) — the underlying diff (`diff_kept_set`) that makes the STORE writes a no-op either way is verified synthetically in `check_redistill_diff` and end-to-end in `check_pipeline_wiring.py`, but the LLM call itself always fires for a dirty thread today. A "hash the thread's messages, skip the call if unchanged" short-circuit is a follow-up, not yet built.*
+- [x] append one message to one thread: exactly one distill call — *`check_dirty_thread_reloads_whole_thread` in `check_pipeline_wiring.py`: one new message is the only "dirty" doc, `pipeline.py` reloads the whole thread from SQLite and issues exactly one `distill_thread` call over all of it*
+- [x] a burst that stops being kept is removed from all three stores — *`check_redistill_drops_stale_burst`/`check_thread_flips_to_noise_removes_artifact` in `check_pipeline_wiring.py`: dropped bursts (and a prior artifact, if the whole thread flips to noise) are gone from SQLite, tombstoned in `LiveIndex`, and `DETACH DELETE`d from HydraDB via `store_sql.py::remove_docs`*
 - [x] `thread_state` lives in SQLite, not a JSON file — *`thread_state` table added to `app.py`'s `init_db`, `distill/state.py` load/save round-tripped and upsert-tested in `check_thread_state_persistence`*
 
 ---
 
 ### CP 5 — Store (§8)
 
-Built as its own testable unit, same as CP3/CP4 — `store_sql.py::upsert_docs()` is not yet wired into `_run_ingest`/`_persist_canonical_docs` (§6's ingest path still only writes the plain `docs` row it always did). That wiring, plus CP4's `distill_thread` output actually flowing into `upsert_docs` via `from_thread_artifact`/`from_burst`, is the next integration pass — see the deferred items below. Everything checked below is verified live against a real HydraDB node, real local embeddings, and SQLite through the actual migrations — `scripts/check_5_store.py`, all green.
+Built as its own testable unit, same as CP3/CP4, then wired: `_run_ingest` now calls `pipeline.run_store_pipeline()` after every sync's `_persist_canonical_docs`, which upserts every new/changed doc via `store_sql.py::upsert_docs()` and — for touched threads — feeds CP4's `distill_thread` output through `from_thread_artifact`/`from_burst` into the same call. Everything checked below is verified live against a real HydraDB node, real local embeddings, and SQLite through the actual migrations — `scripts/check_5_store.py`, all green — plus the wiring itself in `scripts/check_pipeline_wiring.py` and one real-LLM smoke test against real Slack data (see CP4's status note).
+
+**A real-data bug found and fixed while wiring this in:** `_upsert_sqlite_and_fts` (and `remove_docs`) decided whether to fire an FTS5 "delete before insert" by checking whether the `docs` row already existed — but every doc ingested before this wiring pass has a `docs` row with **no** matching `docs_fts` row (plain ingest, §6, never touched FTS). Issuing a contentless-FTS5 delete for a rowid that was never indexed doesn't error immediately; it corrupts the index, which then surfaces later as `sqlite3.DatabaseError: database disk image is malformed` on an unrelated query — exactly what happened running the real-LLM smoke test against a copy of the real 926-doc database. `check_5_store.py` never caught this because every doc in that test is created fresh through `upsert_docs` itself, so it never hits the "pre-existing raw doc, first-ever FTS upsert" case. Fixed by keying the delete decision off `SELECT 1 FROM docs_fts WHERE rowid=?` instead of the `docs` row's existence; regression-tested in `check_pipeline_wiring.py::check_pre_existing_raw_doc_gets_indexed`. The real production `data/index/joel.db` was never at risk — the smoke test that triggered it ran against a temp-directory copy — and `PRAGMA integrity_check`/the FTS `'integrity-check'` command both confirmed the real file was untouched.
 
 **5.1 SQLite + FTS**
 - [x] an FTS phrase query for a pasted error returns its burst — *`check_fts_phrase_and_operators`*
@@ -1817,8 +1820,8 @@ Built as its own testable unit, same as CP3/CP4 — `store_sql.py::upsert_docs()
 - Also fixed in passing: `/api/health` hardcoded `schema_version: 1` instead of reading it from the DB.
 
 **5.7 Forget**
-- [ ] a forgotten doc leaves SQLite, FTS, vectors and graph — **not built.** The existing `POST /api/docs/{id}/forget`-shaped endpoint (if any) predates FTS/vectors/graph and only needs to learn about three new destinations; `LiveIndex` already has the tombstone mechanism (`apply(..., deleted=[...])`) and `HydraStore.delete_node` already does `DETACH DELETE`, so the primitives exist — this is wiring, not new capability.
-- [ ] its canonical line becomes a tombstone — **not built**, same follow-up.
+- [x] a doc leaves SQLite, FTS, vectors and graph together — *`store_sql.py::remove_docs()`, built during the pipeline-wiring pass to drop stale bursts/artifacts on re-distillation (§7.5) and exercised against real HydraDB in `check_pipeline_wiring.py`/the real-LLM smoke test. Same primitive the owner's explicit forget will call.*
+- [ ] the owner's explicit forget endpoint calls it, and its canonical line becomes a tombstone — **not built.** `remove_docs()` deliberately doesn't know about the canonical JSONL; whatever `POST /api/docs/{id}/forget` becomes needs to rewrite that line to a tombstone on top of calling `remove_docs()`.
 
 **Two HydraDB batch-write gaps found and fixed while building this (neither CP1 exercised them):**
 - A `null` anywhere inside an UNWIND list-of-maps parameter takes down the *entire* batch ("only boolean, signed integer, finite float, and string parameters are supported"), even though a bare scalar Bolt param accepts `None` fine. `HydraStore.upsert_nodes`/`link_nodes` now coerce `None → ""` per batched property (`_null_safe`).

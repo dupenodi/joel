@@ -161,12 +161,23 @@ def _upsert_sqlite_and_fts(conn: sqlite3.Connection, docs: list[StoreDoc], now: 
     """SQLite `docs` row (partial UPDATE on conflict — ingest-only columns
     like external_id/thread_id are never touched here) + FTS5 delete-before-
     insert (contentless tables can't reconstruct old text themselves, so the
-    'delete' command needs the OLD title/body passed in explicitly)."""
+    'delete' command needs the OLD title/body passed in explicitly).
+
+    Whether to fire that delete must be keyed off whether `docs_fts` already
+    has a row for this id — NOT whether `docs` does. A doc landed in `docs`
+    by plain ingest (§6) long before it ever went through this function, so
+    `docs` having a row is not proof `docs_fts` does too; issuing a
+    contentless-FTS5 'delete' for a rowid that was never inserted corrupts
+    the index rather than erroring immediately (surfaces later as
+    'database disk image is malformed' on an unrelated query)."""
     upserted: list[str] = []
     for doc in docs:
         existing = conn.execute(
             "SELECT rowid, title, body FROM docs WHERE id=?", (doc.id,)
         ).fetchone()
+        had_fts_row = existing is not None and conn.execute(
+            "SELECT 1 FROM docs_fts WHERE rowid=?", (existing["rowid"],)
+        ).fetchone() is not None
         conn.execute(
             """INSERT INTO docs(
                  id, source_type, external_id, title, body, content_hash, url,
@@ -199,7 +210,7 @@ def _upsert_sqlite_and_fts(conn: sqlite3.Connection, docs: list[StoreDoc], now: 
             ),
         )
         rowid = conn.execute("SELECT rowid FROM docs WHERE id=?", (doc.id,)).fetchone()[0]
-        if existing is not None:
+        if had_fts_row:
             _fts_delete(conn, existing["rowid"], existing["title"], existing["body"])
         _fts_insert(conn, rowid, doc.title, doc.body)
         upserted.append(doc.id)
@@ -280,6 +291,35 @@ def _upsert_graph(
         report.distilled_from_edges += len(edge_rows)
 
 
+def remove_docs(
+    conn: sqlite3.Connection,
+    index: LiveIndex,
+    hydra_store: HydraStore,
+    doc_ids: Iterable[str],
+) -> list[str]:
+    """Remove docs from all three destinations. Used today by §7.5's
+    dropped-burst cleanup (a burst that stops being kept on re-distillation);
+    the owner's explicit forget (§14.5/5.7) will reuse this directly once it
+    also rewrites the canonical JSONL line to a tombstone, which this
+    function deliberately does not know about."""
+    doc_ids = list(doc_ids)
+    removed: list[str] = []
+    for doc_id in doc_ids:
+        row = conn.execute("SELECT rowid, title, body FROM docs WHERE id=?", (doc_id,)).fetchone()
+        if row is None:
+            continue
+        had_fts_row = conn.execute("SELECT 1 FROM docs_fts WHERE rowid=?", (row["rowid"],)).fetchone() is not None
+        if had_fts_row:
+            _fts_delete(conn, row["rowid"], row["title"], row["body"])
+        conn.execute("DELETE FROM docs WHERE id=?", (doc_id,))
+        conn.execute("DELETE FROM graph_written WHERE id=?", (doc_id,))
+        hydra_store.delete_node(DOC_LABEL, doc_id)
+        removed.append(doc_id)
+    if removed:
+        index.apply({}, deleted=removed)
+    return removed
+
+
 def upsert_docs(
     conn: sqlite3.Connection,
     index: LiveIndex,
@@ -311,6 +351,7 @@ __all__ = [
     "from_thread_artifact",
     "from_burst",
     "upsert_docs",
+    "remove_docs",
     "DOC_LABEL",
     "DISTILLED_FROM",
 ]

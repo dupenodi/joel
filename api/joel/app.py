@@ -64,10 +64,47 @@ from joel.connectors.jira import fetch_jira_docs
 from joel.connectors.gmail import GmailAPIError, fetch_gmail_docs
 from joel.connectors.github import GITHUB_ACCEPT, GitHubAPIError, fetch_github_docs
 from joel.connectors.slack import SlackAPIError, SlackClient, fetch_slack_docs
+from joel.config import Settings
+from joel.hydra import Hydra
+from joel.live_index import LiveIndex
+from joel.llm import make_openrouter_caller
 from joel.models import CanonicalDoc
+from joel.pipeline import run_store_pipeline
+from joel.store import HydraStore
 
 DATA_DIR = Path(os.getenv("JOEL_DATA", "data"))
 DB_PATH = DATA_DIR / "index" / "joel.db"
+
+# Store-layer singletons (Hydra driver, HydraStore, LiveIndex, embedding
+# model) -- built lazily on first real use, never at import time, so
+# anything that only needs SQLite (most of the test scripts, most routes)
+# never pays for a Hydra connection or a model load. Long-lived by design:
+# Hydra's driver and the embedding model are meant to be constructed once
+# and reused, not per-request.
+_RUNTIME: dict[str, Any] = {}
+_RUNTIME_LOCK = threading.Lock()
+
+
+def _runtime() -> dict[str, Any]:
+    with _RUNTIME_LOCK:
+        if "embed_model" not in _RUNTIME:
+            from sentence_transformers import SentenceTransformer
+
+            settings = Settings.from_env()
+            _RUNTIME["settings"] = settings
+            _RUNTIME["embed_model"] = SentenceTransformer(settings.embed_model)
+        if "hydra_store" not in _RUNTIME:
+            hydra = Hydra(_RUNTIME["settings"])
+            _RUNTIME["hydra"] = hydra
+            _RUNTIME["hydra_store"] = HydraStore(hydra)
+        if "live_index" not in _RUNTIME:
+            dim = _RUNTIME["embed_model"].get_sentence_embedding_dimension()
+            _RUNTIME["live_index"] = LiveIndex(DATA_DIR / "index" / "joel.npz", dim=dim)
+        return _RUNTIME
+
+
+def _embed_fn(texts: list[str]):
+    return _runtime()["embed_model"].encode(texts, normalize_embeddings=True)
 
 PROVIDER_LABELS = {item.id: item.name for item in INTEGRATIONS}
 DEFAULT_INTERVAL = {item.id: item.default_interval_min for item in INTEGRATIONS}
@@ -203,8 +240,11 @@ def _parse_checklist(raw: str) -> dict[str, bool]:
 
 def _persist_canonical_docs(
     conn: sqlite3.Connection, docs: list[CanonicalDoc]
-) -> dict[str, int]:
-    """Append new/changed canonical lines and update the disposable docs index."""
+) -> tuple[dict[str, int], list[CanonicalDoc]]:
+    """Append new/changed canonical lines and update the disposable docs
+    index. Returns (counts, dirty_docs) — dirty_docs (new+changed) is what
+    the store pipeline (pipeline.py) needs to know what to upsert/re-distill;
+    unchanged docs need no further work downstream."""
     rows = conn.execute(
         "SELECT id, content_hash, forgotten FROM docs"
     ).fetchall()
@@ -271,7 +311,7 @@ def _persist_canonical_docs(
                 handle.write(line + "\n")
     counts = report.counts
     counts["unchanged"] += ignored_forgotten
-    return counts
+    return counts, [*report.new, *report.changed]
 
 
 def _credential(conn: sqlite3.Connection, connection_id: str) -> dict[str, Any]:
@@ -595,7 +635,7 @@ def _run_ingest(
             ).fetchone()
         docs = _fetch_provider_docs(provider, credentials, settings, row)
         with db() as conn:
-            counts = _persist_canonical_docs(conn, docs)
+            counts, dirty_docs = _persist_canonical_docs(conn, docs)
             row = conn.execute(
                 "SELECT checklist_json FROM connections WHERE id=?", (connection_id,)
             ).fetchone()
@@ -617,8 +657,33 @@ def _run_ingest(
                 ),
             )
 
-        # Distillation/ontology/store lanes are still phase stubs. Keep the
-        # existing product gate moving only after the real fetch succeeded.
+        # Store pipeline (§8/CP5) + distillation (§7/CP4) for whatever was
+        # new or changed this sync — real work now, not a checklist-only
+        # stub. Runs regardless of first_sync since dirty threads can show
+        # up on any sync. A failure here is recorded but does not fail the
+        # job: the fetch already landed durably in `docs`/canonical JSONL,
+        # and there's no per-destination retry ledger yet (§8.2, still on
+        # CP5's deferred list) so the honest thing is to surface it rather
+        # than silently drop it or crash a sync that otherwise succeeded.
+        pipeline_error: str | None = None
+        try:
+            if dirty_docs:
+                rt = _runtime()
+                llm_call = (
+                    make_openrouter_caller(settings) if settings.get("llm_api_key") else None
+                )
+                with db() as conn:
+                    pipeline_report = run_store_pipeline(
+                        conn, rt["live_index"], rt["hydra_store"], _embed_fn, llm_call, dirty_docs
+                    )
+                if pipeline_report.distill_errors:
+                    pipeline_error = "; ".join(pipeline_report.distill_errors[:3])
+        except Exception as exc:  # store/distill failure must not sink an otherwise-good sync
+            pipeline_error = str(exc)
+
+        # people_resolved/graph_linked are ontology (§9/CP6 — not built yet),
+        # still simulated pacing for the onboarding UI. distilled and
+        # indexes_consistent are real now (the pipeline call above).
         if first_sync:
             for key, status, progress in (
                 ("distilled", "distilling", 0.55),
@@ -626,7 +691,8 @@ def _run_ingest(
                 ("graph_linked", "linking", 0.88),
                 ("indexes_consistent", "ready", 1.0),
             ):
-                time.sleep(0.4)
+                if key in ("people_resolved", "graph_linked"):
+                    time.sleep(0.4)
                 with db() as conn:
                     row = conn.execute(
                         "SELECT checklist_json FROM connections WHERE id=?",
@@ -668,7 +734,7 @@ def _run_ingest(
             )
             conn.execute(
                 """UPDATE jobs SET finished_at=?, status='ok', new_count=?,
-                   changed_count=?, unchanged_count=?, duration_ms=?, error=NULL
+                   changed_count=?, unchanged_count=?, duration_ms=?, error=?
                    WHERE id=?""",
                 (
                     finished,
@@ -676,6 +742,7 @@ def _run_ingest(
                     counts["changed"],
                     counts["unchanged"],
                     int((time.monotonic() - started) * 1000),
+                    pipeline_error,
                     job_id,
                 ),
             )
