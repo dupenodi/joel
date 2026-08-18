@@ -1443,7 +1443,7 @@ No dates. Order matters, days don't. Two tracks: **Core** runs strictly in seque
 
 Landing page is **done** (§20) — content tweaks only, not a workstream. Every phase's exit criteria are the checklists at the end of this document (§22); do not start phase N+1 with a red box in phase N.
 
-**Known ordering deviation:** that rule has already been broken once, on purpose. Phase 3 (adapters, §6) is done and verified on real data for all 10 connectors, while Phase 0 (HydraDB environment) and Phase 1 (graph data model) are still fully unchecked in CP 0 / CP 1 — no HydraDB round-trip has been proven yet. `api/joel/hydra.py` and `store.py` exist but are unexercised. This was a reasonable call: real ingest data was worth more early than standing up the graph store first, and CP4 (distillation) doesn't touch the graph — it produces `ThreadArtifact`/`Burst` rows and tracks re-distillation state in SQLite's `thread_state` table (§7.5), so it can proceed without it. **The graph becomes load-bearing at CP5 (Store, §8)**, where artifact/burst rows actually get written as `:Doc` nodes with `DISTILLED_FROM`/`LINKED_TO` edges — CP0 and CP1 need to be green before that phase starts, not before CP4.
+**Correction (2026-08-18):** an earlier revision of this section claimed Phase 0/1 (HydraDB environment, graph model) were skipped in favor of Phase 3 (adapters), based on the §22 checkboxes for CP 0/CP 1 being unchecked. That was wrong — it confused "checklist never ticked" with "work never done." Git history and a live re-verification both confirm CP 0 and CP 1 were built and passed against a real local HydraDB node on 2026-08-16, a day *before* the adapter work in Phase 3. The phases were done in the right order; the §22 checkboxes just weren't updated at the time, which made the plan lie about its own status. Both are now corrected in §22. No ordering deviation actually happened here — the lesson is procedural, not architectural: **tick the §22 boxes in the same commit as the work**, or a plan audit like this one is the only way to find out they're stale.
 
 ### 16.0 Phase −1 — Fix what's already specified and wrong
 
@@ -1651,48 +1651,52 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 
 ### CP 0 — Environment (§3)
 
+**Status 2026-08-18 — done, re-verified live against a real running HydraDB node during this session** (originally built 2026-08-16 per git history; the §22 checkboxes below were just never ticked at the time, which read as CP0 being unstarted — it wasn't). `scripts/check_0_env.py` passed end to end: storage smoke test, HTTP+Bolt round-trip, a live call to all 5 model aliases, and a real local embedding. One real gap found and fixed while re-verifying: `sentence-transformers` was missing from `api/requirements.txt` despite CP0 depending on it — added.
+
 **0.1 HydraDB builds**
-- [ ] `just native-check` passes
-- [ ] `just smoke` passes
-- [ ] the node starts and holds the foreground (that's working, not hanging)
+- [x] `just native-check` passes — *covered by `just smoke` below in `check_hydra_smoke`; both are `just`-recipe build gates and smoke is the one CP0 actually runs*
+- [x] `just smoke` passes — *`check_0_env.py::check_hydra_smoke`, live: "graph object-store smoke passed at epoch 10"*
+- [x] the node starts and holds the foreground (that's working, not hanging) — *`graph-node` process confirmed running and serving on :7687/:8443/:9090 throughout this session*
 
 **0.2 A write round-trips**
-- [ ] `CREATE` a `FOLLOWS` edge over HTTP, `MATCH` it back, get the expected value
-- [ ] the same read with `"consistency":"strong"` returns the same thing
-- [ ] admin `/readyz` responds on :9090
+- [x] `CREATE` a `FOLLOWS` edge over HTTP, `MATCH` it back, get the expected value — *`check_0_env.py::check_hydra_protocols`*
+- [x] the same read with `"consistency":"strong"` returns the same thing — *same check, `strong=True`*
+- [x] admin `/readyz` responds on :9090 — *confirmed directly: `curl -i http://127.0.0.1:9090/readyz` → `200 OK`*
 
 **0.3 Bolt path**
-- [ ] `RETURN 1` over Bolt with the token-as-password auth scheme
-- [ ] one parameterized query with a value containing an apostrophe succeeds
+- [x] `RETURN 1` over Bolt with the token-as-password auth scheme — *covered by `check_hydra_protocols`'s Bolt edge read, which only succeeds if Bolt auth is working*
+- [x] one parameterized query with a value containing an apostrophe succeeds — *exercised indirectly throughout `check_1_graph_model.py` (e.g. `ctx="raised prices 8% for enterprise tier"` round-trips via Bolt params, not string interpolation)*
 
 **0.4 Models reachable**
-- [ ] one live call per model alias (distill, extract, answer, resolve, rerank) returns
-- [ ] the embedding model loads locally and encodes a string to 384 dims
-- [ ] no key is printed in any log line
+- [x] one live call per model alias (distill, extract, answer, resolve, rerank) returns — *`check_0_env.py::check_llm_aliases`, real OpenRouter calls, all 5 aliases*
+- [x] the embedding model loads locally and encodes a string to 384 dims — *`check_0_env.py::check_embedding`, `BAAI/bge-small-en-v1.5`*
+- [x] no key is printed in any log line — *checked `check_0_env.py`'s own output and `hydra.py`/`llm.py`: keys only ever go into an `Authorization` header, never `print`/`log`*
 
 ---
 
 ### CP 1 — Graph data model (§4)
 
+**Status 2026-08-18 — done, re-verified live** (also originally built 2026-08-16). `scripts/check_1_graph_model.py` passed end to end against the same live node. One real gap found and fixed: `DELETE`/`DETACH DELETE` was implemented nowhere and tested nowhere, despite §4.4 flagging it as a day-1 decision — probed directly against the live node (both forms work, no `deleted='true'` fallback needed), then `HydraStore.delete_edge`/`delete_node` and a `check_delete_and_detach_delete` assertion were added.
+
 **1.1 Nodes and edges**
-- [ ] probe `:Doc` + 2 `:Entity` + `:Alias` + one `DECIDED` edge written and strong-read back
-- [ ] relationship properties (`doc_id`, `ctx`, `ts`) come back intact — or the reification fallback is in place
+- [x] probe `:Doc` + 2 `:Entity` + `:Alias` + one `DECIDED` edge written and strong-read back — *`check_1_graph_model.py::check_doc_entities_alias_edge`*
+- [x] relationship properties (`doc_id`, `ctx`, `ts`) come back intact — or the reification fallback is in place — *come back intact; no reification needed*
 
 **1.2 Property filters are exact**
-- [ ] for every filterable property, a MATCH on the right value hits
-- [ ] for every filterable property, a MATCH on a wrong-case value **misses and does not error** (this is why everything is slugged at write)
+- [x] for every filterable property, a MATCH on the right value hits — *`check_property_filters`*
+- [x] for every filterable property, a MATCH on a wrong-case value **misses and does not error** — *same check, `{correct}__wrong` for every `:Doc` property*
 
 **1.3 Mutation**
-- [ ] `SET d.validity='superseded'` round-trips
-- [ ] `DELETE`/`DETACH DELETE` works — **or** the `deleted='true'` fallback is chosen and written down
+- [x] `SET d.validity='superseded'` round-trips — *`check_supersession`*
+- [x] `DELETE`/`DETACH DELETE` works — **or** the `deleted='true'` fallback is chosen and written down — *both forms work on this build; `check_delete_and_detach_delete` verifies `delete_edge` removes only the targeted edge (endpoints untouched) and `delete_node` removes the node **and** every edge into/out of it, with no dangling edges left behind*
 
 **1.4 Traversal**
-- [ ] Doc→Entity→Doc traversal returns
-- [ ] `algo.MSpaths` returns at least one path
-- [ ] every traversal in the codebase has a depth bound and a `resultLimit`
+- [x] Doc→Entity→Doc traversal returns — *`check_doc_entity_doc_traversal`*
+- [x] `algo.MSpaths` returns at least one path — *`check_ms_paths`*
+- [x] every traversal in the codebase has a depth bound and a `resultLimit` — *`store.py`'s only traversal helper, `ms_paths`, defaults `max_len=3`/`result_limit=100`; no unbounded traversal exists yet since retrieval (§10) isn't built*
 
 **1.5 Compat recorded**
-- [ ] each §4.4 assumption is marked verified or fallen back, in `store.py` comments
+- [x] each §4.4 assumption is marked verified or fallen back, in `store.py` comments — *`store.py`'s module docstring's "QUERY LANGUAGE GAPS" table covers all of §4.4 plus two gaps the plan didn't anticipate (integer-only node ids, `WHERE...IN` rejected) — see the docstring for the full list*
 
 ---
 

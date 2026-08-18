@@ -63,6 +63,10 @@ BATCH WRITES (UNWIND)
 QUERY LANGUAGE GAPS (§4.4 assumptions, verified against the live node)
     MERGE                    present, as above.
     SET                      present, requires a preceding MATCH.
+    DELETE / DETACH DELETE   present, both forms -- no deleted='true'
+                              fallback needed. `delete_edge`/`delete_node`
+                              below use it directly for §7.5's de-kept
+                              bursts and the owner's explicit forget.
     relationship properties  present, inline on CREATE/MERGE and via SET.
     WHERE ... IN $list       absent ("WHERE currently supports boolean
                               combinations of property comparisons"); same
@@ -216,6 +220,34 @@ class HydraStore:
         if not rows:
             return None
         return {name: _unwrap(value) for name, value in zip(props, rows[0])}
+
+    def delete_edge(
+        self,
+        from_label: str,
+        from_key: str,
+        edge_type: str,
+        to_label: str,
+        to_key: str,
+    ) -> None:
+        """Remove a single edge instance, leaving both endpoints in place.
+        For §7.5's re-distillation diff (a burst that stops being kept) and
+        anything else that must stop asserting a fact rather than merely
+        being superseded."""
+        src = to_vertex_id(from_key)
+        dst = to_vertex_id(to_key)
+        self.hydra.bolt(
+            f"MATCH (a:{from_label} {{id: $src}})-[r:{edge_type}]->(b:{to_label} {{id: $dst}}) "
+            "DELETE r",
+            src=src,
+            dst=dst,
+        )
+
+    def delete_node(self, label: str, key: str) -> None:
+        """DETACH DELETE a node and every edge touching it -- the owner's
+        explicit forget (§4.4). No `deleted='true'` fallback is needed on
+        this build; DETACH DELETE is supported directly."""
+        vid = to_vertex_id(key)
+        self.hydra.bolt(f"MATCH (n:{label} {{id: $vid}}) DETACH DELETE n", vid=vid)
 
     def match_property(self, label: str, prop: str, value: Any) -> list[int]:
         """Property-filtered MATCH, for verifying that filters hit the right

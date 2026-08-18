@@ -196,6 +196,35 @@ def check_multi_type_rejected_and_fallback(store: HydraStore) -> None:
         raise AssertionError(f"traverse_any_type returned {seen!r}, expected both targets")
 
 
+def check_delete_and_detach_delete(store: HydraStore) -> None:
+    a, b, c = _probe_key("entity"), _probe_key("entity"), _probe_key("entity")
+    store.create_edge("Entity", a, "OWNS", "Entity", b)
+    store.create_edge("Entity", a, "OWNS", "Entity", c)
+
+    store.delete_edge("Entity", a, "OWNS", "Entity", b)
+    remaining = store.hydra.bolt(
+        "MATCH (x:Entity {id: $a})-[:OWNS]->(y) RETURN y.key AS key",
+        a=to_vertex_id(a),
+    )
+    keys = {row["key"] for row in remaining}
+    if keys != {c}:
+        raise AssertionError(
+            f"delete_edge left {keys!r}, expected only {c!r} (b's edge should be gone, "
+            "c's edge and both nodes should be untouched)"
+        )
+    if store.get_node("Entity", b, ["key"]) is None:
+        raise AssertionError("delete_edge removed the endpoint node, not just the edge")
+
+    store.delete_node("Entity", a)
+    if store.get_node("Entity", a, ["key"]) is not None:
+        raise AssertionError("delete_node left the node in place")
+    orphaned = store.hydra.bolt(
+        "MATCH (x)-[:OWNS]->(y:Entity {id: $c}) RETURN x.id AS id", c=to_vertex_id(c)
+    )
+    if orphaned:
+        raise AssertionError("DETACH DELETE left a dangling edge into the deleted node")
+
+
 def check_node_id_must_be_integer(store: HydraStore) -> None:
     try:
         store.hydra.bolt("MERGE (a {id: 'not-an-integer'})-[:X]->(b {id: 999999999})")
@@ -273,6 +302,10 @@ def main() -> None:
             flush=True,
         )
         check_multi_type_rejected_and_fallback(store)
+        print("ok", flush=True)
+
+        print("checking DELETE (edge) and DETACH DELETE (node)...", flush=True)
+        check_delete_and_detach_delete(store)
         print("ok", flush=True)
 
         print("checking non-integer node ids are rejected...", flush=True)
