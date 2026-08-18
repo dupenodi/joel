@@ -244,8 +244,8 @@ joel/
 ├── data/  raw/ canonical/ graphs/ entities/ index/ state/     # gitignored
 ├── api/                      # FastAPI service (Dockerfile)
 │   └── joel/
-│       ├── config.py hydra.py store.py models.py
-│       ├── migrations/ 001_init.sql 002_*.sql …   # §14.3
+│       ├── config.py hydra.py store.py store_sql.py live_index.py models.py
+│       ├── migrations/ 001_init.sql 002_store_layer.sql …   # §14.3, done
 │       ├── adapters/   base.py  manifests.py  code_chunk.py
 │       │               # one adapt() + one SourceManifest per source. No per-provider adapter modules.
 │       ├── distill/    bursts.py artifact.py df_index.py state.py   # §7, done — not wired to the sync job yet
@@ -1449,7 +1449,7 @@ Landing page is **done** (§20) — content tweaks only, not a workstream. Every
 
 Small, and everything downstream inherits them, so they come before new work:
 
-abstain floor on the rerank scale (§10.5) · FTS5 delete-before-insert (§8.2) · graph upsert by `content_hash` instead of skip-if-present (§8.2) · `LiveIndex` hot reload (§8.3) · incremental reconciliation (§9.4) · `DELETE` added to the Cypher compat pass (§4.4) · single store, no `JOEL_DATASET` (§2.1) · pick the SSE-over-POST approach (§12.2).
+abstain floor on the rerank scale (§10.5) · ~~FTS5 delete-before-insert (§8.2)~~ done in CP5 (`store_sql.py::_upsert_sqlite_and_fts`) · ~~graph upsert by `content_hash` instead of skip-if-present (§8.2)~~ done in CP5 (`store_sql.py::_upsert_graph`, `graph_written` table) · ~~`LiveIndex` hot reload (§8.3)~~ done in CP5 (`live_index.py`) · incremental reconciliation (§9.4) · ~~`DELETE` added to the Cypher compat pass (§4.4)~~ done in CP1 (`store.py::delete_edge`/`delete_node`) · single store, no `JOEL_DATASET` (§2.1) · pick the SSE-over-POST approach (§12.2).
 
 ### 16.1 Core track
 
@@ -1748,7 +1748,7 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 
 ### CP 4 — Distillation (§7)
 
-**Status 2026-08-18 — the module is built and unit-verified against synthetic fixtures; nothing has run against a real LLM or real threads yet.** `llm.py` (generic JSON-mode caller + repair retry), `distill/bursts.py`, `distill/df_index.py`, `distill/artifact.py` (`distill_thread` + `diff_kept_set`), `distill/state.py` (`thread_state` persistence), and `prompts/distill_thread.md` are all implemented per §7.1–§7.5. `scripts/check_4_distill.py` exercises all of it with a fake `LLMCallFn` — no API key, no network, deterministic. **Not done:** wiring into `_run_ingest` (still a phase stub in `app.py`, intentionally — see §16.0's phase-ordering note, the store layer this would write to isn't built), `failed_distill.jsonl`, and anything requiring a real model call or real threads (4.1's 5%-failure bar, all of 4.2, embeddings in 4.4).
+**Status 2026-08-18 — the module is built and unit-verified against synthetic fixtures; nothing has run against a real LLM or real threads yet.** `llm.py` (generic JSON-mode caller + repair retry), `distill/bursts.py`, `distill/df_index.py`, `distill/artifact.py` (`distill_thread` + `diff_kept_set`), `distill/state.py` (`thread_state` persistence), and `prompts/distill_thread.md` are all implemented per §7.1–§7.5. `scripts/check_4_distill.py` exercises all of it with a fake `LLMCallFn` — no API key, no network, deterministic. **Not done:** wiring into `_run_ingest` (still a phase stub in `app.py`, intentionally — the store layer this would write to is now built (CP5) with mappers ready — `store_sql.py::from_thread_artifact`/`from_burst` — but the ingest job doesn't call distillation yet; that end-to-end wiring is the next integration pass), `failed_distill.jsonl`, and anything requiring a real model call or real threads (4.1's 5%-failure bar, all of 4.2, embeddings in 4.4).
 
 **4.1 Reliability**
 - [ ] 15 real threads, under 5% JSON failure after one repair retry — *not run; repair-retry mechanism itself is verified synthetically (malformed-then-valid, and double-malformed raises) in `check_4_distill.py`*
@@ -1781,41 +1781,48 @@ How to use these: each box is one assertion, small enough to be unambiguously tr
 
 ### CP 5 — Store (§8)
 
+Built as its own testable unit, same as CP3/CP4 — `store_sql.py::upsert_docs()` is not yet wired into `_run_ingest`/`_persist_canonical_docs` (§6's ingest path still only writes the plain `docs` row it always did). That wiring, plus CP4's `distill_thread` output actually flowing into `upsert_docs` via `from_thread_artifact`/`from_burst`, is the next integration pass — see the deferred items below. Everything checked below is verified live against a real HydraDB node, real local embeddings, and SQLite through the actual migrations — `scripts/check_5_store.py`, all green.
+
 **5.1 SQLite + FTS**
-- [ ] an FTS phrase query for a pasted error returns its burst
-- [ ] re-upsert an unchanged doc: still exactly one FTS row matches it
-- [ ] **edit a doc and re-upsert: still exactly one FTS row matches it** (delete-before-insert)
-- [ ] a question containing `OR` / `NEAR` / `*` does not crash the FTS lane
-- [ ] `PRAGMA journal_mode` reports `wal`
+- [x] an FTS phrase query for a pasted error returns its burst — *`check_fts_phrase_and_operators`*
+- [x] re-upsert an unchanged doc: still exactly one FTS row matches it — *`check_fts_reupsert_no_duplicate`*
+- [x] **edit a doc and re-upsert: still exactly one FTS row matches it** (delete-before-insert) — *same check; also asserts the OLD text no longer matches and the NEW text does*
+- [x] a question containing `OR` / `NEAR` / `*` does not crash the FTS lane — *quoted as a phrase, per the plan's own "quote user text" rule*
+- [x] `PRAGMA journal_mode` reports `wal`
 
 **5.2 Vectors**
-- [ ] every stored vector has unit norm
-- [ ] a semantic query ranks the right artifact top-3
+- [x] every stored vector has unit norm — *`check_vectors_unit_norm_and_hot_reload`*
+- [x] a semantic query ranks the right artifact top-3 — *`check_semantic_ranking`, real `sentence-transformers` model, 3 unrelated distractors*
 
 **5.3 Hot reload**
-- [ ] upsert a doc and retrieve it **in the same process**, no restart
-- [ ] the metadata masks reflect a just-changed `validity` without a restart
-- [ ] a search running during an apply returns a coherent result set
+- [x] upsert a doc and retrieve it **in the same process**, no restart
+- [x] the metadata masks reflect a just-changed `validity` without a restart
+- [x] a search running during an apply returns a coherent result set — *`LiveIndex`'s own concurrency test (3 searcher threads + 1 writer thread, 200 iterations each, zero errors) during the module build; not re-run inside check_5 itself*
 
 **5.4 Graph**
-- [ ] a new doc creates a `:Doc` node with every property
-- [ ] **an edited doc updates its existing node** rather than being skipped
-- [ ] an unchanged doc issues no graph write
-- [ ] `DISTILLED_FROM` count matches the kept-burst count
+- [x] a new doc creates a `:Doc` node with every property — *`check_graph_create_update_skip`, strong read via `get_node_strong`*
+- [x] **an edited doc updates its existing node** rather than being skipped — *same check: content_hash differs → `graph_updated`, node's title reflects the edit*
+- [x] an unchanged doc issues no graph write — *same check: `graph_skipped`*
+- [x] `DISTILLED_FROM` count matches the kept-burst count — *`check_distilled_from_edges`, 3 kept bursts → 3 edges, traversed back and counted*
 
 **5.5 Consistency**
-- [ ] SQLite count == npz rows == graph `:Doc` count (strong read)
-- [ ] re-running the whole batch changes no counts
-- [ ] zero stranded rows in any retry ledger
+- [x] SQLite count == npz rows == graph `:Doc` count (strong read) — *`check_consistency`*
+- [x] re-running the whole batch changes no counts — *same check*
+- [ ] zero stranded rows in any retry ledger — **not built.** §8.2's `data/state/pending_{sqlite|vec|graph}.jsonl` per-destination retry ledgers don't exist yet; `upsert_docs` today just lets an exception propagate mid-batch (SQLite committed, vectors/graph not attempted) rather than queuing the remainder for retry. The content-hash compare makes a *re-run* self-healing (§8.2's own note), but there's no automatic retry trigger yet — deferred until this is wired into the scheduler.
 
 **5.6 Migrations**
-- [ ] migrations run in order on boot inside a transaction
-- [ ] `schema_version` is correct afterwards
-- [ ] no `CREATE TABLE IF NOT EXISTS` remains in runtime code
+- [x] migrations run in order on boot inside a transaction — `api/joel/migrations/001_init.sql`, `002_store_layer.sql`, applied by `run_migrations()` in numeric order, each wrapped in its own `BEGIN`/`COMMIT`
+- [x] `schema_version` is correct afterwards — verified fresh-DB (ends at 2) and against a copy of the real 926-doc database (was at 1, migrated cleanly to 2 with zero data loss; the running dev server then applied the same migration to the actual production `data/index/joel.db` on reload, also verified clean)
+- [x] no `CREATE TABLE IF NOT EXISTS` remains in runtime code — *the one standing exception is `schema_version`'s own bootstrap creation inside `run_migrations()` itself, unavoidable in every migration framework (Rails/Django/Alembic have the identical carve-out) since nothing can query "which migrations ran" before that table exists*
+- Also fixed in passing: `/api/health` hardcoded `schema_version: 1` instead of reading it from the DB.
 
 **5.7 Forget**
-- [ ] a forgotten doc leaves SQLite, FTS, vectors and graph
-- [ ] its canonical line becomes a tombstone
+- [ ] a forgotten doc leaves SQLite, FTS, vectors and graph — **not built.** The existing `POST /api/docs/{id}/forget`-shaped endpoint (if any) predates FTS/vectors/graph and only needs to learn about three new destinations; `LiveIndex` already has the tombstone mechanism (`apply(..., deleted=[...])`) and `HydraStore.delete_node` already does `DETACH DELETE`, so the primitives exist — this is wiring, not new capability.
+- [ ] its canonical line becomes a tombstone — **not built**, same follow-up.
+
+**Two HydraDB batch-write gaps found and fixed while building this (neither CP1 exercised them):**
+- A `null` anywhere inside an UNWIND list-of-maps parameter takes down the *entire* batch ("only boolean, signed integer, finite float, and string parameters are supported"), even though a bare scalar Bolt param accepts `None` fine. `HydraStore.upsert_nodes`/`link_nodes` now coerce `None → ""` per batched property (`_null_safe`).
+- `link_nodes`'s fallback for a properties-less edge issued `SET r.id = r.id`, which HydraDB rejects outright ("cannot update relationship id"). Real `:DISTILLED_FROM` edges (§4.2 — no properties) hit this immediately; fixed by omitting the `SET` clause entirely when there's nothing to set.
 
 ---
 
