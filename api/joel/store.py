@@ -77,6 +77,20 @@ QUERY LANGUAGE GAPS (§4.4 assumptions, verified against the live node)
     patterns                 must have exactly one type"). Fallback:
                               `traverse_any_type` issues one query per type
                               and merges client-side.
+    null in UNWIND rows        rejected ("only boolean, signed integer, finite
+                              float, and string parameters are supported") --
+                              a bare scalar Bolt param accepts `None` fine,
+                              but a `None` *inside* the list-of-maps UNWIND
+                              takes down the whole batch. Fallback: `_null_safe`
+                              coerces `None` -> `""` for every batched property
+                              in `upsert_nodes`/`link_nodes`.
+    SET on a props-less        rejected ("UNWIND relationship SET cannot update
+    UNWIND-batched edge        relationship id") -- `link_nodes` used to paper
+                              over an empty property list with `r.id = r.id`,
+                              which trips exactly this. Fallback: omit the SET
+                              clause entirely when there are no relationship
+                              properties (e.g. :DISTILLED_FROM, §4.2); the
+                              MERGE pattern already binds `id`.
     algo.MSpaths              present, but `sourceValues`/`targetValues` are
                               matched against a *string* property (`key`
                               here, not the integer `id`) and must be passed
@@ -109,6 +123,18 @@ def to_vertex_id(key: str) -> int:
     collision is not the dominant risk."""
     digest = hashlib.blake2b(key.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "big") & _VERTEX_ID_MASK
+
+
+def _null_safe(value: Any) -> Any:
+    """UNWIND's list-of-maps parameter rejects `null` outright ("only
+    boolean, signed integer, finite float, and string parameters are
+    supported") even though a bare scalar Bolt param happily binds `None` --
+    a batch-write-only gap the ad-hoc single-statement helpers above never
+    hit. Every optional property this codebase batch-writes is a string
+    (§4.1's Doc/Entity properties, ontology edge props), so the empty
+    string is an unambiguous "absent" for them; reconsider if a batched
+    numeric-or-null property ever shows up."""
+    return "" if value is None else value
 
 
 def _unwrap(value: Any) -> Any:
@@ -272,7 +298,7 @@ class HydraStore:
             {
                 "vid": to_vertex_id(row[key_field]),
                 "key": row[key_field],
-                **{p: row.get(p) for p in prop_names},
+                **{p: _null_safe(row.get(p)) for p in prop_names},
             }
             for row in rows
         ]
@@ -305,18 +331,23 @@ class HydraStore:
                 "src": to_vertex_id(row["from_key"]),
                 "dst": to_vertex_id(row["to_key"]),
                 "rel_id": to_vertex_id(row["rel_key"]),
-                **{p: row.get(p) for p in prop_names},
+                **{p: _null_safe(row.get(p)) for p in prop_names},
             }
             for row in rows
         ]
-        set_clause = ", ".join(f"r.{p} = row.{p}" for p in prop_names) or "r.id = r.id"
-        self.hydra.bolt(
+        # Props-less edges (e.g. :DISTILLED_FROM, §4.2) have nothing to SET
+        # after the MERGE -- `id` is already bound in the MERGE pattern
+        # itself, and re-SETting it ("r.id = r.id") is rejected outright
+        # ("UNWIND relationship SET cannot update relationship id").
+        set_clause = ", ".join(f"r.{p} = row.{p}" for p in prop_names)
+        query = (
             f"UNWIND $rows AS row "
             f"MATCH (s:{from_label} {{id: row.src}}), (d:{to_label} {{id: row.dst}}) "
-            f"MERGE (s)-[r:{edge_type} {{id: row.rel_id}}]->(d) "
-            f"SET {set_clause}",
-            rows=payload,
+            f"MERGE (s)-[r:{edge_type} {{id: row.rel_id}}]->(d)"
         )
+        if set_clause:
+            query += f" SET {set_clause}"
+        self.hydra.bolt(query, rows=payload)
 
     # ---- §4.4 fallbacks ----------------------------------------------
 
