@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "api"))
 
 import joel.app as app  # noqa: E402
+from joel.connectors.composio_conn import _retry_after_seconds  # noqa: E402
 from joel.syncer import BACKOFF_LADDER_SECONDS, backoff_seconds, next_retry_at  # noqa: E402
 
 
@@ -139,9 +140,27 @@ def check_catch_up_runs_once_not_672_times(tmp_dir: Path) -> None:
         app._start_ingest = original_start_ingest
 
 
+def check_retry_after_is_honoured_exactly() -> None:
+    """§11.2 "honour Retry-After exactly" -- a stated wait beats a guess."""
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    assert _retry_after_seconds({}, default=2.0) == 2.0
+    assert _retry_after_seconds({"Retry-After": "5"}, default=2.0) == 5.0
+    assert _retry_after_seconds({"retry-after": "5"}, default=2.0) == 5.0
+    assert _retry_after_seconds({"Retry-After": "9999"}, default=2.0) == 30.0, "capped, never unbounded"
+    future = datetime.now(timezone.utc) + timedelta(seconds=10)
+    http_date = format_datetime(future, usegmt=True)
+    got = _retry_after_seconds({"Retry-After": http_date}, default=2.0)
+    assert 8.0 <= got <= 11.0, got
+    assert _retry_after_seconds({"Retry-After": "not-a-number"}, default=2.0) == 2.0
+    print("ok  8.0c: Retry-After (seconds or HTTP-date, case-insensitive, capped) is honoured exactly")
+
+
 def main() -> None:
     check_backoff_ladder()
     check_next_retry_at_is_relative_to_now()
+    check_retry_after_is_honoured_exactly()
     with tempfile.TemporaryDirectory() as td:
         check_concurrency_cap_and_error_retry(Path(td))
     with tempfile.TemporaryDirectory() as td:

@@ -6,9 +6,13 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
+
+RETRY_AFTER_MAX_SECONDS = 30
 
 if TYPE_CHECKING:
     from composio import Composio
@@ -24,6 +28,30 @@ TOOLKIT_VERSIONS = {
 
 class ComposioError(RuntimeError):
     pass
+
+
+def _retry_after_seconds(headers: dict[str, Any], default: float) -> float:
+    """§11.2's "honour Retry-After exactly" -- a provider's own stated wait
+    beats a fixed guess, when it tells us one. Handles both the common
+    integer-seconds form and the less common HTTP-date form; falls back to
+    `default` on anything malformed. Capped at `RETRY_AFTER_MAX_SECONDS` so
+    a misbehaving header can't block a sync worker indefinitely."""
+    raw = None
+    for key, value in headers.items():
+        if str(key).lower() == "retry-after":
+            raw = value
+            break
+    if raw is None:
+        return default
+    try:
+        seconds = float(str(raw).strip())
+    except ValueError:
+        try:
+            when = parsedate_to_datetime(str(raw))
+            seconds = max(0.0, (when - datetime.now(when.tzinfo)).total_seconds())
+        except (TypeError, ValueError):
+            return default
+    return max(0.0, min(seconds, RETRY_AFTER_MAX_SECONDS))
 
 
 def _prepare_cache() -> None:
@@ -296,7 +324,9 @@ def proxy_call(
             raise ComposioError(last_error) from exc
         status = int(getattr(response, "status", 200) or 200)
         if status == 429:
-            time.sleep(1 + attempt)
+            header_map = getattr(response, "headers", None)
+            headers_out = dict(header_map) if isinstance(header_map, dict) else {}
+            time.sleep(_retry_after_seconds(headers_out, default=1 + attempt))
             continue
         raw = getattr(response, "data", None)
         if isinstance(raw, str):
