@@ -85,9 +85,17 @@ def _build_context(reranked: list[RerankedDoc]) -> str:
     for r in reranked:
         d = r.doc
         body = (d.body or "")[:CONTEXT_BODY_CHARS]
+        # `container` (Slack channel name, GitHub repo, etc.) is the human
+        # identifier a question actually names ("#all-acme-inc") -- without
+        # it here, only the opaque `[doc_id]` (often a raw provider ID like
+        # a Slack channel_id) is visible, and the model has no way to
+        # confirm a doc belongs to the channel/repo the question asked
+        # about. Found live: a real "latest message in #channel" question
+        # abstained because the doc's own text never states its channel.
         blocks.append(
             f"[{d.id}] {d.title}\n"
-            f"source={d.source_type} granularity={d.granularity} ts={d.ts or 'unknown'} "
+            f"source={d.source_type} container={d.container or 'unknown'} "
+            f"granularity={d.granularity} ts={d.ts or 'unknown'} "
             f"validity={d.validity}\n{body}"
         )
     return "\n\n".join(blocks)

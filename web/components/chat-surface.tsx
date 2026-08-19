@@ -2,6 +2,7 @@
 
 import { ContentFrame } from "@/components/app-frame";
 import { AnswerTurn, UserTurn } from "@/components/beautifului/AnswerTurn";
+import { LaneChips } from "@/components/beautifului/LaneChips";
 import { LockedChat } from "@/components/beautifului/LockedChat";
 import PromptBar from "@/components/beautifului/PromptBar";
 import { BrandMark } from "@/components/brand-mark";
@@ -25,6 +26,7 @@ const STAGE_LABEL: Record<string, string> = {
   rewriting: "Rewriting",
   planning: "Planning",
   reranking: "Reranking",
+  live: "Checking live sources",
   answering: "Answering",
 };
 
@@ -48,6 +50,10 @@ export function ChatSurface() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [stage, setStage] = useState<string | null>(null);
+  const [liveLanes, setLiveLanes] = useState<string[]>([]);
+  const [liveCheck, setLiveCheck] = useState<{ checked: string[]; found: boolean } | null>(
+    null,
+  );
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -122,6 +128,8 @@ export function ChatSurface() {
     setBusy(false);
     setDraft("");
     setStage(null);
+    setLiveLanes([]);
+    setLiveCheck(null);
     setActiveId(null);
     setMessages([]);
     setThreadPending(false);
@@ -133,6 +141,8 @@ export function ChatSurface() {
     abortRef.current = null;
     setBusy(false);
     setStage(null);
+    setLiveLanes([]);
+    setLiveCheck(null);
   }
 
   async function onSend(question: string) {
@@ -150,6 +160,8 @@ export function ChatSurface() {
     setBusy(true);
     setDraft("");
     setStage("rewriting");
+    setLiveLanes([]);
+    setLiveCheck(null);
 
     const ac = new AbortController();
     abortRef.current = ac;
@@ -160,6 +172,8 @@ export function ChatSurface() {
         question,
         {
           onStatus: (s) => setStage(s),
+          onLane: (lane) => setLiveLanes((ls) => (ls.includes(lane) ? ls : [...ls, lane])),
+          onLive: (checked, found) => setLiveCheck({ checked, found }),
           onToken: (text) => {
             tokens += text;
             setDraft(tokens);
@@ -168,6 +182,8 @@ export function ChatSurface() {
             setMessages((m) => [...m, message]);
             setDraft("");
             setStage(null);
+            setLiveLanes([]);
+            setLiveCheck(null);
             void loadList();
           },
         },
@@ -241,6 +257,13 @@ export function ChatSurface() {
                     }}
                   >
                     {STAGE_LABEL[stage] ?? stage}
+                  </span>
+                )}
+                {liveLanes.length > 0 && <LaneChips lanes={liveLanes} />}
+                {liveCheck && liveCheck.checked.length > 0 && (
+                  <span className="text-[12.5px] text-ink-3">
+                    Live: {liveCheck.checked.join(", ")}
+                    {liveCheck.found ? " — found something new" : " — nothing new found"}
                   </span>
                 )}
                 {draft && (

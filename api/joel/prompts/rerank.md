@@ -20,6 +20,6 @@ Return ONLY JSON: [{"id":"...","score":0-10,"reason":"<=80 chars"}]
 {question}
 
 ## Candidates
-Each row: id · title · granularity · ts · snippet (<=300 chars)
+Each row: id · title · container (channel/repo/etc.) · granularity · ts · snippet (<=300 chars)
 ---
 {candidates}

@@ -370,7 +370,7 @@ export function IntegrationsPanel({
           def={openDef}
           card={openCard}
           jobs={openCard?.id ? (jobsById[openCard.id] ?? []) : []}
-          jobsLoading={Boolean(openCard?.id) && jobsById[openCard.id] === undefined}
+          jobsLoading={openCard?.id ? jobsById[openCard.id] === undefined : false}
           connected={Boolean(openCard?.id || accountByToolkit.get(openDef.toolkit))}
           identity={accountByToolkit.get(openDef.toolkit)?.label ?? null}
           configured={configured}

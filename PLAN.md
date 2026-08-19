@@ -43,7 +43,7 @@ Each risky step carries a guardrail table — **the ❌ column is a mistake an i
 
 Consequences: append-only means **`validity='superseded'` is how things stop being true**, never deletion. Visibility is a stamp at ingest, never inferred at query time. The client does not choose the readable set — the server builds `AskContext` from the signed-in actor and the surface. Read-only means no confirmation UI and no audit trail of writes yet.
 
-### 0.3 Current state — 2026-08-19
+### 0.3 Current state — 2026-08-20
 
 Honest snapshot of the repo, not the original v1 brief. Distillation/ontology/agent remain the later core track; this is the company-brain *skeleton* that those phases now sit on.
 
@@ -60,6 +60,8 @@ Honest snapshot of the repo, not the original v1 brief. Distillation/ontology/ag
 | Slack bot, MCP, leasing, API keys | **Not built.** Same permissions graph will apply when they exist. |
 
 **Channel membership is done** (2026-08-19) — a desk/DM now reads the private rooms the actor is actually in, matched by email. Remaining skeleton checkpoints, in order: **real personal connectors** (needs the `connections.provider` UNIQUE constraint removed, not just the `owned_by`/`kind` columns already added) → **Slack surface** then **MCP**, both constructing `AskContext` server-side.
+
+**(2026-08-20)** Backend↔frontend `/api/ask` wiring audit: the SSE contract (`status`/`rewritten`/`plan`/`lane`/`live`/`token`/`citations`/`reasoning_path`/`done`) was already fully emitted by the backend, but `chat-surface.tsx` only ever consumed `status`/`token`/`done` — `lane` and `live` (the two agent-specific events) were parsed by `lib/api.ts` and then silently dropped, so live-lookup progress never reached the screen mid-stream. Fixed (see CP9 §9.4). While live-testing that fix, also found and fixed a real answer-quality bug (CP7 bug 5, see below) where `container` (the Slack channel/GitHub repo a question actually names) was invisible to both rerank and the answer LLM.
 
 ---
 
@@ -1945,8 +1947,9 @@ Built reduced-lane first, on purpose: VECTOR, VEC-ARTIFACTS, FTS and PHRASE need
 2. **Concurrent `SentenceTransformer.encode()` calls segfault the worker.** `run_lanes` runs VECTOR and VEC-ARTIFACTS concurrently via `ThreadPoolExecutor`, and both call `embed_fn` for the same question at (almost) the same instant on the one shared model instance. That reproduced a hard `SIGSEGV` (exit 139) against the real model and real corpus, not a catchable Python exception — so the `try/except Exception` wrapped around `answer_question` in `/api/ask` (added for bug 1) could not have helped either. Fixed with a plain `threading.Lock` around the `.encode()` call in `app._embed_fn`; embedding a handful of short strings is fast enough that serializing it isn't a real throughput cost.
 3. **The FTS lane quoted the entire question as one exact phrase.** `fts_lane` reused `PHRASE`'s `_quote_fts()` helper on the *whole* natural-language question, turning `docs_fts MATCH` into "every word must appear consecutively in this exact order" — which a real question essentially never satisfies, so FTS silently returned 0 hits against the real 930-doc corpus every time, even for a question copied almost verbatim from a real doc's title. §10.2 wants FTS to be bm25-ranked term overlap ("rare tokens (IDF)"), not a phrase match — that's PHRASE's job. Fixed with `_or_of_quoted_tokens()`: each word is still individually quoted (so a bare `OR`/`NEAR`/`*` in the question still can't act as an FTS5 operator, keeping §18's "quote user text" rule intact) but joined with `OR` instead of concatenated into one phrase, restoring real bm25 ranking. Verified live: the same question that returned 0 FTS hits before the fix returns 15 after it, against the real corpus.
 4. **`openrouter_call` let raw network exceptions escape.** It only wrapped HTTP-status and response-shape errors in `LLMError`; a bare `requests.RequestException` (timeout, connection reset, DNS failure) or a non-JSON response body propagated straight up and crashed the SSE generator mid-stream — every caller (`plan_query`, `rerank_candidates`, `synthesize_answer`, `distill_thread`) only ever catches `LLMError` and degrades gracefully otherwise. Fixed by wrapping the `requests.post` call and the `resp.json()` call each in their own `try/except`, re-raising as `LLMError` either way.
+5. **(2026-08-20) `container` was invisible to both rerank and the answer LLM.** `_build_candidates_block` (`rerank.py`) and `_build_context` (`synthesize.py`) showed `id · title · granularity · ts · body`, never `RetrievedDoc.container` — so a question naming a Slack channel by its human name (`"latest message in #all-acme-inc"`) had no reliable way to be matched: the only channel-shaped string visible anywhere was the raw provider ID baked into the opaque `[doc_id]` (e.g. `c0bqp4tca77`), not the name the question used. Found live via a real CP10 live-lookup call: the Slack fetch correctly found and stored the message (`live: true` in the SSE stream), but the answer LLM abstained anyway, reasoning out loud that it "cannot confirm this corresponds to '#all-acme-inc'" — a real answer-quality bug, not a retrieval or live-lookup bug. Fixed by adding `container=` to both context-builders. Re-run live after the fix: same question now returns `status: answered`, cites the live doc with `live: true`, "As of just now: The latest message in #all-acme-inc is...".
 
-All four are now regression-covered live (repeated real `/api/ask` calls against the real 930-doc corpus, no crashes/hangs, real lane hit counts, a real cited answer for a question matching real ingested GitHub data) and `check_5_store.py`/`check_7_retrieve.py` stay green.
+All five are now regression-covered live (repeated real `/api/ask` calls against the real corpus, no crashes/hangs, real lane hit counts, a real cited answer for a question matching real ingested GitHub data) and `check_5_store.py`/`check_7_retrieve.py`/`check_10_agent.py` stay green.
 
 **7.1 Lanes individually**
 - [x] each of the four built lanes (VECTOR, VEC-ARTIFACTS, FTS, PHRASE) returns sensible results in isolation — *`check_lanes_individually`, plus live against the real corpus (bug 3 above)*
@@ -2029,6 +2032,8 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 
 **Status 2026-08-19 — done.** `scripts/check_identity.py` green. One workspace per install; login is required.
 
+**Hardening (2026-08-20):** `identity.parse_iso` could return a naive `datetime`; comparing it against `_now()`'s aware one in `actor_from_session` raised an uncaught `TypeError`, turning any malformed `sessions.expires_at` value into a 500 on every authenticated request instead of a clean 401. Every legitimate write already goes through `_iso(_now())` (always aware), so this never fires from normal use — found only by hand-inserting a test session row with a naive timestamp while live-testing the frontend wiring below. `parse_iso` now normalizes a naive result to UTC.
+
 - [x] empty install → `/setup` creates the admin and the `orgs` row
 - [x] second `/setup` is 409
 - [x] login issues a session; expired/missing cookie is 401 on product APIs
@@ -2086,6 +2091,7 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 - [ ] 👁 all four status badges render correctly — only `Answered` (green) was exercised live this pass; `partial`/`conflicted`/`absent` weren't independently triggered and screenshotted
 - [ ] 👁 the reasoning path shows graph paths — a reasoning path DID render live with real, specific steps, but this particular question's path cited a document field match, not a GRAPH-lane multi-hop traversal specifically — not yet seen rendered for a genuinely multi-hop answer
 - [x] streaming works (the SSE-over-POST decision holds up in the browser) — verified live: tokens streamed and the UI updated in real time through the actual browser, not just curl
+- [x] **(2026-08-20)** in-progress lane and live-lookup events actually reach the screen, not just the final message — `askStream`'s `onLane`/`onLive` handlers existed in `lib/api.ts` but `chat-surface.tsx` never wired them (the `event: live` SSE line had no handler at all, and lane hits only ever showed up post-hoc on the finished message). Wired both into `ChatSurface`'s busy state using the already-built `LaneChips` component plus a one-line live-check status; verified over raw SSE that the backend's `event: live` shape (`{checked, found}`) matches exactly, and live in the browser that the finished turn renders unchanged (LIVE badge, "As of just now:", lane chips, reasoning path all still correct).
 
 **9.5 Unattended freshness**
 - [ ] post a message, wait one interval, ask about it — **it answers with no human action** — not run this pass (needs real wall-clock waiting); the scheduler doing real unattended syncs throughout this whole session is strong indirect evidence, not the literal test
@@ -2160,7 +2166,7 @@ All three are regression-covered (`check_10_agent.py`, and a real `/api/ask` cal
 **11.5 Degraded modes**
 - [x] HydraDB stopped: chat answers on four lanes (of six — GRAPH/WHO_KNOWS are the two Hydra-dependent ones) with no 500 — `graph_lane`/`who_knows_lane` already degrade to empty on any exception (built in CP10's live-lookup pass); `/api/health` now also degrades honestly instead of lying — 👁 no dedicated frontend banner yet for this specific state
 - [ ] LLM key rejected: banner with the provider's real error, ingestion pauses — partial: `/api/health.llm_error` distinguishes "missing" but not "present but rejected" (see note above); ingestion already effectively pauses the LLM-dependent stage when `llm_call is None` per §14.6, but that's the missing-key case, not rejected-key
-- [ ] no connectors: `/chat` is locked with an explanation, not an empty box — backend 409 already exists (pre-existing); the frontend empty-state treatment is unverified, out of this pass's (backend) scope
+- [x] no connectors: `/chat` is locked with an explanation, not an empty box — backend 409 (pre-existing) plus `web/components/beautifului/LockedChat.tsx` (pre-existing, confirmed 2026-08-20 by reading it): "No memory yet — Connect a tool, then come back here." with a real link to `/integrations`, wired in `chat-surface.tsx`'s `!ready` branch
 
 ---
 

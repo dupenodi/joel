@@ -53,7 +53,15 @@ def _iso(dt: datetime) -> str:
 
 
 def parse_iso(value: str) -> datetime:
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    # A naive result (no offset in `value`) would otherwise crash any
+    # comparison against `_now()`'s aware datetime with a TypeError instead
+    # of a clean 401 -- every stored timestamp in this module goes through
+    # `_iso(_now())` and is always aware, but this keeps a malformed row
+    # from 500ing every authenticated request.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def normalize_email(email: str) -> str:

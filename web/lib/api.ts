@@ -295,6 +295,7 @@ export type AskHandlers = {
   onRewritten?: (q: string, kind: string) => void;
   onPlan?: (lanes: string[], intent: string) => void;
   onLane?: (lane: string, hits: number) => void;
+  onLive?: (checked: string[], found: boolean) => void;
   onToolCall?: (call: NonNullable<Message["tool_calls"]>[number]) => void;
   onToken?: (text: string) => void;
   onCitations?: (citations: NonNullable<Message["citations"]>) => void;
@@ -371,6 +372,12 @@ export async function askStream(
         case "tool_call":
           handlers.onToolCall?.(
             payload as unknown as NonNullable<Message["tool_calls"]>[number],
+          );
+          break;
+        case "live":
+          handlers.onLive?.(
+            (payload.checked as string[]) ?? [],
+            Boolean(payload.found),
           );
           break;
         case "token":

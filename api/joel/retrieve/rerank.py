@@ -42,7 +42,13 @@ def _build_candidates_block(candidates: list[RetrievedDoc]) -> str:
     lines = []
     for c in candidates:
         snippet = (c.body or "")[:SNIPPET_CHARS].replace("\n", " ")
-        lines.append(f"{c.id} · {c.title} · {c.granularity} · {c.ts or 'unknown'} · {snippet}")
+        # `container` (Slack channel, GitHub repo, ...) is what a question
+        # like "latest message in #general" actually names -- without it,
+        # rerank can't tell two candidates from different channels apart.
+        lines.append(
+            f"{c.id} · {c.title} · {c.container or 'unknown'} · {c.granularity} · "
+            f"{c.ts or 'unknown'} · {snippet}"
+        )
     return "\n".join(lines)
 
 
