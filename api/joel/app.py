@@ -1877,6 +1877,7 @@ def _assistant_payload(
     lanes: list[str] | None = None,
     reasoning_path: list[str] | None = None,
     conflicts: list[dict[str, Any]] | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "role": "assistant",
@@ -1885,7 +1886,7 @@ def _assistant_payload(
         "citations": citations or [],
         "lanes": lanes or [],
         "reasoning_path": reasoning_path or [],
-        "tool_calls": [],
+        "tool_calls": tool_calls or [],
         "conflicts": conflicts or [],
         "not_found": [],
     }
@@ -2191,6 +2192,20 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
         for token in answer_text.split(" "):
             yield _sse("token", {"text": token + " "})
 
+        # §13.2's whitelisted point-lookups ARE the agent's only tool calls
+        # today -- surfaced on the message so the UI can show what was
+        # actually checked live, not just the resulting citation.
+        tool_calls = [
+            {
+                "id": f"live_{i}",
+                "name": "live_lookup",
+                "provider": "github" if desc.startswith("GitHub") else "slack",
+                "status": "done",
+                "detail": "found new content" if live_doc_ids else "nothing new found",
+            }
+            for i, desc in enumerate(live_checked)
+        ]
+
         doc_lookup = {r.doc.id: r.doc for r in trace.reranked} or {d.id: d for d in trace.fused}
         citations = [
             {
@@ -2215,6 +2230,9 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
                 }
             ]
 
+        for call in tool_calls:
+            yield _sse("tool_call", call)
+
         assistant = _assistant_payload(
             answer_text,
             status=trace.answer.status,
@@ -2222,6 +2240,7 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             lanes=list(trace.lane_results.keys()),
             reasoning_path=trace.answer.reasoning_path,
             conflicts=conflicts,
+            tool_calls=tool_calls,
         )
         yield _sse("citations", {"citations": citations})
         yield _sse("reasoning_path", {"paths": trace.answer.reasoning_path})

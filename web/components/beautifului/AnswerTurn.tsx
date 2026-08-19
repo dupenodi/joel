@@ -7,6 +7,7 @@ import { CitationChip } from "@/components/beautifului/CitationChip";
 import { ConflictBlock } from "@/components/beautifului/ConflictBlock";
 import { LaneChips } from "@/components/beautifului/LaneChips";
 import { ReasoningPath } from "@/components/beautifului/ReasoningPath";
+import { ToolCallChips } from "@/components/beautifului/ToolCallChips";
 import type { Message } from "@/lib/types";
 
 export function UserTurn({ children }: { children: string }) {
@@ -66,6 +67,9 @@ export function AnswerTurn({
             />
           ))}
         </div>
+      )}
+      {message.tool_calls && message.tool_calls.length > 0 && (
+        <ToolCallChips calls={message.tool_calls} />
       )}
       {message.reasoning_path && message.reasoning_path.length > 0 && (
         <ReasoningPath paths={message.reasoning_path} />
