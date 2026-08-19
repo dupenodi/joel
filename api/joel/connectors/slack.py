@@ -178,7 +178,18 @@ class SlackClient:
         return replies
 
 
-def _mention_handles(text: str, users: dict[str, str]) -> list[str]:
+def channel_kind(channel: dict[str, Any]) -> str:
+    """Normalize Slack conversation flags into the fact visibility.derive reads."""
+    if channel.get("is_im"):
+        return "im"
+    if channel.get("is_mpim"):
+        return "mpim"
+    if channel.get("is_private") or channel.get("is_group"):
+        return "private"
+    return "public"
+
+
+def _mention_handles(text: str, users: dict[str, Any]) -> list[str]:
     import re
 
     return [
@@ -245,6 +256,7 @@ def fetch_slack_docs(
                 enriched = dict(item)
                 enriched["channel"] = channel_name
                 enriched["channel_id"] = channel_id
+                enriched["channel_kind"] = channel_kind(channel)
                 enriched["team_domain"] = team_domain
                 user_id = str(item.get("user") or "")
                 enriched["author_handle"] = users.get(
@@ -274,5 +286,6 @@ __all__ = [
     "SlackAPIError",
     "SlackClient",
     "SlackFetchResult",
+    "channel_kind",
     "fetch_slack_docs",
 ]

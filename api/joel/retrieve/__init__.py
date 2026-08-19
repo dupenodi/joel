@@ -27,6 +27,7 @@ from joel.retrieve.lanes import RetrievedDoc, run_lanes
 from joel.retrieve.planner import QueryPlan, plan_query
 from joel.retrieve.rerank import RerankedDoc, rerank_candidates
 from joel.retrieve.synthesize import AnswerResult, synthesize_answer
+from joel.visibility import AskContext
 
 EmbedFn = Callable[[list[str]], np.ndarray]
 
@@ -52,10 +53,12 @@ def answer_question(
     embed_fn: EmbedFn,
     llm_call: LLMCallFn | None,
     question: str,
+    *,
+    ask: AskContext | None = None,
 ) -> RetrievalTrace:
     question = question.strip()
     plan = plan_query(llm_call, question) if llm_call is not None else QueryPlan(intent="lookup")
-    lane_results = run_lanes(conn, index, embed_fn, plan, question)
+    lane_results = run_lanes(conn, index, embed_fn, plan, question, ask=ask)
     fused = rrf_fuse(lane_results, top_n=FUSE_TOP_N)
     reranked = rerank_candidates(llm_call, question, fused) if llm_call is not None else []
     answer = synthesize_answer(llm_call, question, reranked)

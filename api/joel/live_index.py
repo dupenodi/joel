@@ -20,7 +20,16 @@ from typing import Iterable
 
 import numpy as np
 
-META_FIELDS = ("granularity", "artifact_class", "validity", "resolved", "period", "source_type")
+META_FIELDS = (
+    "granularity",
+    "artifact_class",
+    "validity",
+    "resolved",
+    "period",
+    "source_type",
+    "visibility",
+)
+META_FALLBACK = {"visibility": "org"}
 
 COMPACT_TOMBSTONE_RATIO = 0.2
 
@@ -63,7 +72,15 @@ class LiveIndex:
         data = np.load(self.npz_path, allow_pickle=True)
         matrix = data["matrix"].astype(np.float32)
         ids = list(data["ids"])
-        meta = {f: data[f] for f in META_FIELDS}
+        n = len(ids)
+        files = set(data.files)
+        meta = {}
+        for f in META_FIELDS:
+            if f in files:
+                meta[f] = data[f]
+            else:
+                fill = META_FALLBACK.get(f, "")
+                meta[f] = np.array([fill] * n, dtype=object)
         forgotten = data["forgotten"].astype(bool)
         row_of = {doc_id: i for i, doc_id in enumerate(ids)}
         return _Snapshot(matrix=matrix, ids=ids, meta=meta, forgotten=forgotten, row_of=row_of)
@@ -151,7 +168,17 @@ class LiveIndex:
         snap = self._snapshot
         m = np.ones(len(snap.ids), dtype=bool)
         for field, value in filters.items():
-            m &= snap.meta[field] == value
+            col = snap.meta[field]
+            if isinstance(value, (set, frozenset, list, tuple)):
+                allowed = list(value)
+                if not allowed:
+                    return np.zeros(len(snap.ids), dtype=bool)
+                hit = np.zeros(len(snap.ids), dtype=bool)
+                for item in allowed:
+                    hit |= col == item
+                m &= hit
+            else:
+                m &= col == value
         return m
 
     def snapshot(self) -> _Snapshot:
@@ -201,4 +228,4 @@ class LiveIndex:
         return snap.forgotten.sum() / len(snap.ids) > COMPACT_TOMBSTONE_RATIO
 
 
-__all__ = ["LiveIndex", "META_FIELDS", "COMPACT_TOMBSTONE_RATIO"]
+__all__ = ["LiveIndex", "META_FIELDS", "META_FALLBACK", "COMPACT_TOMBSTONE_RATIO"]

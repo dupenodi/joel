@@ -52,6 +52,7 @@ def _row_to_store_doc(row) -> StoreDoc:
         period=row["period"],
         url=row["url"],
         content_hash=row["content_hash"] or "",
+        visibility=row["visibility"],
     )
 
 
@@ -82,7 +83,7 @@ def main() -> None:
         rows = conn.execute(
             """SELECT id, title, body, source_type, container, granularity,
                       artifact_class, validity, resolved, timestamp, period,
-                      url, content_hash
+                      url, content_hash, visibility
                FROM docs WHERE forgotten=0"""
         ).fetchall()
         total = len(rows)

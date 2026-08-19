@@ -40,6 +40,7 @@ _GRAPH_PROPS = (
     "ts",
     "period",
     "url",
+    "visibility",
 )
 
 
@@ -58,6 +59,7 @@ class StoreDoc:
     period: str | None  # "2026Q2" or None
     url: str | None
     content_hash: str
+    visibility: str = "org"
     distilled_from: tuple[str, ...] = ()  # kept-burst StoreDoc ids (artifacts only)
     embed_text: str | None = None  # override text to embed; None -> title+"\n"+body[:2000]
 
@@ -91,10 +93,16 @@ def from_canonical_doc(doc: CanonicalDoc) -> StoreDoc:
         period=period_of(doc.timestamp) if doc.timestamp else None,
         url=doc.url,
         content_hash=doc.content_hash,
+        visibility=doc.visibility,
     )
 
 
-def from_thread_artifact(artifact: ThreadArtifact, kept_burst_ids: Iterable[str]) -> StoreDoc:
+def from_thread_artifact(
+    artifact: ThreadArtifact,
+    kept_burst_ids: Iterable[str],
+    *,
+    visibility: str = "org",
+) -> StoreDoc:
     """§7.4's artifact row: `title=question[:300]`, `body=normalized_body()`,
     `granularity="artifact"`, `DISTILLED_FROM` -> every kept burst."""
     body = artifact.normalized_body()
@@ -112,11 +120,19 @@ def from_thread_artifact(artifact: ThreadArtifact, kept_burst_ids: Iterable[str]
         period=period_of(artifact.timestamp) if artifact.timestamp else None,
         url=None,
         content_hash=compute_content_hash(artifact.question, body),
+        visibility=visibility,
         distilled_from=tuple(kept_burst_ids),
     )
 
 
-def from_burst(burst: Burst, *, source_type: str, container: str | None, thread_question: str) -> StoreDoc:
+def from_burst(
+    burst: Burst,
+    *,
+    source_type: str,
+    container: str | None,
+    thread_question: str,
+    visibility: str = "org",
+) -> StoreDoc:
     """§7.4's kept-burst row: bare `burst.text` as `body` (display + FTS),
     but the embedding gets the thread-question prefix (§7.4's "burst text
     carries its thread's context") so a tangent whose own vocabulary never
@@ -139,6 +155,7 @@ def from_burst(burst: Burst, *, source_type: str, container: str | None, thread_
         period=period_of(burst.end_ts),
         url=None,
         content_hash=compute_content_hash(title, burst.text),
+        visibility=visibility,
         embed_text=f"Thread: {thread_question}\n{burst.text}",
     )
 
@@ -182,13 +199,14 @@ def _upsert_sqlite_and_fts(conn: sqlite3.Connection, docs: list[StoreDoc], now: 
             """INSERT INTO docs(
                  id, source_type, external_id, title, body, content_hash, url,
                  timestamp, container, extra_json, first_seen, last_seen, forgotten,
-                 granularity, artifact_class, validity, resolved, period)
-               VALUES (?,?,?,?,?,?,?,?,?,'{}',?,?,0,?,?,?,?,?)
+                 granularity, artifact_class, validity, resolved, period, visibility)
+               VALUES (?,?,?,?,?,?,?,?,?,'{}',?,?,0,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  title=excluded.title, body=excluded.body, content_hash=excluded.content_hash,
                  url=excluded.url, timestamp=excluded.timestamp, container=excluded.container,
                  granularity=excluded.granularity, artifact_class=excluded.artifact_class,
                  validity=excluded.validity, resolved=excluded.resolved, period=excluded.period,
+                 visibility=excluded.visibility,
                  last_seen=excluded.last_seen, forgotten=0""",
             (
                 doc.id,
@@ -207,6 +225,7 @@ def _upsert_sqlite_and_fts(conn: sqlite3.Connection, docs: list[StoreDoc], now: 
                 doc.validity,
                 doc.resolved,
                 doc.period,
+                doc.visibility,
             ),
         )
         rowid = conn.execute("SELECT rowid FROM docs WHERE id=?", (doc.id,)).fetchone()[0]
@@ -232,6 +251,7 @@ def _upsert_vectors(index: LiveIndex, docs: list[StoreDoc], embed_fn: EmbedFn) -
                 "resolved": doc.resolved,
                 "period": doc.period,
                 "source_type": doc.source_type,
+                "visibility": doc.visibility,
             },
         )
         for i, doc in enumerate(docs)

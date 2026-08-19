@@ -64,6 +64,7 @@ def _row_to_canonical_doc(row: sqlite3.Row) -> CanonicalDoc:
         thread_id=row["thread_id"],
         parent_id=row["parent_id"],
         content_hash=row["content_hash"],
+        visibility=row["visibility"],
     )
 
 
@@ -133,16 +134,22 @@ def _distill_and_store_thread(
     kept = [b for b in resolved_bursts if b.kept]
     diff = diff_kept_set(kept, prior_ids, prior_text)
 
+    inherited = messages[0].visibility
     burst_docs = [
         from_burst(
             b,
             source_type=messages[0].source_type,
             container=messages[0].container,
             thread_question=artifact.question,
+            visibility=inherited,
         )
         for b in kept
     ]
-    artifact_doc = from_thread_artifact(artifact, kept_burst_ids=[bd.id for bd in burst_docs])
+    artifact_doc = from_thread_artifact(
+        artifact,
+        kept_burst_ids=[bd.id for bd in burst_docs],
+        visibility=inherited,
+    )
 
     to_upsert_ids = set(diff.to_upsert)
     changed_burst_docs = [bd for bd in burst_docs if bd.id in to_upsert_ids]

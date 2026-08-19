@@ -69,6 +69,7 @@ class CanonicalDoc(BaseModel):
     author_raw: str | None = None  # RAW handle -- resolution happens in §9
     participants_raw: list[str] = Field(default_factory=list)
     container: str | None = None  # channel/project/space/repo/mailbox/pipeline
+    visibility: str = "org"  # org | channel:{provider}:{id} | user:{provider}:{id}
     url: str | None = None
     timestamp: datetime | None = None  # tz-aware or None, never a raw string
     thread_id: str | None = None

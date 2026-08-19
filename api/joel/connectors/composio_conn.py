@@ -63,7 +63,15 @@ def get_composio(settings: dict[str, str]) -> Composio:
         raise ComposioError(
             "Composio API key not set — add it on Integrations or set COMPOSIO_API_KEY"
         )
-    return _composio_cls()(api_key=api_key)
+    # Fresh client per call so a stale httpx pool in a long-lived uvicorn
+    # worker cannot poison every connect.
+    import httpx
+
+    return _composio_cls()(
+        api_key=api_key,
+        timeout=20,
+        http_client=httpx.Client(timeout=20),
+    )
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

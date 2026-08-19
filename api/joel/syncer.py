@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import threading
 from collections.abc import Callable, Sequence
 
@@ -35,4 +36,48 @@ def start_scheduler(
     return stop
 
 
-__all__ = ["ingest_is_schedulable", "start_scheduler"]
+def release_running_jobs(
+    conn: sqlite3.Connection,
+    *,
+    now: str,
+    connection_id: str | None = None,
+    job_error: str | None = None,
+) -> int:
+    """Finish leftover in-process ingest jobs.
+
+    Jobs are daemon threads in this process. SQLite rows outlive `--reload`
+    and crash; a `running` row then 409s Sync Now and hides the connector
+    from the scheduler. Same connection mapping as a user cancel: ready if
+    a sync has finished before, otherwise pending_setup.
+    """
+    if connection_id is None:
+        rows = conn.execute(
+            """SELECT j.id AS job_id, j.connection_id, c.last_sync_at
+               FROM jobs j JOIN connections c ON c.id = j.connection_id
+               WHERE j.status='running'"""
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT j.id AS job_id, j.connection_id, c.last_sync_at
+               FROM jobs j JOIN connections c ON c.id = j.connection_id
+               WHERE j.status='running' AND j.connection_id=?""",
+            (connection_id,),
+        ).fetchall()
+    for row in rows:
+        conn.execute(
+            """UPDATE jobs SET finished_at=?, status='cancelled', error=?
+               WHERE id=?""",
+            (now, job_error, row["job_id"]),
+        )
+        conn.execute(
+            """UPDATE connections SET status=?, error=NULL, backfill_progress=NULL
+               WHERE id=?""",
+            (
+                "ready" if row["last_sync_at"] else "pending_setup",
+                row["connection_id"],
+            ),
+        )
+    return len(rows)
+
+
+__all__ = ["ingest_is_schedulable", "release_running_jobs", "start_scheduler"]

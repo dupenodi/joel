@@ -58,6 +58,7 @@ def qualify_slack_identity(raw: dict[str, Any]) -> dict[str, Any]:
     if not channel or not ts:
         return raw
     out = dict(raw)
+    out["channel_id"] = str(channel)
     thread_ts = raw.get("thread_ts") or ts
     out["_external_id"] = f"{channel}:{ts}"
     out["_thread_id"] = f"{channel}:{thread_ts}"
@@ -90,7 +91,7 @@ SLACK = SourceManifest(
     thread=("_thread_id", "_external_id"),
     parent="_parent_id",
     url=slack_permalink,
-    extra=("reactions", "files"),
+    extra=("reactions", "files", "channel_id", "channel_kind"),
     participants="mentions",
     pre=(strip_slack_markup, qualify_slack_identity),
 )

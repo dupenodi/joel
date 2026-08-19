@@ -31,10 +31,11 @@ from dotenv import load_dotenv
 # path degrades LLM/network failures elsewhere.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from joel.adapters import triage_batch
 from joel.connectors.composio_conn import (
@@ -63,7 +64,8 @@ from joel.connectors.oauth import (
     encrypt_credentials,
     validate_return_to,
 )
-from joel.syncer import ingest_is_schedulable, start_scheduler
+from joel.syncer import ingest_is_schedulable, release_running_jobs, start_scheduler
+from joel import identity
 from joel.connectors.catalog import (
     ProviderAPIError,
     fetch_gdrive_docs,
@@ -87,6 +89,7 @@ from joel.retrieve import RetrievalTrace, answer_question, log_trace
 from joel.retrieve.planner import QueryPlan
 from joel.store import HydraStore
 from joel.store_sql import remove_docs
+from joel.visibility import AskContext, Visibility, apply as apply_visibility
 
 DATA_DIR = Path(os.getenv("JOEL_DATA", "data"))
 DB_PATH = DATA_DIR / "index" / "joel.db"
@@ -139,8 +142,9 @@ def _embed_fn(texts: list[str]):
 PROVIDER_LABELS = {item.id: item.name for item in INTEGRATIONS}
 DEFAULT_INTERVAL = {item.id: item.default_interval_min for item in INTEGRATIONS}
 RETURN_PATHS = {
-    "connectors": "/connectors",
-    "onboarding": "/onboarding",
+    "connectors": "/integrations",
+    "integrations": "/integrations",
+    "onboarding": "/onboarding/tools",
 }
 
 DEFAULT_SETTINGS: dict[str, str] = {
@@ -156,24 +160,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "history_floor": "",
     "composio_api_key": "",
     "embed_model": "BAAI/bge-small-en-v1.5",
-    "display_name": "You",
 }
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _derive_name(domain: str) -> str:
-    host = domain.replace("https://", "").replace("http://", "").split("/")[0]
-    host = host.removeprefix("www.")
-    base = host.split(".")[0] or host
-    return base[:1].upper() + base[1:]
-
-
-def _favicon(domain: str) -> str:
-    host = domain.replace("https://", "").replace("http://", "").split("/")[0]
-    return f"https://www.google.com/s2/favicons?domain={host}&sz=128"
 
 
 def _connect() -> sqlite3.Connection:
@@ -285,7 +276,7 @@ def _persist_canonical_docs(
         if not r["forgotten"]
     }
     ignored_forgotten = sum(doc.doc_id in forgotten_ids for doc in docs)
-    docs = [doc for doc in docs if doc.doc_id not in forgotten_ids]
+    docs = [apply_visibility(doc) for doc in docs if doc.doc_id not in forgotten_ids]
     report = triage_batch(docs, known)
     seen_at = _now()
     for doc in report.unchanged:
@@ -301,15 +292,16 @@ def _persist_canonical_docs(
             """INSERT INTO docs(
                  id, source_type, external_id, title, body, content_hash, url,
                  timestamp, thread_id, parent_id, author_raw, container,
-                 extra_json, first_seen, last_seen, forgotten)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                 extra_json, first_seen, last_seen, forgotten, visibility)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
                ON CONFLICT(id) DO UPDATE SET
                  title=excluded.title, body=excluded.body,
                  content_hash=excluded.content_hash, url=excluded.url,
                  timestamp=excluded.timestamp, thread_id=excluded.thread_id,
                  parent_id=excluded.parent_id, author_raw=excluded.author_raw,
                  container=excluded.container, extra_json=excluded.extra_json,
-                 last_seen=excluded.last_seen, forgotten=0""",
+                 last_seen=excluded.last_seen, forgotten=0,
+                 visibility=excluded.visibility""",
             (
                 doc.doc_id,
                 doc.source_type,
@@ -326,6 +318,7 @@ def _persist_canonical_docs(
                 json.dumps(doc.extra),
                 first_seen,
                 seen_at,
+                doc.visibility,
             ),
         )
     for source_type, source_docs in by_source.items():
@@ -446,10 +439,6 @@ def _is_reauth(exc: BaseException) -> bool:
 # ── request bodies ──────────────────────────────────────────────────────────
 
 
-class OrgIn(BaseModel):
-    domain: str
-
-
 class ConnectorIn(BaseModel):
     provider: str
     mode: str = "composio"
@@ -495,9 +484,126 @@ class WipeIn(BaseModel):
     domain: str
 
 
+class SetupIn(BaseModel):
+    email: str
+    password: str
+    display_name: str = ""
+    domain: str | None = None
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class InviteIn(BaseModel):
+    email: str
+    role: str = "member"
+
+
+class AcceptInviteIn(BaseModel):
+    password: str
+    display_name: str = ""
+
+
+class MemberRoleIn(BaseModel):
+    role: str
+
+
+class WorkspacePatch(BaseModel):
+    domain: str | None = None
+    name: str | None = None
+
+
 # ── app ─────────────────────────────────────────────────────────────────────
 
 app = FastAPI(title="joel-api", version="0.1.0")
+
+SESSION_COOKIE = "joel_session"
+
+_PUBLIC_EXACT = {
+    ("GET", "/api/healthz"),
+    ("GET", "/api/auth/status"),
+    ("POST", "/api/auth/setup"),
+    ("POST", "/api/auth/login"),
+    ("POST", "/api/auth/logout"),
+    ("GET", "/api/composio/callback"),
+}
+
+
+def _is_public_path(method: str, path: str) -> bool:
+    if method == "OPTIONS":
+        return True
+    if (method, path) in _PUBLIC_EXACT:
+        return True
+    return path.startswith("/api/auth/invite/")
+
+
+def _set_session_cookie(response: Response, session_id: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        session_id,
+        httponly=True,
+        samesite="lax",
+        max_age=identity.SESSION_DAYS * 86400,
+        path="/",
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/")
+
+
+def _identity_error(exc: identity.IdentityError) -> HTTPException:
+    return HTTPException(exc.status, str(exc))
+
+
+def _require_actor(request: Request) -> identity.Actor:
+    actor = getattr(request.state, "actor", None)
+    if not isinstance(actor, identity.Actor):
+        raise HTTPException(401, "Not signed in")
+    return actor
+
+
+def _require_admin(request: Request) -> identity.Actor:
+    actor = _require_actor(request)
+    if not actor.is_admin:
+        raise HTTPException(403, "Only an admin can do that")
+    return actor
+
+
+def _auth_payload(
+    conn: sqlite3.Connection, actor: identity.Actor | None
+) -> dict[str, Any]:
+    workspace = identity.workspace_public(conn)
+    if identity.setup_needed(conn):
+        state = "setup"
+    elif actor is None:
+        state = "login"
+    else:
+        state = "ok"
+    return {
+        "state": state,
+        "me": None if actor is None else identity.actor_dict(actor),
+        "workspace": workspace,
+    }
+
+
+class SessionMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if _is_public_path(request.method, request.url.path):
+            return await call_next(request)
+        with db() as conn:
+            actor = identity.actor_from_session(
+                conn, request.cookies.get(SESSION_COOKIE)
+            )
+        if actor is None:
+            return JSONResponse({"detail": "Not signed in"}, status_code=401)
+        request.state.actor = actor
+        return await call_next(request)
+
+
+app.add_middleware(SessionMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -539,6 +645,8 @@ def _scheduler_tick() -> None:
 def _startup() -> None:
     global _scheduler_stop
     init_db()
+    with db() as conn:
+        release_running_jobs(conn, now=_now(), job_error="worker restarted")
     if _scheduler_stop is None:
         _scheduler_stop = start_scheduler(_scheduler_tick, interval_sec=30)
 
@@ -574,6 +682,7 @@ def _row_connector(r: sqlite3.Row) -> dict[str, Any]:
         "coming_soon": False,
         "ingest": r["provider"] in INGEST_PROVIDERS,
         "checklist": _parse_checklist(r["checklist_json"]),
+        "sync_started_at": None,
     }
 
 
@@ -651,6 +760,12 @@ def _fetch_provider_docs(
     raise RuntimeError(f"Ingest for {provider} isn’t shipped yet")
 
 
+def _job_running(job_id: str) -> bool:
+    with db() as conn:
+        row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+    return row is not None and row["status"] == "running"
+
+
 def _run_ingest(
     connection_id: str, job_id: str, *, first_sync: bool, provider: str
 ) -> None:
@@ -664,6 +779,8 @@ def _run_ingest(
                 (connection_id,),
             ).fetchone()
         docs = _fetch_provider_docs(provider, credentials, settings, row)
+        if not _job_running(job_id):
+            return
         with db() as conn:
             counts, dirty_docs = _persist_canonical_docs(conn, docs)
             row = conn.execute(
@@ -721,8 +838,12 @@ def _run_ingest(
                 ("graph_linked", "linking", 0.88),
                 ("indexes_consistent", "ready", 1.0),
             ):
+                if not _job_running(job_id):
+                    return
                 if key in ("people_resolved", "graph_linked"):
                     time.sleep(0.4)
+                if not _job_running(job_id):
+                    return
                 with db() as conn:
                     row = conn.execute(
                         "SELECT checklist_json FROM connections WHERE id=?",
@@ -745,6 +866,8 @@ def _run_ingest(
                         ),
                     )
 
+        if not _job_running(job_id):
+            return
         finished = _now()
         with db() as conn:
             interval = conn.execute(
@@ -777,6 +900,8 @@ def _run_ingest(
                 ),
             )
     except Exception as exc:
+        if not _job_running(job_id):
+            return
         with db() as conn:
             conn.execute(
                 "UPDATE connections SET status=?, error=? WHERE id=?",
@@ -915,6 +1040,7 @@ def _empty_connector(spec: IntegrationDef) -> dict[str, Any]:
         "coming_soon": not spec.connectable,
         "ingest": spec.ingest,
         "checklist": _checklist_default(),
+        "sync_started_at": None,
     }
 
 
@@ -995,6 +1121,169 @@ def _activate_composio_toolkit(
     return connection_id
 
 
+# ── auth / workspace ────────────────────────────────────────────────────────
+
+
+def _session_response(
+    payload: dict[str, Any], session_id: str | None, *, clear: bool = False
+) -> JSONResponse:
+    response = JSONResponse(payload)
+    if clear:
+        _clear_session_cookie(response)
+    elif session_id:
+        _set_session_cookie(response, session_id)
+    return response
+
+
+@app.get("/api/auth/status")
+def auth_status(request: Request) -> dict[str, Any]:
+    with db() as conn:
+        actor = identity.actor_from_session(
+            conn, request.cookies.get(SESSION_COOKIE)
+        )
+        return _auth_payload(conn, actor)
+
+
+@app.post("/api/auth/setup")
+def auth_setup(body: SetupIn) -> JSONResponse:
+    try:
+        with db() as conn:
+            actor, session_id = identity.setup(
+                conn,
+                email=body.email,
+                password=body.password,
+                display_name=body.display_name,
+                domain=body.domain,
+            )
+            payload = _auth_payload(conn, actor)
+    except identity.IdentityError as exc:
+        raise _identity_error(exc) from exc
+    return _session_response(payload, session_id)
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginIn) -> JSONResponse:
+    try:
+        with db() as conn:
+            actor, session_id = identity.login(conn, body.email, body.password)
+            payload = _auth_payload(conn, actor)
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+    return _session_response(payload, session_id)
+
+
+@app.post("/api/auth/logout")
+def auth_logout(request: Request) -> JSONResponse:
+    with db() as conn:
+        identity.logout(conn, request.cookies.get(SESSION_COOKIE))
+    return _session_response({"status": "ok"}, None, clear=True)
+
+
+@app.get("/api/auth/invite/{token}")
+def auth_peek_invite(token: str) -> dict[str, str]:
+    try:
+        with db() as conn:
+            return identity.peek_invite(conn, token)
+    except identity.IdentityError as exc:
+        raise _identity_error(exc) from exc
+
+
+@app.post("/api/auth/invite/{token}/accept")
+def auth_accept_invite(token: str, body: AcceptInviteIn) -> JSONResponse:
+    try:
+        with db() as conn:
+            actor, session_id = identity.accept_invite(
+                conn,
+                token,
+                password=body.password,
+                display_name=body.display_name,
+            )
+            payload = _auth_payload(conn, actor)
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+    return _session_response(payload, session_id)
+
+
+@app.get("/api/workspace")
+def get_workspace(request: Request) -> dict[str, Any]:
+    actor = _require_actor(request)
+    with db() as conn:
+        workspace = identity.workspace_public(conn)
+        if workspace is None:
+            raise HTTPException(404, "Workspace not created yet")
+        members = identity.list_members(conn)
+        invites = identity.list_invites(conn) if actor.is_admin else []
+    return {
+        "workspace": workspace,
+        "me": identity.actor_dict(actor),
+        "members": members,
+        "invites": invites,
+    }
+
+
+@app.patch("/api/workspace")
+def patch_workspace(body: WorkspacePatch, request: Request) -> dict[str, Any]:
+    actor = _require_admin(request)
+    try:
+        with db() as conn:
+            identity.update_workspace(
+                conn, actor, domain=body.domain, name=body.name
+            )
+            workspace = identity.workspace_public(conn)
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+    return {"workspace": workspace}
+
+
+@app.post("/api/workspace/invites")
+def create_workspace_invite(body: InviteIn, request: Request) -> dict[str, Any]:
+    actor = _require_admin(request)
+    try:
+        with db() as conn:
+            invite_id, raw = identity.create_invite(
+                conn, actor, email=body.email, role=body.role
+            )
+            invites = identity.list_invites(conn)
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+    return {"invite_id": invite_id, "token": raw, "invites": invites}
+
+
+@app.delete("/api/workspace/invites/{invite_id}")
+def delete_workspace_invite(invite_id: str, request: Request) -> dict[str, str]:
+    actor = _require_admin(request)
+    try:
+        with db() as conn:
+            identity.revoke_invite(conn, actor, invite_id)
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+    return {"status": "revoked"}
+
+
+@app.patch("/api/workspace/members/{user_id}")
+def patch_workspace_member(
+    user_id: str, body: MemberRoleIn, request: Request
+) -> dict[str, str]:
+    actor = _require_admin(request)
+    try:
+        with db() as conn:
+            identity.set_member_role(conn, actor, user_id, body.role)
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+    return {"status": "ok"}
+
+
+@app.delete("/api/workspace/members/{user_id}")
+def delete_workspace_member(user_id: str, request: Request) -> dict[str, str]:
+    actor = _require_admin(request)
+    try:
+        with db() as conn:
+            identity.remove_member(conn, actor, user_id)
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+    return {"status": "removed"}
+
+
 # ── org ─────────────────────────────────────────────────────────────────────
 
 
@@ -1027,45 +1316,9 @@ def get_org() -> dict[str, Any]:
         }
 
 
-@app.post("/api/org")
-def create_org(body: OrgIn) -> dict[str, Any]:
-    domain = (
-        body.domain.strip()
-        .removeprefix("https://")
-        .removeprefix("http://")
-        .split("/")[0]
-        .lower()
-    )
-    if "." not in domain:
-        raise HTTPException(400, "Enter a domain like yourco.dev")
-    org = {
-        "domain": domain,
-        "name": _derive_name(domain),
-        "logo_url": _favicon(domain),
-        "created_at": _now(),
-    }
-    with db() as conn:
-        existing = conn.execute("SELECT domain FROM orgs WHERE id=1").fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE orgs SET domain=?, name=?, logo_url=? WHERE id=1",
-                (org["domain"], org["name"], org["logo_url"]),
-            )
-            org["created_at"] = (
-                conn.execute("SELECT created_at FROM orgs WHERE id=1").fetchone()[
-                    "created_at"
-                ]
-            )
-        else:
-            conn.execute(
-                "INSERT INTO orgs(id, domain, name, logo_url, created_at) VALUES (1,?,?,?,?)",
-                (org["domain"], org["name"], org["logo_url"], org["created_at"]),
-            )
-    return org
-
-
 @app.post("/api/org/wipe")
-def wipe_org(body: WipeIn) -> dict[str, str]:
+def wipe_org(body: WipeIn, request: Request) -> dict[str, str]:
+    _require_admin(request)
     with db() as conn:
         org = conn.execute("SELECT domain FROM orgs WHERE id=1").fetchone()
         if org is None or org["domain"] != body.domain.strip().lower():
@@ -1077,8 +1330,11 @@ def wipe_org(body: WipeIn) -> dict[str, str]:
             "connector_credentials",
             "connections",
             "oauth_states",
+            "pending_connects",
+            "docs_fts",
             "docs",
-            "orgs",
+            "graph_written",
+            "thread_state",
         ):
             conn.execute(f"DELETE FROM {table}")
         conn.execute("UPDATE spend SET calls=0")
@@ -1095,12 +1351,19 @@ def list_connectors() -> list[dict[str, Any]]:
             r["provider"]: r
             for r in conn.execute("SELECT * FROM connections").fetchall()
         }
+        started = {
+            r["connection_id"]: r["started_at"]
+            for r in conn.execute(
+                "SELECT connection_id, started_at FROM jobs WHERE status='running'"
+            )
+        }
     out: list[dict[str, Any]] = []
     for spec in INTEGRATIONS:
         if spec.id in rows:
             card = _row_connector(rows[spec.id])
             card["coming_soon"] = not spec.connectable
             card["ingest"] = spec.ingest
+            card["sync_started_at"] = started.get(card["id"])
             out.append(card)
         else:
             out.append(_empty_connector(spec))
@@ -1182,6 +1445,20 @@ def sync_now(connection_id: str) -> dict[str, str]:
             connection_id, first_sync=first_sync, provider=provider
         )
     }
+
+
+@app.post("/api/connectors/{connection_id}/cancel")
+def cancel_sync(connection_id: str) -> dict[str, str]:
+    with db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM connections WHERE id=?", (connection_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(404, "Not found")
+        released = release_running_jobs(conn, now=_now(), connection_id=connection_id)
+        if released == 0:
+            raise HTTPException(409, "Nothing to cancel")
+    return {"status": "cancelled"}
 
 
 @app.patch("/api/connectors/{connection_id}")
@@ -1329,12 +1606,19 @@ def composio_status() -> dict[str, Any]:
             "accounts": accounts,
         }
     except Exception as exc:
+        logging.getLogger(__name__).warning("composio status: %s", exc)
+        msg = str(exc)
+        auth = bool(
+            re.search(r"401|unauthorized|invalid.{0,20}key|forbidden", msg, re.I)
+        )
+        # Listing accounts can flake with httpx "Connection error." A saved
+        # key is still usable for connect — don't treat that as a key failure.
         return {
             "configured": True,
             "key_source": source,
             "masked_key": mask_api_key(api_key),
             "accounts": [],
-            "error": str(exc),
+            **({"error": msg} if auth else {}),
         }
 
 
@@ -1387,17 +1671,31 @@ def composio_connect(body: ComposioConnectIn) -> dict[str, str]:
         f"{origin.rstrip('/')}/api/composio/callback"
         f"?toolkit={spec.toolkit}&returnTo={body.return_to}"
     )
-    try:
-        redirect_url = start_toolkit_connect(
-            get_composio(settings),
-            spec.toolkit,
-            callback_url,
-            body.auth_config_id,
-        )
-    except ComposioError as exc:
-        raise HTTPException(502, str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(502, str(exc)) from exc
+    last_exc: Exception | None = None
+    redirect_url = ""
+    for attempt in range(2):
+        try:
+            redirect_url = start_toolkit_connect(
+                get_composio(settings),
+                spec.toolkit,
+                callback_url,
+                body.auth_config_id,
+            )
+            last_exc = None
+            break
+        except ComposioError as exc:
+            last_exc = exc
+            break
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0 and re.search(r"connection error", str(exc), re.I):
+                continue
+            break
+    if last_exc is not None:
+        msg = str(last_exc).strip() or "Composio request failed"
+        if re.search(r"connection error", msg, re.I):
+            msg = "Composio didn't respond. Try Connect again."
+        raise HTTPException(502, msg) from last_exc
     return {"redirect_url": redirect_url}
 
 
@@ -1529,10 +1827,18 @@ def _save_assistant_message(conn: sqlite3.Connection, conversation_id: str, assi
 
 
 @app.post("/api/ask")
-def ask(body: AskIn) -> StreamingResponse:
+def ask(request: Request, body: AskIn) -> StreamingResponse:
     question = body.question.strip()
     if not question:
         raise HTTPException(400, "Empty question")
+    actor = _require_actor(request)
+    # Web is the asker's desk. The workspace email is the one mailbox identity
+    # we have until connectors are owned per person; private Slack stays
+    # channel-scoped until membership exists.
+    ask_ctx = AskContext.web(
+        actor.user_id,
+        aliases={Visibility.user("gmail", actor.email).stamp},
+    )
 
     with db() as conn:
         c = conn.execute(
@@ -1616,7 +1922,12 @@ def ask(body: AskIn) -> StreamingResponse:
             rt = _runtime()
             with db() as conn:
                 trace = answer_question(
-                    conn, rt["live_index"], _embed_fn, tracked_llm if llm_call else None, question
+                    conn,
+                    rt["live_index"],
+                    _embed_fn,
+                    tracked_llm if llm_call else None,
+                    question,
+                    ask=ask_ctx,
                 )
         except Exception:
             # Retrieval must never crash the stream — an unexpected failure
@@ -1810,17 +2121,17 @@ def put_settings(body: SettingsIn) -> dict[str, str]:
 
 
 @app.get("/api/profile")
-def get_profile() -> dict[str, Any] | None:
+def get_profile(request: Request) -> dict[str, Any] | None:
+    actor = _require_actor(request)
     with db() as conn:
         org = conn.execute("SELECT * FROM orgs WHERE id=1").fetchone()
         if org is None:
             return None
-        s = _settings_map(conn)
         spend = {
             r["stage"]: r["calls"] for r in conn.execute("SELECT * FROM spend")
         }
     return {
-        "display_name": s.get("display_name", "You"),
+        "display_name": actor.display_name,
         "org": {
             "domain": org["domain"],
             "name": org["name"],
@@ -1844,14 +2155,11 @@ def get_profile() -> dict[str, Any] | None:
 
 
 @app.put("/api/profile")
-def put_profile(body: ProfileIn) -> dict[str, str]:
+def put_profile(body: ProfileIn, request: Request) -> dict[str, str]:
+    actor = _require_actor(request)
     if body.display_name is not None:
         with db() as conn:
-            conn.execute(
-                "INSERT INTO settings(key, value) VALUES ('display_name', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (body.display_name.strip() or "You",),
-            )
+            identity.update_display_name(conn, actor, body.display_name)
     return {"status": "ok"}
 
 

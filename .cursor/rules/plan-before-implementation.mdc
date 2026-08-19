@@ -1,0 +1,22 @@
+---
+description: Propose a plan and wait for approval before writing or changing code
+alwaysApply: true
+---
+
+# Plan before implementation
+
+Never implement, edit files, or run migrations until a plan has been shown and the user has approved it.
+
+When asked to build, fix, or change something:
+
+1. Inspect only as much as needed to make the plan concrete.
+2. Propose the plan: what, where, why, checkpoints, and what will not be built yet.
+3. Stop. Wait for explicit approval ("go", "do it", "yes", "approved").
+4. Implement only the approved scope. If the work grows, pause and re-propose.
+
+Do not treat "okay build it" or "next step" as approval of an unstated design. Propose first.
+
+```
+❌ BAD: start writing visibility.py because the last message listed it as next
+✅ GOOD: show the visibility/AskContext plan, then wait
+```

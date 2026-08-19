@@ -6,6 +6,9 @@ just receives fewer lists than the full plan calls for until CP6 lands.
 
 Every lane excludes `forgotten=1` — `LiveIndex.search` does this itself;
 the FTS/PHRASE lanes (raw SQL against `docs`) do it explicitly here.
+When an AskContext is provided, every lane also restricts to
+`allowed_stamps(ask)` so a public-room question cannot surface a
+private-channel or personal doc.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import numpy as np
 
 from joel.live_index import LiveIndex
 from joel.retrieve.planner import QueryPlan
+from joel.visibility import AskContext, allowed_stamps, sql_in
 
 EmbedFn = Callable[[list[str]], np.ndarray]
 
@@ -42,15 +46,24 @@ class RetrievedDoc:
     ts: str | None
 
 
-def _hydrate(conn: sqlite3.Connection, doc_ids: list[str]) -> dict[str, RetrievedDoc]:
+def _hydrate(
+    conn: sqlite3.Connection,
+    doc_ids: list[str],
+    *,
+    allowed: frozenset[str] | None = None,
+) -> dict[str, RetrievedDoc]:
     if not doc_ids:
         return {}
     placeholders = ",".join("?" for _ in doc_ids)
+    vis_sql, vis_params = ("", ())
+    if allowed is not None:
+        vis_sql, vis_params = sql_in(allowed, column="visibility")
+        vis_sql = f" AND {vis_sql}"
     rows = conn.execute(
         f"""SELECT id, title, body, source_type, container, granularity,
                    artifact_class, validity, url, timestamp
-            FROM docs WHERE id IN ({placeholders}) AND forgotten=0""",
-        doc_ids,
+            FROM docs WHERE id IN ({placeholders}) AND forgotten=0{vis_sql}""",
+        (*doc_ids, *vis_params),
     ).fetchall()
     return {
         r["id"]: RetrievedDoc(
@@ -79,7 +92,13 @@ def _order_by_ids(hydrated: dict[str, RetrievedDoc], ordered_ids: list[str]) -> 
     return out
 
 
-def _vector_mask(index: LiveIndex, plan: QueryPlan, *, artifacts_only: bool) -> np.ndarray | None:
+def _vector_mask(
+    index: LiveIndex,
+    plan: QueryPlan,
+    *,
+    artifacts_only: bool,
+    allowed: frozenset[str] | None = None,
+) -> np.ndarray | None:
     """§10.2 modifiers, over `LiveIndex.meta` — re-read on every call, never
     a snapshot taken at startup, so a just-changed validity/period is
     reflected on the very next question."""
@@ -90,9 +109,18 @@ def _vector_mask(index: LiveIndex, plan: QueryPlan, *, artifacts_only: bool) -> 
         filters["period"] = plan.temporal.period
     if plan.needs_current_only and not plan.temporal.wants_history:
         filters["validity"] = "current"
+    if allowed is not None:
+        filters["visibility"] = tuple(sorted(allowed))
     if not filters:
         return None
     return index.mask(**filters)
+
+
+def _visible_sql(allowed: frozenset[str] | None) -> tuple[str, tuple[str, ...]]:
+    if allowed is None:
+        return "", ()
+    clause, params = sql_in(allowed)
+    return f" AND {clause}", params
 
 
 def vector_lane(
@@ -101,11 +129,13 @@ def vector_lane(
     embed_fn: EmbedFn,
     plan: QueryPlan,
     question: str,
+    *,
+    allowed: frozenset[str] | None = None,
 ) -> list[RetrievedDoc]:
     """VECTOR (always): npz dot product, top-20 + once per rewrite."""
     queries = [question, *plan.rewrites]
     vectors = embed_fn(queries)
-    mask = _vector_mask(index, plan, artifacts_only=False)
+    mask = _vector_mask(index, plan, artifacts_only=False, allowed=allowed)
     seen_order: list[str] = []
     seen: set[str] = set()
     for vec in vectors:
@@ -113,7 +143,7 @@ def vector_lane(
             if doc_id not in seen:
                 seen.add(doc_id)
                 seen_order.append(doc_id)
-    hydrated = _hydrate(conn, seen_order)
+    hydrated = _hydrate(conn, seen_order, allowed=allowed)
     return _order_by_ids(hydrated, seen_order)[:VECTOR_TOP_K]
 
 
@@ -123,14 +153,16 @@ def vector_artifacts_lane(
     embed_fn: EmbedFn,
     plan: QueryPlan,
     question: str,
+    *,
+    allowed: frozenset[str] | None = None,
 ) -> list[RetrievedDoc]:
     """VEC-ARTIFACTS (always): vector masked to granularity='artifact',
     top-15 — catches distilled resolutions specifically."""
     vec = embed_fn([question])[0]
-    mask = _vector_mask(index, plan, artifacts_only=True)
+    mask = _vector_mask(index, plan, artifacts_only=True, allowed=allowed)
     hits = index.search(np.asarray(vec), mask=mask, k=VEC_ARTIFACTS_TOP_K)
     ordered_ids = [doc_id for doc_id, _score in hits]
-    hydrated = _hydrate(conn, ordered_ids)
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
     return _order_by_ids(hydrated, ordered_ids)
 
 
@@ -157,26 +189,39 @@ def _or_of_quoted_tokens(text: str) -> str | None:
     return " OR ".join(_quote_fts(t) for t in tokens)
 
 
-def fts_lane(conn: sqlite3.Connection, plan: QueryPlan, question: str) -> list[RetrievedDoc]:
+def fts_lane(
+    conn: sqlite3.Connection,
+    plan: QueryPlan,
+    question: str,
+    *,
+    allowed: frozenset[str] | None = None,
+) -> list[RetrievedDoc]:
     """FTS (bm25 rank, top-15) — catches rare tokens plain vector similarity
     misses. `docs_fts` is contentless, so results join back through rowid;
     `id` on the fts table itself is never populated (see store_sql.py)."""
     match_query = _or_of_quoted_tokens(question)
     if match_query is None:
         return []
+    vis_sql, vis_params = _visible_sql(allowed)
     rows = conn.execute(
-        """SELECT d.id AS id, bm25(docs_fts) AS rank
+        f"""SELECT d.id AS id, bm25(docs_fts) AS rank
            FROM docs_fts f JOIN docs d ON d.rowid = f.rowid
-           WHERE docs_fts MATCH ? AND d.forgotten = 0
+           WHERE docs_fts MATCH ? AND d.forgotten = 0{vis_sql}
            ORDER BY rank LIMIT ?""",
-        (match_query, FTS_TOP_K),
+        (match_query, *vis_params, FTS_TOP_K),
     ).fetchall()
     ordered_ids = [r["id"] for r in rows]
-    hydrated = _hydrate(conn, ordered_ids)
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
     return _order_by_ids(hydrated, ordered_ids)
 
 
-def phrase_lane(conn: sqlite3.Connection, plan: QueryPlan, question: str) -> list[RetrievedDoc]:
+def phrase_lane(
+    conn: sqlite3.Connection,
+    plan: QueryPlan,
+    question: str,
+    *,
+    allowed: frozenset[str] | None = None,
+) -> list[RetrievedDoc]:
     """PHRASE: FTS5 exact-phrase match per `exact_token` from the plan —
     catches pasted errors and identifiers a vector/bm25 lane would blur
     across near-synonyms. Falls back to the whole question as one phrase
@@ -186,19 +231,20 @@ def phrase_lane(conn: sqlite3.Connection, plan: QueryPlan, question: str) -> lis
     tokens = plan.exact_tokens or [question]
     ordered_ids: list[str] = []
     seen: set[str] = set()
+    vis_sql, vis_params = _visible_sql(allowed)
     for token in tokens:
         rows = conn.execute(
-            """SELECT d.id AS id, bm25(docs_fts) AS rank
+            f"""SELECT d.id AS id, bm25(docs_fts) AS rank
                FROM docs_fts f JOIN docs d ON d.rowid = f.rowid
-               WHERE docs_fts MATCH ? AND d.forgotten = 0
+               WHERE docs_fts MATCH ? AND d.forgotten = 0{vis_sql}
                ORDER BY rank LIMIT ?""",
-            (_quote_fts(token), PHRASE_TOP_K),
+            (_quote_fts(token), *vis_params, PHRASE_TOP_K),
         ).fetchall()
         for r in rows:
             if r["id"] not in seen:
                 seen.add(r["id"])
                 ordered_ids.append(r["id"])
-    hydrated = _hydrate(conn, ordered_ids)
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
     return _order_by_ids(hydrated, ordered_ids)[:PHRASE_TOP_K]
 
 
@@ -208,6 +254,8 @@ def run_lanes(
     embed_fn: EmbedFn,
     plan: QueryPlan,
     question: str,
+    *,
+    ask: AskContext | None = None,
 ) -> dict[str, list[RetrievedDoc]]:
     """Run every implemented lane concurrently (§10.2's own requirement —
     lanes must not run serially). Callers must pass a connection opened
@@ -215,11 +263,16 @@ def run_lanes(
     lane here only reads, so sharing one connection across the pool's
     threads is safe and avoids the ":memory:"-database trap of each thread
     opening its own connection and seeing an empty, unrelated database."""
+    allowed = None if ask is None else allowed_stamps(ask)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        vector_f = pool.submit(vector_lane, conn, index, embed_fn, plan, question)
-        vec_art_f = pool.submit(vector_artifacts_lane, conn, index, embed_fn, plan, question)
-        fts_f = pool.submit(fts_lane, conn, plan, question)
-        phrase_f = pool.submit(phrase_lane, conn, plan, question)
+        vector_f = pool.submit(
+            vector_lane, conn, index, embed_fn, plan, question, allowed=allowed
+        )
+        vec_art_f = pool.submit(
+            vector_artifacts_lane, conn, index, embed_fn, plan, question, allowed=allowed
+        )
+        fts_f = pool.submit(fts_lane, conn, plan, question, allowed=allowed)
+        phrase_f = pool.submit(phrase_lane, conn, plan, question, allowed=allowed)
 
         return {
             "vector": vector_f.result(),

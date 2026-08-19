@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Literal, Mapping, Sequence
 
 from joel.models import CanonicalDoc, build_doc_id, compute_content_hash
+from joel.visibility import apply as apply_visibility
 
 Archetype = Literal[
     "conversation",
@@ -169,22 +170,24 @@ def adapt(manifest: SourceManifest, raw: Mapping[str, Any]) -> CanonicalDoc | No
         if val is not None:
             extra[key] = val
 
-    return CanonicalDoc(
-        doc_id=build_doc_id(manifest.provider, external_id),
-        source_type=manifest.provider,
-        external_id=external_id,
-        title=title,
-        body=body,
-        extra=extra,
-        author_raw=_as_str(_get(payload, manifest.author)) if manifest.author else None,
-        participants_raw=_participants(payload, manifest.participants),
-        container=_as_str(_get(payload, manifest.container)) if manifest.container else None,
-        url=_resolve_url(manifest, payload),
-        timestamp=ts,
-        thread_id=thread_id,
-        parent_id=parent_id,
-        content_hash=compute_content_hash(title, body),
-        granularity=manifest.granularity,
+    return apply_visibility(
+        CanonicalDoc(
+            doc_id=build_doc_id(manifest.provider, external_id),
+            source_type=manifest.provider,
+            external_id=external_id,
+            title=title,
+            body=body,
+            extra=extra,
+            author_raw=_as_str(_get(payload, manifest.author)) if manifest.author else None,
+            participants_raw=_participants(payload, manifest.participants),
+            container=_as_str(_get(payload, manifest.container)) if manifest.container else None,
+            url=_resolve_url(manifest, payload),
+            timestamp=ts,
+            thread_id=thread_id,
+            parent_id=parent_id,
+            content_hash=compute_content_hash(title, body),
+            granularity=manifest.granularity,
+        )
     )
 
 
