@@ -6,7 +6,10 @@ import os
 
 @dataclass(frozen=True)
 class Settings:
-    dataset: str
+    """One universe: a single install, a single store dir, a single graph
+    (§2.1). No dataset switch — that was a hackathon-era two-universe
+    design the compose file never actually supported."""
+
     hydra_http: str
     hydra_bolt: str
     hydra_token: str
@@ -16,12 +19,7 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> "Settings":
-        dataset = os.getenv("JOEL_DATASET", "main")
-        if dataset not in {"main", "bench"}:
-            raise ValueError("JOEL_DATASET must be 'main' or 'bench'")
-
         return cls(
-            dataset=dataset,
             hydra_http=os.environ["HYDRA_HTTP"].rstrip("/"),
             hydra_bolt=os.environ["HYDRA_BOLT"],
             hydra_token=os.environ["HYDRA_TOKEN"],
