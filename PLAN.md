@@ -2062,36 +2062,38 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 
 ### CP 9 — The app (§12)
 
+**Status 2026-08-20 — audited live in a real browser (Playwright) against the real running dev server and real production data, per §16.1's Phase 9.** Most of this checkpoint turned out to already be built and working — the stale-checkbox pattern §16's own audit note already named — this pass mostly *verified and ticked* rather than *built*. No backend or frontend code changed in this specific pass.
+
 **9.1 Clean install**
-- [ ] `docker compose up` from a fresh clone on pruned Docker reaches `/setup`
-- [ ] only `LLM_API_KEY` had to be set
-- [ ] no Rust compile happens
+- [ ] `docker compose up` from a fresh clone on pruned Docker reaches `/setup` — not run this pass (needs a clean machine/pruned Docker, out of this session's reach)
+- [ ] only `LLM_API_KEY` had to be set — not verified this pass
+- [ ] no Rust compile happens — not verified this pass
 
 **9.2 Onboarding**
 - [x] `/setup` collects domain → workspace with favicon and derived name — *identity module, not the old `/onboarding` org step*
-- [ ] the readiness checklist ticks over a real first sync
-- [ ] it forwards to chat when the first connector is ready
+- [ ] the readiness checklist ticks over a real first sync — not re-verified this pass (this install's connectors are all already past first-sync)
+- [ ] it forwards to chat when the first connector is ready — same
 
 **9.3 Connectors page** (`/integrations`)
-- [ ] status, last sync and **next sync** are visible and correct
-- [ ] backfill progress updates live
-- [ ] a real error renders verbatim on the card with Retry
-- [ ] `needs_reauth` shows Reconnect and reconnecting resumes from the stored cursor
+- [x] status, last sync and **next sync** are visible and correct — verified live: real per-provider cards show `Syncing`/`Connected`/`Not connected`, doc counts, "Xm ago", and a live in-progress duration counter for a mid-sync Gmail connector
+- [x] 👁 backfill progress updates live — a live progress indicator was visible for the mid-sync connector; not watched frame-by-frame across a full sync
+- [ ] a real error renders verbatim on the card with Retry — no card was in an error state during this pass to check against
+- [ ] `needs_reauth` shows Reconnect and reconnecting resumes from the stored cursor — same; also there is no cursor to resume from (§6's accepted design), so "resumes from the stored cursor" doesn't apply as literally written
 
 **9.4 Chat**
-- [ ] a real question answers with working citation links
-- [ ] a public-room-ineligible doc (private slack / someone else's gmail) is not cited
-- [ ] all four status badges render correctly
-- [ ] the reasoning path shows graph paths
-- [ ] streaming works (the SSE-over-POST decision holds up in the browser)
+- [x] a real question answers with working citation links — verified live: a live GitHub PR citation linked to the real `github.com/.../pull/1` URL
+- [x] a public-room-ineligible doc (private slack / someone else's gmail) is not cited — mechanism verified end-to-end in `check_visibility.py`/`check_channel_membership` (not re-driven through this browser session specifically, but the same `AskContext`/`allowed_stamps` path `/api/ask` uses)
+- [ ] 👁 all four status badges render correctly — only `Answered` (green) was exercised live this pass; `partial`/`conflicted`/`absent` weren't independently triggered and screenshotted
+- [ ] 👁 the reasoning path shows graph paths — a reasoning path DID render live with real, specific steps, but this particular question's path cited a document field match, not a GRAPH-lane multi-hop traversal specifically — not yet seen rendered for a genuinely multi-hop answer
+- [x] streaming works (the SSE-over-POST decision holds up in the browser) — verified live: tokens streamed and the UI updated in real time through the actual browser, not just curl
 
 **9.5 Unattended freshness**
-- [ ] post a message, wait one interval, ask about it — **it answers with no human action**
+- [ ] post a message, wait one interval, ask about it — **it answers with no human action** — not run this pass (needs real wall-clock waiting); the scheduler doing real unattended syncs throughout this whole session is strong indirect evidence, not the literal test
 
 **9.6 Settings and restart**
-- [ ] a model change takes effect without a restart
-- [ ] pause ingestion actually stops the scheduler
-- [ ] `docker compose down && up`: state survives, scheduler resumes, no duplicate docs
+- [x] a model change takes effect without a restart — true by construction (`make_openrouter_caller` reads `settings_map` fresh on every `/api/ask` call, no caching layer); the chat composer's live per-stage model picker is visible confirmation the wiring exists
+- [x] pause ingestion actually stops the scheduler — `_scheduler_tick` checks the live `sync_enabled` setting every tick (verified in CP8's work this session); the `/integrations` page's "Sync on" toggle is wired to it
+- [ ] `docker compose down && up`: state survives, scheduler resumes, no duplicate docs — not run this pass (needs a full container restart cycle)
 
 ---
 
