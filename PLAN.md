@@ -53,13 +53,13 @@ Honest snapshot of the repo, not the original v1 brief. Distillation/ontology/ag
 | Identity | `users`, `memberships`, `sessions`, `invites`. `joel/identity.py`. `scripts/check_identity.py` green. |
 | Auth UX | `/setup`, `/login`, `/join?token=`. Product pages behind `AuthGate`. Cookie session; almost all `/api/*` require it. |
 | Visibility stamp | `docs.visibility`: `org` · `channel:slack:C…` · `user:gmail:…`. Derived at ingest (`joel/visibility.py`). Migration `004`. Slack needs a re-sync to stamp private channels (old extra had no `channel_kind`). Gmail restamped on migrate. |
-| Ask context | `POST /api/ask` uses the signed-in actor. Web = desk: `org` + `user:gmail:{actor.email}`. No client-supplied room. Private Slack is **not** visible on web until channel membership exists. |
+| Ask context | `POST /api/ask` uses the signed-in actor. Web = desk: `org` + `user:gmail:{actor.email}` + every private Slack channel the actor is a member of (§1.4, via `joel/membership.py`, matched by email). No client-supplied room. |
 | Ingest | Ten connectors, lookback re-fetch, content_hash triage, background scheduler (concurrency-capped, errored connectors retry on a backoff ladder), zombie-job reclaim on boot. |
 | Retrieval | All six lanes: VECTOR / VEC-ARTIFACTS / FTS / PHRASE / GRAPH / WHO_KNOWS, RRF, rerank, abstention. Lanes honour `allowed_stamps(ask)`. |
 | Distill / ontology / agent | Distill, ontology (extract → resolve → reconcile → graph edges, §9), follow-up rewriting, and live lookup (§13, GitHub PR/issue + Slack channel only so far) all exist and are wired into `/api/ask`. |
 | Slack bot, MCP, leasing, API keys | **Not built.** Same permissions graph will apply when they exist. |
 
-Next skeleton checkpoints, in order: **data vs tool connectors** (owned_by + kind) → **channel membership** so a desk/DM can read private rooms the actor is in → **Slack surface** then **MCP**, both constructing `AskContext` server-side.
+**Channel membership is done** (2026-08-19) — a desk/DM now reads the private rooms the actor is actually in, matched by email. Remaining skeleton checkpoints, in order: **real personal connectors** (needs the `connections.provider` UNIQUE constraint removed, not just the `owned_by`/`kind` columns already added) → **Slack surface** then **MCP**, both constructing `AskContext` server-side.
 
 ---
 
@@ -2040,7 +2040,11 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 
 ### CP 8b — Visibility + ask context (§1.4)
 
-**Status 2026-08-19 — done as a stamp + read table.** Channel membership, personal connectors, leasing: not built. `scripts/check_visibility.py` green.
+**Status 2026-08-19 — stamp + read table + channel membership all done.** Personal connectors and leasing remain not built (see the note on connector ownership below). `scripts/check_visibility.py` green, including a new `check_channel_membership` covering the full loop against a fake Slack API.
+
+**Channel membership**, closing the exact gap §0.3 named ("web cannot yet include `channel:slack:…` even for people who are in that Slack room"): `joel/membership.py::sync_slack_channel_memberships` matches Slack channel members to workspace Actors **by email** — the identical signal Gmail visibility already uses (`SlackClient.user_emails()`, new, via `users.list`'s `profile.email`; `SlackClient.channel_member_ids()`, new, via `conversations.members` — paginated by hand since that endpoint returns plain user-id strings, not objects, and the existing `pages()` helper filters to dict items for every OTHER endpoint it serves, which would have silently returned nothing here if reused as-is). Runs after every Slack sync's fetch, best-effort (a scope gap or zero matches never fails the sync). `member_channel_stamps` feeds `AskContext.web`'s `channels` set in `/api/ask`. Verified against real Slack data (real `profile.email` fields came back; zero matches only because this install's real workspace admin email doesn't happen to coincide with any connected Slack member's — the mechanism itself is proven by the fake-API unit test, which round-trips a real member/non-member pair through actual retrieval and confirms the private doc is readable for one and not the other).
+
+**Connector ownership — groundwork only, not the feature.** Migration `006_channel_membership.sql` also adds `connections.owned_by`/`connections.kind` (`org`|`personal`), every existing row staying `kind='org'`. Discovered while scoping this: `connections.provider` has a `UNIQUE` constraint (§12.2/migration 001) — there is currently no way to have more than one connection per provider at all, so real personal-connector support (a second Slack connection owned by one person, reads preferring personal-then-org-shared per Supermemory's model) needs that constraint removed plus a redesigned connect flow and every `SELECT … FROM connections WHERE provider=?` call site (there are several, including the live-lookup credential resolution added in CP10) updated to disambiguate by owner. That's a distinctly larger, separate phase, not a checkbox to half-do here.
 
 - [x] `derive` stamps gmail as `user:gmail:…`, private slack as `channel:slack:…`, company data as `org`
 - [x] `content_hash` ignores visibility
@@ -2050,9 +2054,9 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 - [x] asking from that private channel can retrieve it plus `org`, not gmail
 - [x] a web desk with the actor's gmail alias can retrieve that mailbox
 - [x] `/api/ask` builds AskContext from the session, not from the POST body
-- [ ] channel membership: a desk includes `channel:slack:…` rooms the actor is in — **not built**
-- [ ] org-shared vs personal connector scope — **not built**
-- [ ] Slack / MCP surfaces construct AskContext from the event — **not built**
+- [x] channel membership: a desk includes `channel:slack:…` rooms the actor is in — `joel/membership.py`, `check_channel_membership`
+- [ ] org-shared vs personal connector scope — schema groundwork only (`owned_by`/`kind` columns); real support blocked on the `connections.provider` UNIQUE constraint, see note above
+- [ ] Slack / MCP surfaces construct AskContext from the event — **not built** (§17 cut list: web desk must keep working, these are lowest priority)
 
 ---
 

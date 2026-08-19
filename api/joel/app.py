@@ -96,6 +96,7 @@ from joel.config import Settings
 from joel.hydra import Hydra
 from joel.live_index import LiveIndex
 from joel.llm import make_openrouter_caller
+from joel.membership import member_channel_stamps, sync_slack_channel_memberships
 from joel.models import CanonicalDoc
 from joel.pipeline import run_store_pipeline
 from joel.retrieve import RetrievalTrace, answer_question, log_trace
@@ -810,6 +811,23 @@ def _run_ingest(
                 (connection_id,),
             ).fetchone()
         docs = _fetch_provider_docs(provider, credentials, settings, row)
+        if provider == "slack":
+            try:
+                with db() as conn:
+                    sync_slack_channel_memberships(
+                        conn,
+                        channel_ids=_channel_ids(row) if row is not None else [],
+                        token=_slack_token(credentials),
+                        caller=_slack_caller(credentials, settings),
+                        now=_now(),
+                    )
+            except Exception:
+                # Membership is a read-widening convenience (§1.4), never
+                # load-bearing for the sync itself — a scope/permission gap
+                # here must not fail an otherwise-good ingest.
+                logging.getLogger(__name__).exception(
+                    "channel membership sync failed for connection %s", connection_id
+                )
         if not _job_running(job_id):
             return
         with db() as conn:
@@ -1965,15 +1983,18 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
     if not question:
         raise HTTPException(400, "Empty question")
     actor = _require_actor(request)
-    # Web is the asker's desk. The workspace email is the one mailbox identity
-    # we have until connectors are owned per person; private Slack stays
-    # channel-scoped until membership exists.
-    ask_ctx = AskContext.web(
-        actor.user_id,
-        aliases={Visibility.user("gmail", actor.email).stamp},
-    )
 
     with db() as conn:
+        # Web is the asker's desk: the workspace email is the one mailbox
+        # identity we have until connectors are owned per person (§0.3),
+        # and private Slack channels the actor is a member of (§1.4) —
+        # closing the literal gap the plan named: "web cannot yet include
+        # channel:slack:… even for people who are in that Slack room."
+        ask_ctx = AskContext.web(
+            actor.user_id,
+            aliases={Visibility.user("gmail", actor.email).stamp},
+            channels=member_channel_stamps(conn, actor.user_id),
+        )
         c = conn.execute(
             "SELECT * FROM conversations WHERE id=?", (body.conversation_id,)
         ).fetchone()

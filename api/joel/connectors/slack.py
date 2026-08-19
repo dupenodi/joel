@@ -130,6 +130,37 @@ class SlackClient:
                     handles[str(user_id)] = f"@{str(handle).lstrip('@')}"
         return handles
 
+    def user_emails(self) -> dict[str, str]:
+        """user_id -> lowercased email, for every member with one visible
+        to this token (`users:read.email` scope) -- §0.3/§1.4's channel-
+        membership groundwork: matching a Slack member to a workspace
+        Actor by email, the same way Gmail visibility already does."""
+        emails: dict[str, str] = {}
+        for page in self.pages("users.list", "members"):
+            for user in page:
+                user_id = user.get("id")
+                email = (user.get("profile") or {}).get("email")
+                if user_id and email:
+                    emails[str(user_id)] = str(email).strip().lower()
+        return emails
+
+    def channel_member_ids(self, channel_id: str) -> list[str]:
+        """`conversations.members`'s `members` array is plain user-id
+        STRINGS, not objects -- `pages()` filters to dict items (right for
+        every other endpoint it's used for), so this paginates by hand
+        rather than silently yielding nothing here."""
+        members: list[str] = []
+        cursor: str | None = None
+        while True:
+            params: dict[str, Any] = {"channel": channel_id, "limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+            data = self.call("conversations.members", **params)
+            members.extend(str(m) for m in (data.get("members") or []) if m)
+            cursor = str((data.get("response_metadata") or {}).get("next_cursor") or "").strip()
+            if not cursor:
+                return members
+
     def channels(self, *, channel_ids: list[str] | None = None) -> list[dict[str, Any]]:
         listed: list[dict[str, Any]] = []
         for page in self.pages(

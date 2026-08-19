@@ -20,6 +20,7 @@ import joel.app as app  # noqa: E402
 from joel.adapters import GMAIL, SLACK, adapt  # noqa: E402
 from joel.connectors.slack import channel_kind  # noqa: E402
 from joel.live_index import LiveIndex  # noqa: E402
+from joel.membership import member_channel_stamps, sync_slack_channel_memberships  # noqa: E402
 from joel.models import CanonicalDoc, compute_content_hash  # noqa: E402
 from joel.retrieve.lanes import fts_lane, run_lanes  # noqa: E402
 from joel.retrieve.planner import QueryPlan  # noqa: E402
@@ -374,6 +375,99 @@ def check_retrieval_respects_room() -> None:
     print("ok  retrieval: public cannot see private or mail")
 
 
+def check_channel_membership() -> None:
+    """§1.4's channel-membership groundwork: a Slack channel member,
+    matched to a workspace Actor by email, gets that channel's stamp in
+    AskContext.web -- and a non-member doesn't."""
+
+    def fake_caller(method: str, params: dict) -> dict:
+        if method == "users.list":
+            return {
+                "ok": True,
+                "members": [
+                    {"id": "U1", "profile": {"email": "ada@yourco.dev"}},
+                    {"id": "U2", "profile": {"email": "bob@yourco.dev"}},
+                    {"id": "U3", "profile": {}},  # no email visible -- must not crash, just skip
+                ],
+            }
+        if method == "conversations.members":
+            assert params.get("channel") == "Cpriv"
+            return {"ok": True, "members": ["U1"]}  # only Ada is in this channel
+        raise AssertionError(f"unexpected Slack method {method!r}")
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        app.DATA_DIR = tmp
+        app.DB_PATH = tmp / "index" / "joel.db"
+        app.init_db()
+        with app.db() as conn:
+            conn.execute(
+                "INSERT INTO users(id, email, display_name, password_hash, created_at) VALUES (?,?,?,?,?)",
+                ("user_ada", "ada@yourco.dev", "Ada", "x", "t0"),
+            )
+            conn.execute(
+                "INSERT INTO users(id, email, display_name, password_hash, created_at) VALUES (?,?,?,?,?)",
+                ("user_bob", "bob@yourco.dev", "Bob", "x", "t0"),
+            )
+
+            written = sync_slack_channel_memberships(
+                conn, channel_ids=["Cpriv"], caller=fake_caller, now="t0"
+            )
+            assert written == 1, f"only Ada should match a channel membership, got {written}"
+
+            ada_stamps = member_channel_stamps(conn, "user_ada")
+            assert ada_stamps == {"channel:slack:Cpriv"}, ada_stamps
+            bob_stamps = member_channel_stamps(conn, "user_bob")
+            assert bob_stamps == frozenset(), f"Bob is not a member of Cpriv, got {bob_stamps}"
+
+            # Re-running the sync must not duplicate the row (ON CONFLICT
+            # upsert, primary key is (user_id, provider, channel_id)).
+            sync_slack_channel_memberships(conn, channel_ids=["Cpriv"], caller=fake_caller, now="t1")
+            rows = conn.execute(
+                "SELECT COUNT(*) AS n FROM channel_memberships WHERE user_id='user_ada'"
+            ).fetchone()
+            assert rows["n"] == 1, "re-syncing membership must not create a duplicate row"
+
+            # End-to-end: Ada's resolved membership actually grants read
+            # access to the private-channel doc, via the exact same
+            # AskContext/allowed_stamps path check_retrieval_respects_room
+            # already proved works when the channel set is passed in by hand.
+            index = LiveIndex(tmp / "vectors.npz", dim=_FAKE_EMBED_DIM)
+            private = CanonicalDoc(
+                doc_id="priv2",
+                source_type="slack",
+                external_id="Cpriv:2",
+                title="Private membership-gated note",
+                body="Only channel members should find this via CKPT_PREFETCH.",
+                extra={"channel_kind": "private", "channel_id": "Cpriv"},
+                content_hash=compute_content_hash(
+                    "Private membership-gated note",
+                    "Only channel members should find this via CKPT_PREFETCH.",
+                ),
+                visibility="channel:slack:Cpriv",
+            )
+            upsert_docs(
+                conn, index, _NoGraph(), [from_canonical_doc(private)], embed_fn=_fake_embed, now="t0"
+            )
+            plan = QueryPlan(intent="lookup")
+            ada_ask = AskContext.web("user_ada", channels=member_channel_stamps(conn, "user_ada"))
+            ada_ids = {
+                d.id
+                for docs in run_lanes(conn, index, _fake_embed, plan, "CKPT_PREFETCH", ask=ada_ask).values()
+                for d in docs
+            }
+            assert "priv2" in ada_ids, "a real channel member must be able to retrieve that channel's doc"
+
+            bob_ask = AskContext.web("user_bob", channels=member_channel_stamps(conn, "user_bob"))
+            bob_ids = {
+                d.id
+                for docs in run_lanes(conn, index, _fake_embed, plan, "CKPT_PREFETCH", ask=bob_ask).values()
+                for d in docs
+            }
+            assert "priv2" not in bob_ids, "a non-member must NOT be able to retrieve that channel's doc"
+    print("ok  channel membership: a real member reads the channel, a non-member doesn't")
+
+
 def main() -> None:
     check_parse_roundtrip()
     check_derive()
@@ -382,6 +476,7 @@ def main() -> None:
     check_persist_and_migration()
     check_old_npz_defaults_org()
     check_retrieval_respects_room()
+    check_channel_membership()
     print("\nall visibility checks passed")
 
 
