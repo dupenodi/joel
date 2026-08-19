@@ -8,3 +8,4 @@ cryptography
 pypdf>=5.0.0
 composio>=0.7.0
 sentence-transformers>=3.0.0
+rapidfuzz>=3.0.0

@@ -821,16 +821,20 @@ def _run_ingest(
                 )
                 with db() as conn:
                     pipeline_report = run_store_pipeline(
-                        conn, rt["live_index"], rt["hydra_store"], _embed_fn, llm_call, dirty_docs
+                        conn, rt["live_index"], rt["hydra_store"], _embed_fn, llm_call, dirty_docs,
+                        data_dir=DATA_DIR,
                     )
-                if pipeline_report.distill_errors:
-                    pipeline_error = "; ".join(pipeline_report.distill_errors[:3])
+                errors = [*pipeline_report.distill_errors, *pipeline_report.ontology.extract_errors]
+                if errors:
+                    pipeline_error = "; ".join(errors[:3])
         except Exception as exc:  # store/distill failure must not sink an otherwise-good sync
             pipeline_error = str(exc)
 
-        # people_resolved/graph_linked are ontology (§9/CP6 — not built yet),
-        # still simulated pacing for the onboarding UI. distilled and
-        # indexes_consistent are real now (the pipeline call above).
+        # distilled, people_resolved, graph_linked and indexes_consistent are
+        # all real now (the pipeline call above runs distillation AND
+        # ontology extraction/resolution/reconciliation synchronously) —
+        # the sleep below is cosmetic onboarding pacing only, so the first-
+        # sync checklist doesn't flash through four steps in one frame.
         if first_sync:
             for key, status, progress in (
                 ("distilled", "distilling", 0.55),
@@ -1928,6 +1932,7 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
                     tracked_llm if llm_call else None,
                     question,
                     ask=ask_ctx,
+                    hydra_store=rt["hydra_store"],
                 )
         except Exception:
             # Retrieval must never crash the stream — an unexpected failure

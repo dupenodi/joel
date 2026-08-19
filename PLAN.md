@@ -55,8 +55,8 @@ Honest snapshot of the repo, not the original v1 brief. Distillation/ontology/ag
 | Visibility stamp | `docs.visibility`: `org` · `channel:slack:C…` · `user:gmail:…`. Derived at ingest (`joel/visibility.py`). Migration `004`. Slack needs a re-sync to stamp private channels (old extra had no `channel_kind`). Gmail restamped on migrate. |
 | Ask context | `POST /api/ask` uses the signed-in actor. Web = desk: `org` + `user:gmail:{actor.email}`. No client-supplied room. Private Slack is **not** visible on web until channel membership exists. |
 | Ingest | Ten connectors, lookback re-fetch, content_hash triage, background scheduler, zombie-job reclaim on boot. |
-| Retrieval | VECTOR / VEC-ARTIFACTS / FTS / PHRASE, RRF, rerank, abstention. GRAPH / WHO_KNOWS blocked on ontology. Lanes honour `allowed_stamps(ask)`. |
-| Distill / ontology / live lookup | Distill pipeline exists; ontology and live lookup are not the product yet. |
+| Retrieval | All six lanes: VECTOR / VEC-ARTIFACTS / FTS / PHRASE / GRAPH / WHO_KNOWS, RRF, rerank, abstention. Lanes honour `allowed_stamps(ask)`. |
+| Distill / ontology / live lookup | Distill pipeline and ontology (extract → resolve → reconcile → graph edges, §9) both exist and are wired into every sync. Live lookup (§13.2) is not the product yet. |
 | Slack bot, MCP, leasing, API keys | **Not built.** Same permissions graph will apply when they exist. |
 
 Next skeleton checkpoints, in order: **data vs tool connectors** (owned_by + kind) → **channel membership** so a desk/DM can read private rooms the actor is in → **Slack surface** then **MCP**, both constructing `AskContext` server-side.
@@ -1515,7 +1515,7 @@ Landing page is **done** (§20) — content tweaks only, not a workstream. Every
 
 Small, and everything downstream inherits them, so they come before new work:
 
-~~abstain floor on the rerank scale (§10.5)~~ done in CP7 (`synthesize.py::RERANK_FLOOR`, explicitly the 0-10 reranker scale, not RRF's ~0.09) · ~~FTS5 delete-before-insert (§8.2)~~ done in CP5 (`store_sql.py::_upsert_sqlite_and_fts`) · ~~graph upsert by `content_hash` instead of skip-if-present (§8.2)~~ done in CP5 (`store_sql.py::_upsert_graph`, `graph_written` table) · ~~`LiveIndex` hot reload (§8.3)~~ done in CP5 (`live_index.py`) · incremental reconciliation (§9.4) · ~~`DELETE` added to the Cypher compat pass (§4.4)~~ done in CP1 (`store.py::delete_edge`/`delete_node`) · ~~single store, no `JOEL_DATASET` (§2.1)~~ done 2026-08-19 (`config.py::Settings` no longer has a `dataset` field; `.env.example` no longer documents it) · ~~pick the SSE-over-POST approach (§12.2)~~ done — `fetch` + `ReadableStream` on the client, `StreamingResponse` on `/api/ask`.
+~~abstain floor on the rerank scale (§10.5)~~ done in CP7 (`synthesize.py::RERANK_FLOOR`, explicitly the 0-10 reranker scale, not RRF's ~0.09) · ~~FTS5 delete-before-insert (§8.2)~~ done in CP5 (`store_sql.py::_upsert_sqlite_and_fts`) · ~~graph upsert by `content_hash` instead of skip-if-present (§8.2)~~ done in CP5 (`store_sql.py::_upsert_graph`, `graph_written` table) · ~~`LiveIndex` hot reload (§8.3)~~ done in CP5 (`live_index.py`) · ~~incremental reconciliation (§9.4)~~ done in CP6 (`ontology/reconcile.py`, bounded to the touched `(entity, predicate)` pairs — see CP6 status note in §22) · ~~`DELETE` added to the Cypher compat pass (§4.4)~~ done in CP1 (`store.py::delete_edge`/`delete_node`) · ~~single store, no `JOEL_DATASET` (§2.1)~~ done 2026-08-19 (`config.py::Settings` no longer has a `dataset` field; `.env.example` no longer documents it) · ~~pick the SSE-over-POST approach (§12.2)~~ done — `fetch` + `ReadableStream` on the client, `StreamingResponse` on `/api/ask`.
 
 ### 16.1 Core track
 
@@ -1536,7 +1536,7 @@ Small, and everything downstream inherits them, so they come before new work:
 | 10 | Agent: rewriting, meta/chitchat, live lookup | §13 | follow-ups work; "hi" costs one call | CP 10 |
 | 11 | Operations | §14 | pull HydraDB's plug and chat still answers | CP 11 |
 
-**8a and 8b are done (2026-08-19).** They were not in the original core track (the brief was single-user, no login). They are now prerequisites for Slack/MCP surfaces: those surfaces reuse `AskContext`, they do not invent a second ACL.
+**8a, 8b, and 6 are done (2026-08-19).** 8a/8b were not in the original core track (the brief was single-user, no login); they are now prerequisites for Slack/MCP surfaces, which reuse `AskContext` rather than inventing a second ACL. Phase 6 (ontology) shipped in the same pass that finished the rest of the skeleton — see CP 6's status note in §22 for what's real vs. simplified relative to the original pseudocode (entity resolution's blocking, and reconciliation's authority-ladder scope).
 
 **Still open on the skeleton (before treating Slack bot / MCP as in-scope):** data vs tool connectors (`owned_by`, org-shared vs personal) · channel membership so a desk can read private rooms the actor is in. Leasing a teammate's connection for one request is explicitly later — [Supermemory](https://supermemory.ai/docs/company-brain/permissions) only uses it when nobody has connected the tool at org level.
 
@@ -1902,36 +1902,43 @@ Built as its own testable unit, same as CP3/CP4, then wired: `_run_ingest` now c
 
 ### CP 6 — Ontology (§9)
 
+**Status 2026-08-19 — built and wired into every sync**, verified against the live local HydraDB node, real embeddings-adjacent test data, and one real LLM extraction call (`scripts/check_6_ontology.py`, all green). `ontology/{extract,resolve,reconcile,pipeline}.py` implement §9.1–§9.4; `prompts/extract_ontology.md` and `prompts/resolve_entity.md` (previously one-line stubs despite `PLAN.md` documenting their content) are now real. Wired into `pipeline.py::run_store_pipeline` right after CP5's `upsert_docs`, running once per newly-distilled thread artifact and once per new/changed singleton (non-threaded) doc — the same "artifacts for threads, full text for singletons" split §9.1 specifies. `retrieve/lanes.py`'s GRAPH and WHO_KNOWS lanes are now real (`HydraStore.graph_expand`/`who_knows`/`edges_from`/`docs_mentioning`, four new store.py primitives, same id/key conventions as everything else in `store.py`) and wired into `run_lanes`/`answer_question`/`/api/ask`, both degrading to an empty list (not a crash) if HydraDB is unreachable.
+
+**Two deliberate simplifications vs. the original pseudocode**, both noted where they live in code:
+- **Resolution blocking** (§9.2.A) approximates metaphone-of-last-token with a fuzzy top-K prefilter instead of adding a phonetic-matching dependency — email local-part, initials+surname, and container co-occurrence are implemented as specified. `rapidfuzz` was added as a new dependency (`api/requirements.txt`) for the fuzzy scoring itself.
+- **Supersession** (§9.3) operates on the asserting DOCUMENT's `validity`, not a property on the ontology edge itself — §4.2 never specified edge-level validity, and the existing `docs.validity`/`:Doc.validity` flag is already what every mask/lane in §10.2 filters on, so a flip needs no changes anywhere downstream of `reconcile.py`.
+- **One real bug found and fixed while building this**: `pair_score`'s email-local-part signal compared only the substring before `@`, so `sam@acme.com` and `sam@other.com` (two different people) scored high enough on name-similarity-plus-local-part alone to clear `AUTO_MERGE` and never reach the LLM tie-break at all — silently violating `resolve_entity.md`'s own rule 2 ("conflicting identifiers ... NOT same, even with identical names"). Fixed by having `pair_score` short-circuit to `0.0` whenever both full identifiers are present and differ, enforced before the auto-merge threshold rather than only in the prompt.
+
 **6.1 Extraction**
-- [ ] parse failure under 5% on real documents
-- [ ] 👁 no relation asserted that the text doesn't state
-- [ ] artifact-derived `artifact_class`/`supersedes` win over extraction's
+- [ ] parse failure under 5% on real documents — not measured at scale; the real-LLM smoke test ran one real document successfully, `check_6.1a/b` verify the grounding/drop rules synthetically
+- [ ] 👁 no relation asserted that the text doesn't state — needs a real-corpus eyeball pass once ontology has processed a real sync's worth of dirty threads
+- [x] artifact-derived `artifact_class`/`supersedes` win over extraction's — extraction's own `artifact_class`/`confidence` are used only as this module's internal noise gate (whether to bother writing entities/relations at all); they never overwrite the `:Doc`/`docs.artifact_class` distillation already wrote
 
 **6.2 Resolution** 👁
-- [ ] top-10 alias clusters eyeballed — no mega-merge
-- [ ] a person referenced two ways resolves to one `:Entity` with ≥2 aliases
-- [ ] two different people sharing a name with conflicting identifiers stay separate
-- [ ] LLM verdicts are cached by sorted pair (same pair never judged twice)
+- [ ] top-10 alias clusters eyeballed — no mega-merge — needs a real registry built from a real sync first; `data/entities/registry.json` is empty until then
+- [x] a person referenced two ways resolves to one `:Entity` with ≥2 aliases — `check_6.2b`
+- [x] two different people sharing a name with conflicting identifiers stay separate — `check_6.2c` (the bug above, now fixed and regression-covered)
+- [x] LLM verdicts are cached by sorted pair (same pair never judged twice) — `check_6.2d`
 
 **6.3 Graph queries**
-- [ ] WHO_KNOWS for a known incident returns its actual resolver
-- [ ] ontology edges use canonical entity ids, never raw surface forms
+- [ ] WHO_KNOWS for a known incident returns its actual resolver — verified against a synthetic doc/entity (`check_6.3c/d`), not yet against a real incident in the corpus
+- [x] ontology edges use canonical entity ids, never raw surface forms — `Entity`/`Alias` nodes are keyed by the registry's `entity_id`/lowercased alias, and every edge write goes through the resolved id, never the raw mention text
 
 **6.4 Supersession**
-- [ ] a flip round-trips in both graph and SQLite
-- [ ] the `:REVERSED` edge exists with a timestamp
-- [ ] the superseded doc is still retrievable
-- [ ] at least one conflict is logged with the rule that decided it
+- [x] a flip round-trips in both graph and SQLite — `check_6.4a`
+- [x] the `:REVERSED` edge exists with a timestamp — same check
+- [x] the superseded doc is still retrievable — same check (row stays; `validity='superseded'` is the only signal, per §14.5's append-only rule)
+- [x] at least one conflict is logged with the rule that decided it — `check_6.4b`
 
 **6.5 Incremental**
-- [ ] ingest a decision in job A, a message reversing it in job B → the old claim flips, **without a full re-run**
-- [ ] only touched `(entity, predicate)` pairs are reconciled
+- [ ] ingest a decision in job A, a message reversing it in job B → the old claim flips, **without a full re-run** — the mechanism is inherently incremental (`reconcile.py` always re-reads live current claims from the graph via `edges_from`, never a corpus scan) and `check_6.4a` exercises it end-to-end, but not yet observed across two separate real `_run_ingest` sync jobs on production data
+- [x] only touched `(entity, predicate)` pairs are reconciled — `run_ontology_pipeline` only ever reconciles the pairs the current doc's own new relations touched
 
 ---
 
 ### CP 7 — Retrieval and answering (§10)
 
-Built reduced-lane first, on purpose: VECTOR, VEC-ARTIFACTS, FTS and PHRASE need nothing CP6 (ontology) doesn't already provide, so `retrieve/{planner,lanes,fuse,rerank,synthesize}.py` + the `answer_question` orchestrator ship and get wired into `/api/ask` now; GRAPH and WHO_KNOWS stay unbuilt until CP6 exists (`lanes.py`'s own docstring says so). `scripts/check_7_retrieve.py` is all green, including one real-LLM smoke test, and it's wired end-to-end into `/api/ask` (SSE `plan`/`lane`/`token`/`citations` events) and re-verified against the real 930-doc corpus below.
+Built reduced-lane first, on purpose: VECTOR, VEC-ARTIFACTS, FTS and PHRASE need nothing CP6 (ontology) doesn't already provide, so `retrieve/{planner,lanes,fuse,rerank,synthesize}.py` + the `answer_question` orchestrator shipped and got wired into `/api/ask` first; GRAPH and WHO_KNOWS stayed unbuilt until CP6 landed, which it now has (2026-08-19) — see CP 6's status note. `scripts/check_7_retrieve.py` is all green, including one real-LLM smoke test, and it's wired end-to-end into `/api/ask` (SSE `plan`/`lane`/`token`/`citations` events) and re-verified against the real 930-doc corpus below.
 
 **Four real bugs found only by testing against the live server and real data — none of `check_7_retrieve.py`'s synthetic fixtures caught any of them:**
 1. **`config.py` never loaded `.env`, only every `scripts/check_*.py` did.** Every check script calls `load_dotenv(ROOT / ".env")` itself before touching `Settings.from_env()`; `app.py` never did, so a plain `uvicorn joel.app:app` (exactly how the dev server is normally started, with no wrapper) ran with `HYDRA_HTTP`/`HYDRA_BOLT`/etc. missing from its actual process environment. `_runtime()` is lazy, so this stayed invisible until the *first* call that actually needed it — the first real `/api/ask` — which then raised a raw `KeyError` deep in `Settings.from_env()`, outside every LLM-specific error handler. Fixed by calling `load_dotenv()` at the top of `app.py` itself, before any other project import.
@@ -1946,7 +1953,7 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 - [x] lanes run concurrently, not serially — *`ThreadPoolExecutor` in `run_lanes`; this is exactly what surfaced bug 2 against the real embedding model*
 - [x] every lane excludes `forgotten=1`
 - [x] when AskContext is passed, every lane restricts to `allowed_stamps(ask)` — *`check_visibility.py::check_retrieval_respects_room`*
-- [ ] GRAPH, WHO_KNOWS — **not built, blocked on CP6 (ontology)**
+- [x] GRAPH, WHO_KNOWS — built in CP6 (2026-08-19): `HydraStore.graph_expand`/`who_knows`, wired into `run_lanes` via an optional `hydra_store` param, degrading to empty (not a crash) when it's `None` or HydraDB is unreachable — see CP 6's status note
 
 **7.2 Fusion**
 - [x] a doc mid-rank in ≥3 lanes outranks a single-lane #1 (log per-lane ranks to prove it)

@@ -111,6 +111,8 @@ from .hydra import Hydra
 
 ROOT_LABEL = "Root"
 ROOT_ID = 0
+ENTITY_LABEL = "Entity"
+ALIAS_LABEL = "Alias"
 
 _VERTEX_ID_BITS = 62
 _VERTEX_ID_MASK = (1 << _VERTEX_ID_BITS) - 1
@@ -393,6 +395,129 @@ class HydraStore:
                     }
                 )
         return results
+
+    # ---- §9/§10 ontology + GRAPH/WHO_KNOWS lane support ----------------
+
+    def edges_from(
+        self, from_label: str, from_key: str, edge_type: str, to_label: str
+    ) -> list[dict[str, Any]]:
+        """All outgoing edges of one fixed type from one node, with their
+        properties and the target's external key -- used by §9.4's
+        incremental reconciliation to load every CURRENT claim on a touched
+        (entity, predicate) pair before deciding a winner. One predicate is
+        always known up front here, so this never needs the multi-type
+        `[r:A|B]` pattern the module docstring says HydraDB rejects."""
+        vid = to_vertex_id(from_key)
+        rows = self.hydra.bolt(
+            f"MATCH (a:{from_label} {{id: $vid}})-[r:{edge_type}]->(b:{to_label}) "
+            "RETURN r.doc_id AS doc_id, r.ctx AS ctx, r.ts AS ts, "
+            "r.confidence AS confidence, b.key AS target_key",
+            vid=vid,
+        )
+        return [
+            {
+                "doc_id": _unwrap(row["doc_id"]),
+                "ctx": _unwrap(row["ctx"]),
+                "ts": _unwrap(row["ts"]) or None,
+                "confidence": _unwrap(row["confidence"]),
+                "target_key": _unwrap(row["target_key"]),
+            }
+            for row in rows
+        ]
+
+    def docs_mentioning(self, entity_key: str, *, limit: int = 200) -> list[str]:
+        """Doc→Entity :MENTIONS, reversed -- every doc that mentions this
+        entity, by external doc id (never the internal integer id)."""
+        vid = to_vertex_id(entity_key)
+        rows = self.hydra.bolt(
+            "MATCH (d:Doc)-[:MENTIONS]->(e:Entity {id: $vid}) "
+            "RETURN d.key AS key LIMIT $limit",
+            vid=vid,
+            limit=limit,
+        )
+        return [_unwrap(row["key"]) for row in rows]
+
+    def who_knows(
+        self, alias_names: Sequence[str], edge_types: Sequence[str]
+    ) -> list[dict[str, Any]]:
+        """§4.3's WHO_KNOWS: alias surface forms -> resolved entities ->
+        outgoing ontology edges, with each edge's evidence doc_id/ctx/ts.
+        One query per (alias, edge_type) pair, merged client-side -- same
+        multi-type-pattern-rejected reasoning as `traverse_any_type`."""
+        results: list[dict[str, Any]] = []
+        seen_entities: set[str] = set()
+        for name in alias_names:
+            alias = self.get_node(ALIAS_LABEL, name, ["entity_key"])
+            if alias is None or not alias.get("entity_key"):
+                continue
+            entity_key = alias["entity_key"]
+            if entity_key in seen_entities:
+                continue
+            seen_entities.add(entity_key)
+            vid = to_vertex_id(entity_key)
+            for edge_type in edge_types:
+                rows = self.hydra.bolt(
+                    f"MATCH (p:{ENTITY_LABEL} {{id: $vid}})-[r:{edge_type}]->(x:{ENTITY_LABEL}) "
+                    "RETURN p.name AS person, x.name AS target, r.doc_id AS doc_id, "
+                    "r.ctx AS ctx, r.ts AS ts",
+                    vid=vid,
+                )
+                for row in rows:
+                    results.append(
+                        {
+                            "person": _unwrap(row["person"]),
+                            "predicate": edge_type,
+                            "target": _unwrap(row["target"]),
+                            "doc_id": _unwrap(row["doc_id"]),
+                            "ctx": _unwrap(row["ctx"]),
+                            "ts": _unwrap(row["ts"]) or None,
+                        }
+                    )
+        return results
+
+    def graph_expand(
+        self,
+        alias_names: Sequence[str],
+        edge_types: Sequence[str],
+        *,
+        max_hops: int = 2,
+        result_limit: int = 200,
+    ) -> list[tuple[str, int]]:
+        """§10.2's GRAPH lane: aliases -> entities -> ontology+MENTIONS
+        expansion, bounded to `max_hops` (§4.4's traversal-bound rule).
+        Returns `(doc_id, hop_distance)` pairs, closest hop wins on
+        duplicates, capped at `result_limit`."""
+        seeds: list[str] = []
+        for name in alias_names:
+            alias = self.get_node(ALIAS_LABEL, name, ["entity_key"])
+            if alias and alias.get("entity_key"):
+                seeds.append(alias["entity_key"])
+        if not seeds:
+            return []
+
+        doc_hop: dict[str, int] = {}
+        frontier: set[str] = set(seeds)
+        visited: set[str] = set(seeds)
+        for hop in range(1, max_hops + 1):
+            for entity_key in frontier:
+                for doc_key in self.docs_mentioning(entity_key, limit=result_limit):
+                    if doc_key not in doc_hop:
+                        doc_hop[doc_key] = hop
+            if hop == max_hops:
+                break
+            next_frontier: set[str] = set()
+            for entity_key in frontier:
+                for edge_type in edge_types:
+                    for hit in self.traverse_any_type(
+                        ENTITY_LABEL, entity_key, [edge_type], to_label=ENTITY_LABEL
+                    ):
+                        if hit["key"] not in visited:
+                            next_frontier.add(hit["key"])
+            visited |= next_frontier
+            frontier = next_frontier
+            if not frontier:
+                break
+        return sorted(doc_hop.items(), key=lambda kv: kv[1])[:result_limit]
 
     def ms_paths(
         self,

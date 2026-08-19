@@ -22,13 +22,17 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 from joel.distill.artifact import DistillFailure, diff_kept_set, distill_thread
 from joel.distill.bursts import group_bursts
 from joel.distill.df_index import DocFrequencyIndex
 from joel.distill.state import load_prior_kept, save_thread_state
 from joel.live_index import LiveIndex
 from joel.llm import LLMCallFn
-from joel.models import CanonicalDoc
+from joel.models import CanonicalDoc, ThreadArtifact
+from joel.ontology.extract import ExtractInput
+from joel.ontology.pipeline import OntologyReport, run_ontology_pipeline
 from joel.store import HydraStore
 from joel.store_sql import EmbedFn, from_burst, from_canonical_doc, from_thread_artifact, remove_docs, upsert_docs
 
@@ -46,6 +50,7 @@ class PipelineReport:
     bursts_kept: int = 0
     bursts_dropped: int = 0
     distill_errors: list[str] = field(default_factory=list)
+    ontology: OntologyReport = field(default_factory=OntologyReport)
 
 
 def _row_to_canonical_doc(row: sqlite3.Row) -> CanonicalDoc:
@@ -96,10 +101,13 @@ def _distill_and_store_thread(
     thread_id: str,
     df: DocFrequencyIndex,
     report: PipelineReport,
-) -> None:
+) -> ThreadArtifact | None:
+    """Returns the freshly-distilled artifact (or `None`) so the caller can
+    feed it to CP6's ontology extraction — a thread's artifact is the
+    extraction target for that thread, never the raw messages (§9.1)."""
     messages = load_thread_messages(conn, thread_id)
     if not messages:
-        return
+        return None
     bursts = group_bursts(messages)
     prior_ids, prior_text = load_prior_kept(conn, thread_id)
 
@@ -110,7 +118,7 @@ def _distill_and_store_thread(
         # distill_thread; a second failure leaves the PREVIOUS artifact (if
         # any) in place rather than deleting good state over a bad call.
         report.distill_errors.append(str(exc))
-        return
+        return None
 
     if artifact is None:
         # Thread now classifies as noise/low-confidence (it may not have
@@ -129,7 +137,7 @@ def _distill_and_store_thread(
             distilled_at=_now_iso(),
         )
         report.threads_distilled += 1
-        return
+        return None
 
     kept = [b for b in resolved_bursts if b.kept]
     diff = diff_kept_set(kept, prior_ids, prior_text)
@@ -172,6 +180,37 @@ def _distill_and_store_thread(
     report.artifacts_written += 1
     report.bursts_kept += len(kept)
     report.bursts_dropped += len(diff.to_delete)
+    return artifact
+
+
+def _artifact_extract_input(artifact: ThreadArtifact) -> ExtractInput:
+    """§9.1: threads are extracted from their ARTIFACT, not the raw
+    messages — shorter, noise-free, and already has a doc node in the
+    graph (`from_thread_artifact`'s StoreDoc.id == artifact.artifact_id)."""
+    return ExtractInput(
+        doc_id=artifact.artifact_id,
+        source_type=artifact.source_type,
+        container=artifact.container,
+        timestamp=artifact.timestamp.isoformat() if artifact.timestamp else None,
+        author_raw=None,  # artifacts have actors[], not one author; AUTHORED isn't derived for them
+        title=artifact.question[:300],
+        body=artifact.normalized_body(),
+    )
+
+
+def _singleton_extract_input(doc: CanonicalDoc) -> ExtractInput:
+    """§9.1: everything that isn't part of a thread is extracted from its
+    own full text directly (Confluence pages, Drive files, HubSpot records,
+    GitHub code chunks, ...)."""
+    return ExtractInput(
+        doc_id=doc.doc_id,
+        source_type=doc.source_type,
+        container=doc.container,
+        timestamp=doc.timestamp.isoformat() if doc.timestamp else None,
+        author_raw=doc.author_raw,
+        title=doc.title,
+        body=doc.body,
+    )
 
 
 def run_store_pipeline(
@@ -181,11 +220,17 @@ def run_store_pipeline(
     embed_fn: EmbedFn,
     llm_call: LLMCallFn | None,
     docs: list[CanonicalDoc],
+    *,
+    data_dir: Path | None = None,
 ) -> PipelineReport:
     """Called once per sync with this job's new/changed docs (not the whole
-    corpus). `llm_call=None` skips distillation entirely (no LLM key
-    configured yet) but still stores every raw doc -- matching §14.6's
-    "ingestion pauses [the LLM-dependent part] rather than burning retries."
+    corpus). `llm_call=None` skips distillation and ontology extraction
+    entirely (no LLM key configured yet) but still stores every raw doc --
+    matching §14.6's "ingestion pauses [the LLM-dependent part] rather than
+    burning retries." `data_dir=None` (the default, and every existing
+    caller in `scripts/check_pipeline_wiring.py`) skips ontology (CP6) too,
+    so this stays a no-op change for every already-verified CP4/CP5 caller;
+    `app.py` passes its real `DATA_DIR` to opt in.
     """
     report = PipelineReport()
     if not docs:
@@ -194,6 +239,8 @@ def run_store_pipeline(
     store_docs = [from_canonical_doc(d) for d in docs]
     upsert_docs(conn, index, hydra_store, store_docs, embed_fn=embed_fn, now=_now_iso())
     report.docs_stored = len(store_docs)
+
+    ontology_targets: list[ExtractInput] = []
 
     thread_ids = sorted({d.thread_id for d in docs if d.thread_id})
     report.threads_seen = len(thread_ids)
@@ -206,7 +253,19 @@ def run_store_pipeline(
         for row in conn.execute("SELECT body FROM docs WHERE forgotten=0"):
             df.add_document(row["body"])
         for thread_id in thread_ids:
-            _distill_and_store_thread(conn, index, hydra_store, embed_fn, llm_call, thread_id, df, report)
+            artifact = _distill_and_store_thread(conn, index, hydra_store, embed_fn, llm_call, thread_id, df, report)
+            if artifact is not None:
+                ontology_targets.append(_artifact_extract_input(artifact))
+
+    if llm_call is not None:
+        ontology_targets.extend(
+            _singleton_extract_input(d) for d in docs if not d.thread_id
+        )
+
+    if ontology_targets and llm_call is not None and data_dir is not None:
+        report.ontology = run_ontology_pipeline(
+            conn, index, hydra_store, llm_call, ontology_targets, data_dir=data_dir
+        )
 
     return report
 

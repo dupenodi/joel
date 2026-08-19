@@ -1,14 +1,16 @@
-"""§10.2 — the retrieval lanes, run concurrently. GRAPH and WHO_KNOWS are
-deliberately not implemented here: both need CP6 (ontology) to exist first,
-which it doesn't yet. VECTOR, VEC-ARTIFACTS, FTS and PHRASE need nothing
-ontology can't already give them, so they run for real today; `fuse.py`
-just receives fewer lists than the full plan calls for until CP6 lands.
+"""§10.2 — the retrieval lanes, run concurrently. GRAPH and WHO_KNOWS need
+CP6's ontology (`HydraStore.graph_expand`/`who_knows`, §9) to have written
+`:Entity`/`:Alias` nodes and ontology edges — they're wired in here but a
+caller that doesn't pass `hydra_store` (or asks a question the planner
+found no entities in) simply gets empty lists back, same degrade-safe shape
+as every other lane's zero-hit case.
 
 Every lane excludes `forgotten=1` — `LiveIndex.search` does this itself;
-the FTS/PHRASE lanes (raw SQL against `docs`) do it explicitly here.
-When an AskContext is provided, every lane also restricts to
-`allowed_stamps(ask)` so a public-room question cannot surface a
-private-channel or personal doc.
+the FTS/PHRASE lanes (raw SQL against `docs`) do it explicitly here, and
+GRAPH/WHO_KNOWS inherit it for free by hydrating through `_hydrate`, which
+already filters `forgotten=0`. When an AskContext is provided, every lane
+also restricts to `allowed_stamps(ask)` so a public-room question cannot
+surface a private-channel or personal doc.
 """
 
 from __future__ import annotations
@@ -21,13 +23,31 @@ from typing import Callable
 import numpy as np
 
 from joel.live_index import LiveIndex
+from joel.ontology.resolve import norm as _norm_alias
 from joel.retrieve.planner import QueryPlan
+from joel.store import HydraStore
 from joel.visibility import AskContext, allowed_stamps, sql_in
 
 EmbedFn = Callable[[list[str]], np.ndarray]
 
 VECTOR_TOP_K = 20
 VEC_ARTIFACTS_TOP_K = 15
+GRAPH_TOP_K = 200  # §10.2's own cap
+WHO_KNOWS_TOP_K = 50
+ONTOLOGY_PREDICATES = (
+    "OWNS",
+    "DECIDED",
+    "COMMITTED_TO",
+    "OBJECTED_TO",
+    "DEPENDS_ON",
+    "BLOCKS",
+    "ASSIGNED_TO",
+    "REPORTED",
+    "ESCALATED",
+    "APPROVED",
+    "RESOLVED",
+    "AFFECTS",
+)
 FTS_TOP_K = 15
 PHRASE_TOP_K = 15
 
@@ -248,6 +268,67 @@ def phrase_lane(
     return _order_by_ids(hydrated, ordered_ids)[:PHRASE_TOP_K]
 
 
+def graph_lane(
+    conn: sqlite3.Connection,
+    hydra_store: HydraStore,
+    plan: QueryPlan,
+    *,
+    allowed: frozenset[str] | None = None,
+) -> list[RetrievedDoc]:
+    """GRAPH: aliases -> entities -> expand ontology+MENTIONS <=2 hops ->
+    doc_ids ranked by hop distance then ts (§10.2), via
+    `HydraStore.graph_expand`. Empty when the planner found no entities in
+    the question — this lane has nothing to seed a traversal from without
+    at least one surface form."""
+    if not plan.entities:
+        return []
+    names = [_norm_alias(name) for name in plan.entities if name.strip()]
+    if not names:
+        return []
+    try:
+        hits = hydra_store.graph_expand(names, ONTOLOGY_PREDICATES, max_hops=2, result_limit=GRAPH_TOP_K)
+    except Exception:
+        # §14.5's degraded mode: HydraDB unreachable must drop to the other
+        # four lanes with a banner, not a 500 — this lane failing is exactly
+        # the case that has to degrade, not propagate.
+        return []
+    ordered_ids = [doc_id for doc_id, _hop in hits]  # already hop-sorted; ts tiebreak happens in fuse's age decay
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
+    return _order_by_ids(hydrated, ordered_ids)
+
+
+def who_knows_lane(
+    conn: sqlite3.Connection,
+    hydra_store: HydraStore,
+    plan: QueryPlan,
+    *,
+    allowed: frozenset[str] | None = None,
+) -> list[RetrievedDoc]:
+    """WHO_KNOWS (intent=who, §4.3): the evidence doc for every ontology
+    edge touching an entity the question names — via `HydraStore.who_knows`.
+    Only runs for `intent == "who"`; every other intent skips it (empty
+    list), matching §10.2's own gating."""
+    if plan.intent != "who" or not plan.entities:
+        return []
+    names = [_norm_alias(name) for name in plan.entities if name.strip()]
+    if not names:
+        return []
+    try:
+        edges = hydra_store.who_knows(names, ONTOLOGY_PREDICATES)
+    except Exception:
+        return []  # same degrade-safe reasoning as graph_lane above
+    ordered_ids: list[str] = []
+    seen: set[str] = set()
+    for edge in edges:
+        doc_id = edge.get("doc_id")
+        if doc_id and doc_id not in seen:
+            seen.add(doc_id)
+            ordered_ids.append(doc_id)
+    ordered_ids = ordered_ids[:WHO_KNOWS_TOP_K]
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
+    return _order_by_ids(hydrated, ordered_ids)
+
+
 def run_lanes(
     conn: sqlite3.Connection,
     index: LiveIndex,
@@ -256,15 +337,20 @@ def run_lanes(
     question: str,
     *,
     ask: AskContext | None = None,
+    hydra_store: HydraStore | None = None,
 ) -> dict[str, list[RetrievedDoc]]:
     """Run every implemented lane concurrently (§10.2's own requirement —
     lanes must not run serially). Callers must pass a connection opened
     with `check_same_thread=False` (as `app.db()` already does) — every
     lane here only reads, so sharing one connection across the pool's
     threads is safe and avoids the ":memory:"-database trap of each thread
-    opening its own connection and seeing an empty, unrelated database."""
+    opening its own connection and seeing an empty, unrelated database.
+
+    `hydra_store=None` (e.g. HydraDB is unreachable, §14's degraded mode)
+    skips GRAPH/WHO_KNOWS entirely rather than failing the whole question —
+    the other four lanes still answer."""
     allowed = None if ask is None else allowed_stamps(ask)
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=6) as pool:
         vector_f = pool.submit(
             vector_lane, conn, index, embed_fn, plan, question, allowed=allowed
         )
@@ -273,13 +359,28 @@ def run_lanes(
         )
         fts_f = pool.submit(fts_lane, conn, plan, question, allowed=allowed)
         phrase_f = pool.submit(phrase_lane, conn, plan, question, allowed=allowed)
+        graph_f = (
+            pool.submit(graph_lane, conn, hydra_store, plan, allowed=allowed)
+            if hydra_store is not None
+            else None
+        )
+        who_f = (
+            pool.submit(who_knows_lane, conn, hydra_store, plan, allowed=allowed)
+            if hydra_store is not None
+            else None
+        )
 
-        return {
+        results = {
             "vector": vector_f.result(),
             "vec_artifacts": vec_art_f.result(),
             "fts": fts_f.result(),
             "phrase": phrase_f.result(),
         }
+        if graph_f is not None:
+            results["graph"] = graph_f.result()
+        if who_f is not None:
+            results["who_knows"] = who_f.result()
+        return results
 
 
 __all__ = [
@@ -288,5 +389,8 @@ __all__ = [
     "vector_artifacts_lane",
     "fts_lane",
     "phrase_lane",
+    "graph_lane",
+    "who_knows_lane",
     "run_lanes",
+    "ONTOLOGY_PREDICATES",
 ]

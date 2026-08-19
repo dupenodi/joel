@@ -20,7 +20,7 @@ from typing import Callable, Iterable
 
 import numpy as np
 
-from joel.live_index import LiveIndex
+from joel.live_index import META_FIELDS, LiveIndex
 from joel.models import Burst, CanonicalDoc, ThreadArtifact, compute_content_hash, period_of
 from joel.store import HydraStore
 
@@ -352,6 +352,25 @@ def remove_docs(
     return removed
 
 
+def refresh_validity(index: LiveIndex, doc_ids: Iterable[str], validity: str) -> None:
+    """Flip `validity` in the hot vector index for docs whose SQLite/graph
+    validity already changed elsewhere (§9.3 supersession) — reuses each
+    doc's existing vector as-is, no re-embedding, since only metadata
+    changed. Doc ids not currently in the index (never vectorized, or
+    already forgotten) are skipped rather than erroring."""
+    snap = index.snapshot()
+    upserts: dict[str, tuple[np.ndarray, dict[str, object]]] = {}
+    for doc_id in doc_ids:
+        row = snap.row_of.get(doc_id)
+        if row is None:
+            continue
+        meta = {f: snap.meta[f][row] for f in META_FIELDS}
+        meta["validity"] = validity
+        upserts[doc_id] = (snap.matrix[row], meta)
+    if upserts:
+        index.apply(upserts, deleted=[])
+
+
 def upsert_docs(
     conn: sqlite3.Connection,
     index: LiveIndex,
@@ -384,6 +403,7 @@ __all__ = [
     "from_burst",
     "upsert_docs",
     "remove_docs",
+    "refresh_validity",
     "DOC_LABEL",
     "DISTILLED_FROM",
 ]

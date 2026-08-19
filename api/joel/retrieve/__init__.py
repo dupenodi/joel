@@ -1,11 +1,10 @@
 """Phase 7 (§10) — retrieval and answering. `answer_question` is the single
 entry point: plan → lanes → fuse → rerank → abstention gate → synthesize.
 
-Reduced-lane build: GRAPH and WHO_KNOWS aren't implemented (they need CP6's
-ontology, which doesn't exist yet — see `lanes.py`'s module docstring).
-VECTOR, VEC-ARTIFACTS, FTS and PHRASE already have real ingested/distilled
-data to search, so a question can get a real, cited answer today without
-waiting on ontology.
+Six lanes now run when `hydra_store` is passed: VECTOR, VEC-ARTIFACTS, FTS,
+PHRASE, GRAPH and WHO_KNOWS (§9's ontology backs the last two). Passing
+`hydra_store=None` degrades to the original four-lane build — e.g. §14's
+"HydraDB unreachable" mode, or a caller that hasn't wired ontology up yet.
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ from joel.retrieve.lanes import RetrievedDoc, run_lanes
 from joel.retrieve.planner import QueryPlan, plan_query
 from joel.retrieve.rerank import RerankedDoc, rerank_candidates
 from joel.retrieve.synthesize import AnswerResult, synthesize_answer
+from joel.store import HydraStore
 from joel.visibility import AskContext
 
 EmbedFn = Callable[[list[str]], np.ndarray]
@@ -55,10 +55,11 @@ def answer_question(
     question: str,
     *,
     ask: AskContext | None = None,
+    hydra_store: HydraStore | None = None,
 ) -> RetrievalTrace:
     question = question.strip()
     plan = plan_query(llm_call, question) if llm_call is not None else QueryPlan(intent="lookup")
-    lane_results = run_lanes(conn, index, embed_fn, plan, question, ask=ask)
+    lane_results = run_lanes(conn, index, embed_fn, plan, question, ask=ask, hydra_store=hydra_store)
     fused = rrf_fuse(lane_results, top_n=FUSE_TOP_N)
     reranked = rerank_candidates(llm_call, question, fused) if llm_call is not None else []
     answer = synthesize_answer(llm_call, question, reranked)
