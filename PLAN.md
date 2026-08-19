@@ -1515,7 +1515,7 @@ Landing page is **done** (§20) — content tweaks only, not a workstream. Every
 
 Small, and everything downstream inherits them, so they come before new work:
 
-abstain floor on the rerank scale (§10.5) · ~~FTS5 delete-before-insert (§8.2)~~ done in CP5 (`store_sql.py::_upsert_sqlite_and_fts`) · ~~graph upsert by `content_hash` instead of skip-if-present (§8.2)~~ done in CP5 (`store_sql.py::_upsert_graph`, `graph_written` table) · ~~`LiveIndex` hot reload (§8.3)~~ done in CP5 (`live_index.py`) · incremental reconciliation (§9.4) · ~~`DELETE` added to the Cypher compat pass (§4.4)~~ done in CP1 (`store.py::delete_edge`/`delete_node`) · single store, no `JOEL_DATASET` (§2.1) · pick the SSE-over-POST approach (§12.2).
+~~abstain floor on the rerank scale (§10.5)~~ done in CP7 (`synthesize.py::RERANK_FLOOR`, explicitly the 0-10 reranker scale, not RRF's ~0.09) · ~~FTS5 delete-before-insert (§8.2)~~ done in CP5 (`store_sql.py::_upsert_sqlite_and_fts`) · ~~graph upsert by `content_hash` instead of skip-if-present (§8.2)~~ done in CP5 (`store_sql.py::_upsert_graph`, `graph_written` table) · ~~`LiveIndex` hot reload (§8.3)~~ done in CP5 (`live_index.py`) · incremental reconciliation (§9.4) · ~~`DELETE` added to the Cypher compat pass (§4.4)~~ done in CP1 (`store.py::delete_edge`/`delete_node`) · ~~single store, no `JOEL_DATASET` (§2.1)~~ done 2026-08-19 (`config.py::Settings` no longer has a `dataset` field; `.env.example` no longer documents it) · ~~pick the SSE-over-POST approach (§12.2)~~ done — `fetch` + `ReadableStream` on the client, `StreamingResponse` on `/api/ask`.
 
 ### 16.1 Core track
 
