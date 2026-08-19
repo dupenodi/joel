@@ -50,7 +50,7 @@ export function IntegrationModal({
   configured: boolean;
   busy: string | null;
   error: string | null;
-  onConnect: () => void;
+  onConnect: (personal: boolean) => void;
   onStartIngest: (input: {
     lookbackDays: number;
     channelIds: string[];
@@ -69,6 +69,13 @@ export function IntegrationModal({
   const [selected, setSelected] = useState<string[]>(card?.channel_ids ?? []);
   const [channelError, setChannelError] = useState<string | null>(null);
   const [channelsLoading, setChannelsLoading] = useState(false);
+  // §0.3/§1.4: only mailbox/DM-shaped providers can be personal -- a
+  // second Notion/Drive connection wouldn't mean anything different from
+  // the org-shared one, so the choice is only offered here, matching the
+  // server-side PERSONAL_CONNECTOR_PROVIDERS allowlist it's checked
+  // against regardless.
+  const canBePersonal = def.id === "gmail" || def.id === "slack";
+  const [personal, setPersonal] = useState(false);
   const pickedRef = useRef(false);
   const selectModeRef = useRef<"all" | "none" | null>(null);
   const isSlack = def.id === "slack";
@@ -133,7 +140,7 @@ export function IntegrationModal({
           disabled: !configured || busy != null,
           loading: busy === "connect",
           variant: "accent" as const,
-          onClick: onConnect,
+          onClick: () => onConnect(personal),
         }
       : inFlight
         ? {
@@ -239,6 +246,18 @@ export function IntegrationModal({
         )}
 
         {!connected && permissions}
+
+        {!connected && canBePersonal && (
+          <label className="flex cursor-pointer items-start gap-2 text-[13px] text-ink">
+            <Checkbox checked={personal} onChange={() => setPersonal((p) => !p)} />
+            <span>
+              Just for me
+              <span className="block text-[12.5px] text-ink-2">
+                Only you can ask questions using this connection — it won't be shared with the workspace.
+              </span>
+            </span>
+          </label>
+        )}
 
         {inFlight && (
           <LoadingState

@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Sequence
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from dotenv import load_dotenv
@@ -481,6 +481,7 @@ class ComposioConnectIn(BaseModel):
     origin: str
     lookback_days: int = 30
     auth_config_id: str | None = None
+    personal: bool = False
 
 
 class ConversationIn(BaseModel):
@@ -841,6 +842,15 @@ DEEP_BACKFILL_PAGE_DAYS = 90
 # per §11.3's own wording ("...or a user-set floor") instead of a true
 # provider-reported beginning.
 DEEP_BACKFILL_GMAIL_FLOOR_DAYS = 730
+
+# §0.3/§1.4 personal connectors: mailbox/DM-shaped providers, where "who
+# owns this connection" already maps onto Supermemory's own
+# personal-then-org-shared model -- a second Gmail inbox or a second
+# Slack identity is naturally ONE PERSON's, never the org's. Company-wide
+# doc stores (Notion, Drive, ...) stay org-shared only; this allowlist is
+# checked server-side (never trust the client for a scope decision), same
+# principle as AskContext always being built server-side.
+PERSONAL_CONNECTOR_PROVIDERS = {"gmail", "slack"}
 
 
 def _deep_backfill_floor(
@@ -1260,24 +1270,32 @@ def _upsert_connection(
     lookback_days: int = 30,
     status: str = "backfilling",
     reset_progress: bool = True,
+    owned_by: str | None = None,
 ) -> tuple[str, bool]:
+    """§0.3/§1.4 personal connectors: `owned_by=None` is the org-shared
+    connection every provider has always had (unchanged default, backward
+    compatible); a real user id makes this THAT PERSON's own connection,
+    coexisting with the org one and any other person's, per provider
+    (`UNIQUE(provider, owned_by)`, migration 008)."""
     spec = INTEGRATION_BY_ID[provider]
     with db() as conn:
         if conn.execute("SELECT id FROM orgs WHERE id=1").fetchone() is None:
             raise HTTPException(400, "Create an org first")
         existing = conn.execute(
-            "SELECT id FROM connections WHERE provider=?", (provider,)
+            "SELECT id FROM connections WHERE provider=? AND owned_by IS ?", (provider, owned_by)
         ).fetchone()
         created = existing is None
         connection_id = (
-            existing["id"] if existing else f"conn_{provider}_{uuid.uuid4().hex[:8]}"
+            existing["id"]
+            if existing
+            else f"conn_{provider}_{uuid.uuid4().hex[:8]}"
         )
         if created:
             conn.execute(
                 """INSERT INTO connections(
                      id, provider, mode, status, interval_min, checklist_json,
-                     created_at, backfill_progress, lookback_days)
-                   VALUES (?,?,?,?,?,?,?,0.05,?)""",
+                     created_at, backfill_progress, lookback_days, owned_by, kind)
+                   VALUES (?,?,?,?,?,?,?,0.05,?,?,?)""",
                 (
                     connection_id,
                     provider,
@@ -1287,6 +1305,8 @@ def _upsert_connection(
                     json.dumps(_checklist_default()),
                     _now(),
                     lookback_days,
+                    owned_by,
+                    "personal" if owned_by else "org",
                 ),
             )
         elif reset_progress:
@@ -1356,18 +1376,19 @@ def _app_redirect(origin: str, return_to: str, **params: str) -> RedirectRespons
     return _oauth_redirect(target, **params)
 
 
-def _pending_lookback(toolkit: str) -> tuple[int, str, str]:
+def _pending_lookback(toolkit: str) -> tuple[int, str, str, str | None]:
     with db() as conn:
         row = conn.execute(
-            "SELECT lookback_days, return_to, origin FROM pending_connects WHERE toolkit=?",
+            "SELECT lookback_days, return_to, origin, owned_by FROM pending_connects WHERE toolkit=?",
             (toolkit,),
         ).fetchone()
     if row is None:
-        return 30, "connectors", ""
+        return 30, "connectors", "", None
     days = int(row["lookback_days"] or 30)
     if days not in LOOKBACK_DAYS:
         days = 30
-    return days, str(row["return_to"] or "connectors"), str(row["origin"] or "")
+    owned_by = row["owned_by"] if "owned_by" in row.keys() else None
+    return days, str(row["return_to"] or "connectors"), str(row["origin"] or ""), owned_by
 
 
 def _activate_composio_toolkit(
@@ -1376,6 +1397,7 @@ def _activate_composio_toolkit(
     lookback_days: int,
     start_sync: bool,
     account_id: str | None = None,
+    owned_by: str | None = None,
 ) -> str | None:
     spec = INTEGRATION_BY_TOOLKIT.get(toolkit)
     if spec is None or not spec.connectable:
@@ -1405,6 +1427,7 @@ def _activate_composio_toolkit(
         lookback_days=lookback_days,
         status=status,
         reset_progress=start_sync,
+        owned_by=owned_by,
     )
     if spec.ingest:
         with db() as conn:
@@ -1646,13 +1669,36 @@ def wipe_org(body: WipeIn, request: Request) -> dict[str, str]:
 # ── connectors ──────────────────────────────────────────────────────────────
 
 
+def _connectors_for_actor(all_rows: Sequence[sqlite3.Row], actor_id: str) -> dict[str, sqlite3.Row]:
+    """§0.3/§1.4: with personal connectors, a provider can now have more
+    than one row (one org-shared, one per person who's personally
+    connected it) -- keying a dict by provider alone would silently drop
+    every row but the last one iterated. Returns each provider's ONE row
+    for THIS actor's view: their own personal connection if they have
+    one, the org-shared one otherwise. Never another person's personal
+    connection -- that's private to them, same as any other visibility
+    boundary in this app. A pure function (no db/request) so it's directly
+    unit-testable."""
+    rows: dict[str, sqlite3.Row] = {}
+    for r in all_rows:
+        provider = r["provider"]
+        owned_by = r["owned_by"] if "owned_by" in r.keys() else None
+        if owned_by is not None and owned_by != actor_id:
+            continue  # someone else's personal connection -- never listed here
+        existing = rows.get(provider)
+        # A personal row (this actor's own) always wins over the
+        # org-shared one for the same provider, if both exist.
+        if existing is None or owned_by == actor_id:
+            rows[provider] = r
+    return rows
+
+
 @app.get("/api/connectors")
-def list_connectors() -> list[dict[str, Any]]:
+def list_connectors(request: Request) -> list[dict[str, Any]]:
+    actor = _require_actor(request)
     with db() as conn:
-        rows = {
-            r["provider"]: r
-            for r in conn.execute("SELECT * FROM connections").fetchall()
-        }
+        all_rows = conn.execute("SELECT * FROM connections").fetchall()
+        rows = _connectors_for_actor(all_rows, actor.user_id)
         started = {
             r["connection_id"]: r["started_at"]
             for r in conn.execute(
@@ -1892,7 +1938,7 @@ def composio_status() -> dict[str, Any]:
             spec = INTEGRATION_BY_TOOLKIT.get(account["toolkit"])
             if spec is None or spec.id in known:
                 continue
-            lookback, _return_to, _origin = _pending_lookback(account["toolkit"])
+            lookback, _return_to, _origin, _owned_by = _pending_lookback(account["toolkit"])
             try:
                 _activate_composio_toolkit(
                     account["toolkit"],
@@ -1942,7 +1988,8 @@ def set_composio_key(body: ComposioKeyIn) -> dict[str, Any]:
 
 
 @app.post("/api/composio/connect")
-def composio_connect(body: ComposioConnectIn) -> dict[str, str]:
+def composio_connect(request: Request, body: ComposioConnectIn) -> dict[str, str]:
+    actor = _require_actor(request)
     try:
         spec = require_connectable(body.toolkit)
     except ValueError as exc:
@@ -1951,23 +1998,27 @@ def composio_connect(body: ComposioConnectIn) -> dict[str, str]:
         raise HTTPException(400, "Lookback must be 7, 30, 90, or 365 days")
     if body.return_to not in RETURN_PATHS:
         raise HTTPException(400, "return_to must be connectors or onboarding")
+    if body.personal and spec.id not in PERSONAL_CONNECTOR_PROVIDERS:
+        raise HTTPException(400, f"{spec.name} can't be connected as a personal connector")
     try:
         origin = validate_return_to(body.origin.strip())
     except OAuthError as exc:
         raise HTTPException(400, str(exc)) from exc
+    owned_by = actor.user_id if body.personal else None
     with db() as conn:
         if conn.execute("SELECT id FROM orgs WHERE id=1").fetchone() is None:
             raise HTTPException(400, "Create an org first")
         settings = _settings_map(conn)
         conn.execute(
-            """INSERT INTO pending_connects(toolkit, lookback_days, return_to, origin, created_at)
-               VALUES (?,?,?,?,?)
+            """INSERT INTO pending_connects(toolkit, lookback_days, return_to, origin, created_at, owned_by)
+               VALUES (?,?,?,?,?,?)
                ON CONFLICT(toolkit) DO UPDATE SET
                  lookback_days=excluded.lookback_days,
                  return_to=excluded.return_to,
                  origin=excluded.origin,
-                 created_at=excluded.created_at""",
-            (spec.toolkit, body.lookback_days, body.return_to, origin, _now()),
+                 created_at=excluded.created_at,
+                 owned_by=excluded.owned_by""",
+            (spec.toolkit, body.lookback_days, body.return_to, origin, _now(), owned_by),
         )
     callback_url = (
         f"{origin.rstrip('/')}/api/composio/callback"
@@ -2011,7 +2062,7 @@ def composio_callback(
     connected_account_id: str | None = None,
 ) -> RedirectResponse:
     slug = (toolkit or app or "connected").strip().lower()
-    lookback, stored_return, origin = _pending_lookback(slug)
+    lookback, stored_return, origin, owned_by = _pending_lookback(slug)
     return_to = returnTo or stored_return or "connectors"
     if not origin:
         origin = os.getenv("JOEL_WEB_ORIGIN", "http://localhost:3001")
@@ -2024,6 +2075,7 @@ def composio_callback(
             lookback_days=lookback,
             start_sync=True,
             account_id=connected_account_id,
+            owned_by=owned_by,
         )
     except Exception as exc:
         return _app_redirect(origin, return_to, error=str(exc))
@@ -2136,6 +2188,8 @@ def _run_live_lookup(
     llm_call: Any,
     question: str,
     plan: QueryPlan,
+    *,
+    actor_id: str,
 ) -> tuple[list[str], list[str]]:
     """§13.2: at most `live.MAX_LOOKUPS` whitelisted point-lookups, each
     under `live.TIMEOUT_SECONDS`, only against providers this workspace has
@@ -2162,8 +2216,18 @@ def _run_live_lookup(
         provider = "github" if isinstance(target, GitHubItemTarget) else "slack"
         if provider not in ready_providers:
             continue
+        # §1.4/§0.3 personal-then-org-shared read resolution: this actor's
+        # own personal connection (if one exists and is ready) is used
+        # over the org-shared one -- e.g. a live Slack lookup should read
+        # with the asking person's own identity when they have one,
+        # falling back to the shared connection otherwise. Only
+        # gmail/slack can even have a personal row (PERSONAL_CONNECTOR_
+        # PROVIDERS), so this is a no-op for github today.
         conn_row = conn.execute(
-            "SELECT id FROM connections WHERE provider=? AND status='ready'", (provider,)
+            """SELECT id FROM connections WHERE provider=? AND status='ready'
+               AND (owned_by=? OR owned_by IS NULL)
+               ORDER BY (owned_by IS NULL) LIMIT 1""",
+            (provider, actor_id),
         ).fetchone()
         if conn_row is None:
             continue
@@ -2380,7 +2444,8 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             try:
                 with db() as conn:
                     live_doc_ids, live_checked = _run_live_lookup(
-                        conn, rt, settings_map, tracked_llm, rewritten_question, trace.plan
+                        conn, rt, settings_map, tracked_llm, rewritten_question, trace.plan,
+                        actor_id=actor.user_id,
                     )
             except Exception:
                 logging.getLogger(__name__).exception("live lookup failed for %r", rewritten_question)

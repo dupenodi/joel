@@ -225,6 +225,7 @@ export async function connectComposioToolkit(input: {
   toolkit: string;
   returnTo: "integrations" | "onboarding" | "connectors";
   lookbackDays?: number;
+  personal?: boolean;
 }): Promise<{ redirect_url: string }> {
   return api("/api/composio/connect", {
     method: "POST",
@@ -233,6 +234,7 @@ export async function connectComposioToolkit(input: {
       return_to: input.returnTo,
       origin: window.location.origin,
       lookback_days: input.lookbackDays ?? 30,
+      personal: input.personal ?? false,
     }),
   });
 }

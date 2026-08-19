@@ -230,7 +230,7 @@ export function IntegrationsPanel({
     });
   }
 
-  async function onConnect(def: IntegrationDef) {
+  async function onConnect(def: IntegrationDef, personal: boolean) {
     setProviderBusy(def.id, "connect");
     setError(null);
     writeOpenIntegration(def.id);
@@ -238,6 +238,7 @@ export function IntegrationsPanel({
       const { redirect_url } = await connectComposioToolkit({
         toolkit: def.toolkit,
         returnTo: surface === "onboarding" ? "onboarding" : "integrations",
+        personal,
       });
       window.location.assign(redirect_url);
     } catch (e) {
@@ -378,7 +379,7 @@ export function IntegrationsPanel({
           configured={configured}
           busy={openBusy}
           error={error}
-          onConnect={() => void onConnect(openDef)}
+          onConnect={(personal) => void onConnect(openDef, personal)}
           onStartIngest={({ lookbackDays, channelIds }) => {
             if (!openCard?.id) return;
             const connectorId = openCard.id;
