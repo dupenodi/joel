@@ -24,20 +24,42 @@ Deliberately deferred until the product is complete: benchmark corpora, eval har
 
 Each risky step carries a guardrail table — **the ❌ column is a mistake an implementing agent will plausibly make, and it usually fails silently** (wrong-case property values match nothing without erroring, a listening port isn't a working node, a fabricated citation looks like a real one). Treat ❌ rows as assertions to encode in checkpoints.
 
+**Propose the plan, then wait for approval, before writing code.** Product rules live in `CONTEXT.md`; hard-to-reverse choices in `docs/adr/`.
+
 ### 0.2 Product decisions — settled, do not re-litigate
 
 | Question | Decision |
 |---|---|
-| Who uses it | **One person self-hosting.** No login. Every connected tool is the owner's; the owner's permissions are the system's permissions. |
+| Who uses it | **One self-hosted workspace, many members.** First admin runs `/setup`; everyone else is invited. Session cookie, roles `admin` / `member`. |
+| How memory is scoped | **Three rooms, not one knowledge base** — same graph as [Supermemory's permissions](https://supermemory.ai/docs/company-brain/permissions): employee / private channel / public. A doc is written to exactly one room. An ask reads as wide as the room it is asked from (§1.4). |
 | How data stays fresh | **Background scheduler**, per-connector interval, plus a manual Sync now. |
 | How much history | **Bounded first pass** so it's usable in minutes, then a low-priority job walks backwards through the whole archive. |
-| Can the agent act | **Read-only.** It looks things up live; it never writes to your tools. |
+| Can the agent act | **Read-only for now.** Live lookup later; writes to tools are out until personal connections exist. |
 | Live-fetched data | **Becomes memory** — but only through the same filter every other document passes. Nothing skips distillation and the noise filter. |
-| Upstream deletes | **Ignored.** Memory is append-only. The one removal path is the owner explicitly forgetting a document. |
+| Upstream deletes | **Ignored.** Memory is append-only. The one removal path is an explicit forget. |
 | Connectors that ship | **Slack · GitHub · Gmail · Linear · Jira · Notion · Confluence · Google Drive · HubSpot · Fireflies.** Connect through Composio only. Custom OAuth is cut. |
-| What “shipped” means today | Connect + lookback ingest into canonical JSONL + SQLite `docs`, kept current by the background scheduler. Not CP-C green: no poll/backfill cursors, no conformance suite, no live lookup, chat is still a stub. |
+| Connector scope | **Not built.** Today every connection is workspace-level. Target: org-shared (data) vs personal (tools), with reads preferring personal then falling back to org — [Supermemory](https://supermemory.ai/docs/company-brain/permissions). |
+| What “shipped” means today | Connect + lookback ingest + login + visibility stamps + web chat that filters by ask context. Not CP-C green: no poll/backfill cursors, no channel-membership graph, no Slack/MCP surfaces, no personal vs org connectors. |
 
-Consequences worth stating out loud, because they are load-bearing everywhere below: no login means **no per-user visibility filtering** anywhere in retrieval; append-only means **`validity='superseded'` is how things stop being true**, never deletion; read-only means the agent needs no confirmation UI and no audit trail of writes.
+Consequences: append-only means **`validity='superseded'` is how things stop being true**, never deletion. Visibility is a stamp at ingest, never inferred at query time. The client does not choose the readable set — the server builds `AskContext` from the signed-in actor and the surface. Read-only means no confirmation UI and no audit trail of writes yet.
+
+### 0.3 Current state — 2026-08-19
+
+Honest snapshot of the repo, not the original v1 brief. Distillation/ontology/agent remain the later core track; this is the company-brain *skeleton* that those phases now sit on.
+
+| Piece | State |
+|---|---|
+| Workspace | One `orgs` row (`id=1`). Created at `/setup` with domain/name/logo. `PATCH /api/workspace`. |
+| Identity | `users`, `memberships`, `sessions`, `invites`. `joel/identity.py`. `scripts/check_identity.py` green. |
+| Auth UX | `/setup`, `/login`, `/join?token=`. Product pages behind `AuthGate`. Cookie session; almost all `/api/*` require it. |
+| Visibility stamp | `docs.visibility`: `org` · `channel:slack:C…` · `user:gmail:…`. Derived at ingest (`joel/visibility.py`). Migration `004`. Slack needs a re-sync to stamp private channels (old extra had no `channel_kind`). Gmail restamped on migrate. |
+| Ask context | `POST /api/ask` uses the signed-in actor. Web = desk: `org` + `user:gmail:{actor.email}`. No client-supplied room. Private Slack is **not** visible on web until channel membership exists. |
+| Ingest | Ten connectors, lookback re-fetch, content_hash triage, background scheduler, zombie-job reclaim on boot. |
+| Retrieval | VECTOR / VEC-ARTIFACTS / FTS / PHRASE, RRF, rerank, abstention. GRAPH / WHO_KNOWS blocked on ontology. Lanes honour `allowed_stamps(ask)`. |
+| Distill / ontology / live lookup | Distill pipeline exists; ontology and live lookup are not the product yet. |
+| Slack bot, MCP, leasing, API keys | **Not built.** Same permissions graph will apply when they exist. |
+
+Next skeleton checkpoints, in order: **data vs tool connectors** (owned_by + kind) → **channel membership** so a desk/DM can read private rooms the actor is in → **Slack surface** then **MCP**, both constructing `AskContext` server-side.
 
 ---
 
@@ -45,19 +67,20 @@ Consequences worth stating out loud, because they are load-bearing everywhere be
 
 ### 1.1 What joel is (and deliberately isn't)
 
-joel is a **simple web app**, single-user, self-hosted, no login:
+joel is a **self-hosted workspace**: one company install, invited members, a shared employee that answers from memory scoped to who is asking and from where.
 
 | Page | Purpose |
 |---|---|
-| `/onboarding` | enter your **company domain URL** → org created → connect your first tool → watch the first sync → ready |
-| `/connectors` | connect/disconnect tools, live status + next scheduled run, **Sync now**, per-connector job history with errors |
-| `/chat` | conversations sidebar, status-badged answers (✅🟡⚠️🚫), citations, reasoning path |
-| `/settings` | LLM keys + models, sync intervals, pause ingestion, Composio key, custom OAuth creds |
-| `/profile` | display name, org (domain, logo, name), corpus + spend counters, danger zone |
+| `/setup` | first admin: email, password, company domain → workspace + admin account |
+| `/login` · `/join` | sign in; accept an invite token |
+| `/` (chat) | conversations, status-badged answers, citations, reasoning path |
+| `/integrations` | connect/disconnect tools, live status + next run, **Sync now**, job history |
+| `/settings` | workspace members + invites, LLM keys, spend, wipe |
+| `/onboarding` | LLM key + first tool, after the workspace already exists |
 
-**Deliberately NOT in v1:** multi-user/auth/billing · Slack bot surfaces · digests, proactive notifications · agent write-actions · a graph-explorer page (the reasoning path in chat is the graph surface) · benchmark and eval modes. Anything not in the table above does not get built.
+**Not built yet (skeleton holes, not cut forever):** Slack bot / MCP surfaces · personal vs org-shared connectors · channel membership · access leasing · billing · agent write-actions · digests. The graph page is a stub; the reasoning path in chat is the graph surface.
 
-Note what moved *in*: background scheduling is no longer a "nice later" — a company brain that only updates when you click a button is a demo, not a tool.
+Note what moved *in*: login, rooms, and the scheduler. A company brain that is one anonymous bucket, or that only updates when you click a button, is a demo.
 
 ### 1.2 "Ready to use" — defined precisely
 
@@ -87,6 +110,34 @@ Onboarding shows the live checklist for the **first connector only** (`fetched �
 
 **Build vs. free:** local HydraDB is an OpenCypher graph database — Bolt + HTTP, snapshot-consistent, `algo.MSpaths` path procedures. It does NOT ship embeddings, BM25, or ingestion. So: **HydraDB owns the graph** (ontology, reversal ledger, WHO_KNOWS, multi-hop), SQLite FTS5 owns exact/BM25, a local sentence-transformers model owns vectors. Everything is local; there are no usage limits anywhere and no per-seat cost to running it for years.
 
+**Supermemory's permissions graph** — [what memory is, who sees it, how tools are scoped](https://supermemory.ai/docs/company-brain/permissions). Joel copies the three rooms and the read-widens-as-the-room-gets-more-private rule. It does not copy hosting, billing, or silent grants: every install is self-hosted, and leasing (borrowing a teammate's connection for one request) is deferred until personal connectors exist.
+
+### 1.4 Permissions graph
+
+Company brain is not "a shared brain" plus "a private brain." It is one corpus whose **write is narrow** and whose **read depends on where the question is asked**. Joel's names: **Workspace**, **Actor**, **Room**, **Visibility**, **Ask context** (`CONTEXT.md`).
+
+**Three memories — a message writes to exactly one:**
+
+| Room | Stamp | Written from | Who can ever see it |
+|---|---|---|---|
+| Public / org | `org` | Public Slack, Drive, Notion, GitHub, Linear, … | Anyone asking from any room |
+| Private channel | `channel:slack:C…` | A private Slack channel | Only that channel, or a desk/DM whose actor is in it |
+| Employee | `user:gmail:ada@…` (later `user:slack:D…`) | Gmail, DMs, private notes | Only that person's desk/DM |
+
+**What a conversation can read** (writing is narrow; reading widens the more private the seat):
+
+| Asking from | Can read |
+|---|---|
+| Public channel / public MCP | Public / `org` only |
+| Private channel | That channel + `org` |
+| Desk (web) or DM with the bot | Employee memory the actor owns + `org` + every private channel they belong to |
+
+A public room is the whole org, so it only draws on what the whole org may know. A DM/web desk is the widest seat because it is the most private — it answers with everything *that actor* could see, and cites which room the answer came from. If you are not in a private channel, its memory does not exist for you, not even by inference.
+
+**Surfaces construct AskContext server-side.** Web chat is a desk (`AskContext.web`). Slack and MCP, when they exist, will build the same object from the event (channel vs DM), never from a client-chosen room field — a POST body that named `channel:slack:Cpriv` would be an ACL bypass (`docs/adr/0001-visibility-is-one-room.md`).
+
+**Today vs the graph:** stamps and the public/channel/desk read table are implemented. Channel *membership* is not, so web cannot yet include `channel:slack:…` even for people who are in that Slack room. Gmail is visible on web only when the mailbox matches the actor's workspace email. Tool access "personal first, then org-shared" and one-request leasing are **not built**.
+
 ---
 
 ## 2. Architecture
@@ -94,22 +145,24 @@ Onboarding shows the live checklist for the **first connector only** (`fetched �
 ```
    Connectors: Slack · GitHub · Gmail · Linear · Jira · Notion · Confluence · Drive · HubSpot · Fireflies
         (Composio hosted OAuth — joel never holds provider tokens)
-        ▲ scheduler tick (§11) ──── NOT BUILT. Ingest is on-demand Sync now / first connect.
+        ▲ scheduler tick (§11) — in-process loop; lookback re-fetch (no cursors yet)
         │  raw docs via fetch_*_docs — tools.proxy for 7 providers,
         │  tools.execute for Jira/Confluence/Fireflies (§16.2 deviation)
         ▼
    ┌──────────────────────────────────────────┐
-   │ Change detection: content_hash — skip    │  §6.1   ← the thing that makes
-   │ unchanged docs BEFORE any LLM runs       │            "forever" affordable
+   │ Change detection: content_hash — skip    │  §6.1
+   │ unchanged docs BEFORE any LLM runs       │
    └──────────────────┬───────────────────────┘
                       ▼
    ┌──────────────────────────────────────────┐
    │ Adapters: raw → CanonicalDoc (+threads)  │  §6
+   │ Visibility stamp: org / channel / user   │  §1.4
    └──────────────────┬───────────────────────┘
                       ▼
    ┌──────────────────────────────────────────┐
    │ Distillation: bursts → filter → LLM →    │  §7
-   │ ThreadArtifact (1/thread)                │
+   │ ThreadArtifact (inherits the thread's    │
+   │ visibility)                              │
    └──────────────────┬───────────────────────┘
                       ▼
    ┌──────────────────────────────────────────┐
@@ -123,13 +176,14 @@ Onboarding shows the live checklist for the **first connector only** (`fetched �
    │ reconcile INCREMENTALLY → Cypher edges   │
    └──────────────────┬───────────────────────┘
                       ▼
- QUESTION → working memory: resolve follow-ups into a standalone question  §13.1
-          → planner → [VECTOR|VEC-ART|FTS|PHRASE|GRAPH|WHO_KNOWS]          §10
+ QUESTION + AskContext (who + room)                                §1.4
+          → working memory: follow-ups                             §13.1
+          → planner → lanes, each filtered by allowed_stamps       §10
           → RRF(k=60) → rerank → answer | partial | conflicted | absent
-          → read-only live lookup when needed → what it fetched re-enters ingest  §13.2
+          → read-only live lookup when needed                      §13.2
                       ▼
-   joel-api (FastAPI: org, connectors, scheduler, jobs, conversations,
-             /ask SSE, settings, health)  →  joel-web (5 pages + landing)   §12
+   joel-api (FastAPI: auth, workspace, connectors, scheduler, jobs,
+             /ask SSE, settings)  →  joel-web (setup/login + product)   §12
 ```
 
 ### 2.1 Data placement — decide once
@@ -138,7 +192,7 @@ Onboarding shows the live checklist for the **first connector only** (`fetched �
 |---|---|---|
 | **canonical JSONL** (`data/canonical/*.jsonl`) | every doc ever ingested, append-only — **the source of truth** | derived state |
 | **HydraDB** (`/store` volume) | `:Doc` nodes (metadata only), `:Entity`/`:Alias`, every ontology + structural edge | document bodies (graph stays traversal-fast) |
-| **SQLite** (`data/index/joel.db`) | bodies, metadata columns, FTS5, plus `orgs/connections/jobs/conversations/messages/settings` | graph structure |
+| **SQLite** (`data/index/joel.db`) | bodies, `visibility`, FTS5, plus `orgs/users/memberships/sessions/invites/connections/jobs/conversations/messages/settings` | graph structure |
 | **vectors** (`data/index/joel.npz`) | doc_id → normalized embedding | anything else |
 
 **One universe.** There is no benchmark dataset and no `JOEL_DATASET` switch: a single install, a single store dir, a single graph. (The old two-universe design contradicted the compose file, which only ever mounted one store volume.)
@@ -481,7 +535,7 @@ def period_of(ts): return f"{ts.year}Q{(ts.month-1)//3+1}" if ts else "unknown"
 | Code chunks | `adapters/code_chunk.py` | class then function split; oversized functions stay whole |
 | `poll` / `backfill` / cursors | — | **not built**. Every sync re-fetches the lookback window. Scheduler ticks due connectors. |
 | `scripts/conformance.py` | — | **not built**. `scripts/check_3_adapters.py` covers synthetic manifests + fetch fakes. |
-| Distill / retrieve / chat | — | stubs. Do not wire chat until this section is still true and CP 3 stays green. |
+| Distill / retrieve / chat | pipeline + reduced-lane `/api/ask` | **not stubs.** Ontology (CP6) and live lookup (CP10) still open. |
 
 Seams that actually exist:
 
@@ -756,6 +810,8 @@ CREATE TABLE docs(id TEXT PRIMARY KEY, title TEXT, body TEXT,
   author_raw TEXT, thread_id TEXT, extra JSON,
   content_hash TEXT NOT NULL, ingested_via TEXT, first_seen TEXT, last_seen TEXT,
   forgotten INTEGER NOT NULL DEFAULT 0);          -- owner-initiated forget, §14.5
+-- 004_visibility.sql
+ALTER TABLE docs ADD COLUMN visibility TEXT NOT NULL DEFAULT 'org';  -- org | channel:… | user:…
 CREATE INDEX docs_thread ON docs(thread_id);
 CREATE INDEX docs_hash   ON docs(id, content_hash);   -- the triage lookup
 CREATE VIRTUAL TABLE docs_fts USING fts5(id UNINDEXED, title, body, content='');
@@ -985,7 +1041,7 @@ Never answer. Only plan.
 | GRAPH | aliases→entities→expand ontology+MENTIONS ≤2 hops→doc_ids ranked by hop distance then ts (≤200 docs) | multi-hop, relations |
 | WHO_KNOWS (intent=who) | the §4.3 Cypher; people + evidence doc_ids | ownership |
 
-Modifiers: `temporal` → mask `period`, **no recency preference** (you want the old state) · `conflict` → don't mask `validity` (need both sides) · `needs_current_only` → mask `validity='current'` on vector lanes. Masks are numpy boolean filters over `LiveIndex.meta` (§8.3), which the store refreshes on every upsert — **never a snapshot taken at startup.** Every lane also excludes `forgotten=1`.
+Modifiers: `temporal` → mask `period`, **no recency preference** (you want the old state) · `conflict` → don't mask `validity` (need both sides) · `needs_current_only` → mask `validity='current'` on vector lanes. Masks are numpy boolean filters over `LiveIndex.meta` (§8.3), which the store refreshes on every upsert — **never a snapshot taken at startup.** Every lane also excludes `forgotten=1`. When an `AskContext` is passed (production `/api/ask` always does), every lane further restricts to `allowed_stamps(ask)` so a public-room question cannot surface a private-channel or employee doc (§1.4).
 
 ### 10.3 Fusion — `retrieve/fuse.py`
 
@@ -1128,7 +1184,7 @@ ALTER TABLE jobs ADD COLUMN llm_calls INTEGER DEFAULT 0;
 
 ### 11.2 The loop
 
-One asyncio task inside joel-api. No cron, no Celery, no Redis — a self-hosted single-user tool should be one container plus a graph database.
+One asyncio task inside joel-api. No cron, no Celery, no Redis — a self-hosted workspace should be one API process plus a graph database.
 
 ```
 every 30s:
@@ -1228,40 +1284,49 @@ Install path: `git clone … && cp .env.example .env` (one LLM key) `&& docker c
 | `restart: unless-stopped` on all three services | Let a transient crash silently end syncing until someone notices weeks later |
 | Verify `docker compose pull && up` after a version bump runs migrations cleanly on an **existing** volume | Only ever test upgrades on an empty database |
 
-### 12.2 API — `joel/routes.py` (FastAPI)
+### 12.2 API — FastAPI (`joel/app.py`; `routes.py` was never the module)
+
+Public (no session): `GET /api/auth/status`, `POST /api/auth/setup`, `POST /api/auth/login`, `GET/POST /api/auth/invite/{token}`. Everything else requires a valid session cookie.
 
 | Endpoint | Does |
 |---|---|
-| `POST /api/org {domain}` | create org: name derived from domain, logo via `https://www.google.com/s2/favicons?domain={d}&sz=128` |
-| `GET /api/org` | org + first-connector readiness checklist |
+| `GET /api/auth/status` | `setup` \| `login` \| `ok` + me + workspace |
+| `POST /api/auth/setup` | first admin + workspace (409 if users already exist) |
+| `POST /api/auth/login` · `POST /api/auth/logout` | session cookie |
+| `GET /api/workspace` · `PATCH /api/workspace` | workspace row; members + invites for admins |
+| `POST /api/workspace/invites` · `DELETE …/invites/{id}` | invite / revoke (admin) |
+| `PATCH /api/workspace/members/{id}` · `DELETE …` | role / remove (admin) |
+| `GET/PUT /api/profile` | signed-in display name |
+| `GET /api/org` | workspace + first-connector readiness (compat shape) |
 | `GET/POST /api/connectors` · `DELETE /api/connectors/{id}` | connector CRUD |
 | `POST /api/connectors/{id}/sync` | enqueue a job now (409 if one is already running) |
 | `PATCH /api/connectors/{id}` | interval, pause, history floor |
 | `GET /api/connectors/{id}/jobs` | job history: counts, duration, error |
 | `GET /oauth/{provider}/start` · `GET /oauth/{provider}/callback` | OAuth flow (also used for re-auth) |
 | `GET/POST /api/conversations` · `GET /api/conversations/{id}` | conversation list / messages |
-| `POST /api/ask {conversation_id, question}` | streams `status → rewritten → lanes → tokens → citations → reasoning_path` |
-| `GET/PUT /api/settings` · `GET/PUT /api/profile` | settings kv, profile |
+| `POST /api/ask {conversation_id, question}` | streams `status → rewritten → lanes → tokens → citations → reasoning_path`. AskContext is the signed-in actor's web desk — **not** a room field on the body. |
+| `GET/PUT /api/settings` | settings kv (admin) |
 | `GET /api/health` | hydra reachable · index consistency triple · per-connector last success · queue depth · schema version |
 | `POST /api/docs/{id}/forget` | the only removal path (§14.5) |
-| `POST /api/admin/rebuild` · `POST /api/admin/reconcile` | rebuild indexes from canonical · full reconciliation pass |
-| `POST /api/org/wipe` | danger zone: truncate all three stores |
+| `POST /api/org/wipe` | danger zone: truncate corpus (admin; identity rows stay) |
 
-**Streaming caveat:** `EventSource` is GET-only, so a POST cannot be consumed as SSE by the browser's built-in client. Either use `fetch` with a `ReadableStream` reader and parse the event frames by hand (recommended — you need the POST body), or accept a `question_id` from a prior POST and stream over a GET. Decide before writing the chat page; discovering it mid-build costs an afternoon.
+**Streaming caveat:** `EventSource` is GET-only, so a POST cannot be consumed as SSE by the browser's built-in client. Use `fetch` with a `ReadableStream` (shipped).
 
-SQLite tables: `orgs` (single row: domain, name, logo_url), `connections` (§11.1), `jobs` (§11.1), `conversations` (`id, title, created_at`), `messages` (`id, conversation_id, role, content_json, created_at`), `settings` (kv), `schema_version`.
+SQLite tables: `orgs` (workspace, `id=1`), `users`, `memberships`, `sessions`, `invites`, `connections` (§11.1), `jobs`, `conversations`, `messages`, `settings` (kv), `docs` (+ `visibility`), `schema_version`.
 
-### 12.3 Web — the five pages (Next.js + Tailwind + shadcn)
+### 12.3 Web — pages (Next.js)
 
-**`/onboarding`** — 3 steps: ① domain input (`yourco.dev`) → org card appears with fetched favicon + derived name → ② **connect your first tool** (Slack, GitHub or Gmail; there is no zero-credential path — joel is worthless without your data and pretending otherwise wastes the visitor's time) → ③ the live readiness checklist (`fetched ✓ · distilled ✓ · people resolved ✓ · graph linked ✓ · indexes consistent ✓`) → auto-forward to `/chat` when that first connector is ready.
+**`/setup`** — empty install: admin email/password + company domain → workspace. One-shot.
 
-**`/connectors`** — one card per tool: logo, status pill (§1.2 state machine), mode badge (`composio/oauth`), **last sync + next sync**, doc count, "full history indexed" or backfill progress, buttons [Connect] [Sync now] [Pause] [Disconnect], inline error with the real message, **Reconnect** when `needs_reauth`. Expandable job history: last 20 runs with new/changed/unchanged counts, duration, error. Coming-soon cards for the other six, visibly disabled.
+**`/login` · `/join`** — session; join requires an invite token from an admin.
 
-**`/chat`** — conversations sidebar (auto-titled from first question) · message stream with the status badge per answer: ✅ answered / 🟡 partial ("**Not found:** …") / ⚠️ conflicted (two positions side by side, dated + sourced, assessment line) / 🚫 **"Not in the company's memory."** · citations as chips deep-linking `url`, each with a **forget** affordance · collapsible "reasoning path" rendering the graph paths · footer chips naming the lanes that contributed (`artifacts·phrase·graph`) · ingestion banner while any connector syncs, re-auth banner when one is broken · a distinct **LIVE chip** on citations from a real-time lookup (§13.2).
+**`/onboarding`** — after sign-in: LLM key → first tool → live checklist → chat when that connector is ready. Domain/org is **not** collected here anymore.
 
-**`/settings`** — LLM base/key/model pickers · **per-connector sync interval + global pause** · history floor · Composio key · custom OAuth creds per provider · embed model (changing it warns that it triggers a full re-embed from canonical) · all persisted to `settings`, overriding `.env`.
+**`/integrations`** — one card per tool: logo, status pill (§1.2 state machine), **last sync + next sync**, doc count, [Connect] [Sync now] [Pause] [Disconnect], inline error, **Reconnect** when `needs_reauth`. Expandable job history.
 
-**`/profile`** — display name + auto avatar (initial) · org block (logo, name, domain, created) · corpus stats (docs, artifacts, entities, oldest document, index consistency) · spend counter (LLM calls this month, by stage) · danger zone: wipe org (typed confirmation).
+**`/` (chat)** — conversations sidebar · message stream with status badges ✅🟡⚠️🚫 · citations · reasoning path · ingestion / re-auth banners. Retrieval is filtered by the signed-in desk AskContext.
+
+**`/settings`** — workspace name/domain, **members + invites** (admin), LLM keys, spend, wipe (typed confirmation).
 
 Every page is a thin view over queries this spec already builds — the product layer is presentation, connectors and scheduling, not new intelligence.
 
@@ -1465,9 +1530,15 @@ abstain floor on the rerank scale (§10.5) · ~~FTS5 delete-before-insert (§8.2
 | 6 | Ontology + incremental reconciliation | §9 | a later reversal supersedes an earlier decision across two jobs | CP 6 |
 | 7 | Retrieval + answer + abstention | §10 | the ten probes pass on your own data | CP 7 |
 | 8 | Sync engine | §11 | it runs overnight unattended and is still correct | CP 8 |
+| 8a | Identity + workspace | §1.1 · §12.2 | setup, login, invite, roles | `check_identity.py` |
+| 8b | Visibility + ask context | §1.4 | stamp at ingest; public cannot read private | `check_visibility.py` |
 | 9 | The app | §12 | connect a tool and get a cited answer without a terminal | CP 9 |
 | 10 | Agent: rewriting, meta/chitchat, live lookup | §13 | follow-ups work; "hi" costs one call | CP 10 |
 | 11 | Operations | §14 | pull HydraDB's plug and chat still answers | CP 11 |
+
+**8a and 8b are done (2026-08-19).** They were not in the original core track (the brief was single-user, no login). They are now prerequisites for Slack/MCP surfaces: those surfaces reuse `AskContext`, they do not invent a second ACL.
+
+**Still open on the skeleton (before treating Slack bot / MCP as in-scope):** data vs tool connectors (`owned_by`, org-shared vs personal) · channel membership so a desk can read private rooms the actor is in. Leasing a teammate's connection for one request is explicitly later — [Supermemory](https://supermemory.ai/docs/company-brain/permissions) only uses it when nobody has connected the tool at org level.
 
 **Phase 3 needs real data**, so Slack lands as a minimal fetch during Phase 3 (enough to pull real messages) and is hardened to full conformance in Phase 12. Building the pipeline against invented data is how you discover in Phase 8 that your `thread_id` mapping was wrong the whole time.
 
@@ -1488,7 +1559,7 @@ Waves 1–4 **fetch** and are now verified against real data end to end. They ar
 
 **GitHub ingest now includes** language-aware code chunks and `GET /pulls/{n}/reviews` bodies. **Not ingest (live §13.2):** current PR/issue state — whitelist those reads when the agent is built; do not ingest merge-state for that.
 
-**Next after adapters, not chat:** keep this section honest. Chat stays unwired until retrieval exists. The adapter miss list above is the remaining connector work.
+**Next after adapters:** retrieval and chat are wired. Remaining connector work is CP-C (cursors, `conformance.py`), not "wire chat." Company-brain skeleton remaining: connector ownership, then channel membership, then Slack/MCP surfaces.
 
 **Real-data verification pass — done (2026-08-18):** ran sync twice across all ten allowlisted connectors against live accounts. All ten `connections.status='ready'`, all latest jobs `status='ok'`, and the second pass on every provider reported `new=0, changed=0` with the full doc count in `unchanged` (content_hash triage is honestly working, not just on fixtures). Doc counts at verification time: Gmail 255, GitHub 619, Jira 15, Notion 10, Confluence 6, Google Drive 5, Linear 4, HubSpot 1, Slack 1, Fireflies 0 (empty account within the 30-day lookback, not a failure). `scripts/check_pending_adapters.py --sync --all --timeout 600` reproduces this; GitHub and Gmail each take several minutes so the wait was bumped from 120s to 600s.
 
@@ -1520,7 +1591,7 @@ Waves 1–4 **fetch** and are now verified against real data end to end. They ar
 Once the product is real, evaluation is nearly free — `traces.jsonl` already holds real questions with real retrieved sets and real outcomes. Label a few hundred of your own traces and you have a better evaluation set than any public corpus, because it's your data and your questions. Ablations (vector-only → +artifacts → +RRF → +rerank/graph) run against that. No benchmark corpus, no dual-dataset plumbing, no eval-shaped detours before the tool exists.
 
 ## 17. Cut list (bottom-up)
-1 connector waves 4–5 (stop wherever you stop; each shipped connector stands alone) · 2 live lookups (memory-first chat survives without them) · 3 job-history UI (keep the `jobs` rows, drop the panel) · 4 conversations sidebar → single conversation · 5 progressive deep backfill (the fast pass alone is usable) · 6 hnswlib swap (not needed under 250K docs) · **NEVER CUT: one-command install · the background scheduler · change detection · the conformance suite (cut it and every later connector costs double) · chat with abstention + citations · distillation · entity resolution · the ontology in HydraDB · RRF fusion · rebuild-from-canonical.**
+1 connector waves 4–5 (stop wherever you stop; each shipped connector stands alone) · 2 live lookups (memory-first chat survives without them) · 3 job-history UI (keep the `jobs` rows, drop the panel) · 4 conversations sidebar → single conversation · 5 progressive deep backfill (the fast pass alone is usable) · 6 hnswlib swap (not needed under 250K docs) · 7 access leasing (personal connectors first) · 8 Slack bot / MCP (web desk must keep working) · **NEVER CUT: one-command install · login + workspace members · visibility stamps + AskContext · the background scheduler · change detection · the conformance suite (cut it and every later connector costs double) · chat with abstention + citations · distillation · entity resolution · the ontology in HydraDB · RRF fusion · rebuild-from-canonical.**
 
 A wave is never half-shipped: a connector is either passing CP-C and visible, or it's a coming-soon card. A connector that half-works is worse than one that isn't there, because it puts holes in memory that nothing reports.
 
@@ -1640,7 +1711,7 @@ TONE: confident, dry, zero SaaS-purple, zero glassmorphism, zero gradient-blob c
 ```
 
 ## 21. References
-hydra-db/hydradb repo (README, AGENTS.md, architecture.md, cypher-compat.md) · Sentra Company Brain essays · Supermemory Company Brain · Cerebras "How we built our knowledge base" — full notes and a trick-by-trick gap check in [`docs/cerebras-knowledge-base.md`](docs/cerebras-knowledge-base.md) · Composio docs (verify token retrieval and action names at build time) · Slack / GitHub / Gmail API references for incremental fetch (§12.4).
+hydra-db/hydradb repo (README, AGENTS.md, architecture.md, cypher-compat.md) · Sentra Company Brain essays · [Supermemory Company Brain — overview](https://supermemory.ai/docs/company-brain/overview) · [Supermemory — permissions graph](https://supermemory.ai/docs/company-brain/permissions) · Cerebras "How we built our knowledge base" — full notes in [`docs/cerebras-knowledge-base.md`](docs/cerebras-knowledge-base.md) · Composio docs (verify token retrieval and action names at build time) · Slack / GitHub / Gmail API references for incremental fetch (§12.4).
 
 ---
 
@@ -1815,7 +1886,7 @@ Built as its own testable unit, same as CP3/CP4, then wired: `_run_ingest` now c
 
 **5.6 Migrations**
 - [x] migrations run in order on boot inside a transaction — `api/joel/migrations/001_init.sql`, `002_store_layer.sql`, applied by `run_migrations()` in numeric order, each wrapped in its own `BEGIN`/`COMMIT`
-- [x] `schema_version` is correct afterwards — verified fresh-DB (ends at 2) and against a copy of the real 926-doc database (was at 1, migrated cleanly to 2 with zero data loss; the running dev server then applied the same migration to the actual production `data/index/joel.db` on reload, also verified clean)
+- [x] `schema_version` is correct afterwards — verified through `004_visibility.sql` (identity + visibility). Fresh DBs end at 4.
 - [x] no `CREATE TABLE IF NOT EXISTS` remains in runtime code — *the one standing exception is `schema_version`'s own bootstrap creation inside `run_migrations()` itself, unavoidable in every migration framework (Rails/Django/Alembic have the identical carve-out) since nothing can query "which migrations ran" before that table exists*
 - Also fixed in passing: `/api/health` hardcoded `schema_version: 1` instead of reading it from the DB.
 
@@ -1874,6 +1945,7 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 - [x] each of the four built lanes (VECTOR, VEC-ARTIFACTS, FTS, PHRASE) returns sensible results in isolation — *`check_lanes_individually`, plus live against the real corpus (bug 3 above)*
 - [x] lanes run concurrently, not serially — *`ThreadPoolExecutor` in `run_lanes`; this is exactly what surfaced bug 2 against the real embedding model*
 - [x] every lane excludes `forgotten=1`
+- [x] when AskContext is passed, every lane restricts to `allowed_stamps(ask)` — *`check_visibility.py::check_retrieval_respects_room`*
 - [ ] GRAPH, WHO_KNOWS — **not built, blocked on CP6 (ontology)**
 
 **7.2 Fusion**
@@ -1942,19 +2014,50 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 
 ---
 
+### CP 8a — Identity + workspace
+
+**Status 2026-08-19 — done.** `scripts/check_identity.py` green. One workspace per install; login is required.
+
+- [x] empty install → `/setup` creates the admin and the `orgs` row
+- [x] second `/setup` is 409
+- [x] login issues a session; expired/missing cookie is 401 on product APIs
+- [x] admin can invite; token peek + accept creates a member
+- [x] admin can change role and remove a member (not the last admin)
+- [x] `PATCH /api/workspace` updates domain/name; it does not create an org if none exists
+
+---
+
+### CP 8b — Visibility + ask context (§1.4)
+
+**Status 2026-08-19 — done as a stamp + read table.** Channel membership, personal connectors, leasing: not built. `scripts/check_visibility.py` green.
+
+- [x] `derive` stamps gmail as `user:gmail:…`, private slack as `channel:slack:…`, company data as `org`
+- [x] `content_hash` ignores visibility
+- [x] persist writes `docs.visibility`; migration restamps existing gmail
+- [x] old npz without a visibility meta field loads as `org`
+- [x] asking from public/org cannot retrieve a private-channel or gmail doc
+- [x] asking from that private channel can retrieve it plus `org`, not gmail
+- [x] a web desk with the actor's gmail alias can retrieve that mailbox
+- [x] `/api/ask` builds AskContext from the session, not from the POST body
+- [ ] channel membership: a desk includes `channel:slack:…` rooms the actor is in — **not built**
+- [ ] org-shared vs personal connector scope — **not built**
+- [ ] Slack / MCP surfaces construct AskContext from the event — **not built**
+
+---
+
 ### CP 9 — The app (§12)
 
 **9.1 Clean install**
-- [ ] `docker compose up` from a fresh clone on pruned Docker reaches onboarding
+- [ ] `docker compose up` from a fresh clone on pruned Docker reaches `/setup`
 - [ ] only `LLM_API_KEY` had to be set
 - [ ] no Rust compile happens
 
 **9.2 Onboarding**
-- [ ] domain → org card with favicon and derived name
+- [x] `/setup` collects domain → workspace with favicon and derived name — *identity module, not the old `/onboarding` org step*
 - [ ] the readiness checklist ticks over a real first sync
-- [ ] it forwards to `/chat` when the first connector is ready
+- [ ] it forwards to chat when the first connector is ready
 
-**9.3 Connectors page**
+**9.3 Connectors page** (`/integrations`)
 - [ ] status, last sync and **next sync** are visible and correct
 - [ ] backfill progress updates live
 - [ ] a real error renders verbatim on the card with Retry
@@ -1962,6 +2065,7 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 
 **9.4 Chat**
 - [ ] a real question answers with working citation links
+- [ ] a public-room-ineligible doc (private slack / someone else's gmail) is not cited
 - [ ] all four status badges render correctly
 - [ ] the reasoning path shows graph paths
 - [ ] streaming works (the SSE-over-POST decision holds up in the browser)
