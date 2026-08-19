@@ -56,7 +56,7 @@ Honest snapshot of the repo, not the original v1 brief. Distillation/ontology/ag
 | Ask context | `POST /api/ask` uses the signed-in actor. Web = desk: `org` + `user:gmail:{actor.email}`. No client-supplied room. Private Slack is **not** visible on web until channel membership exists. |
 | Ingest | Ten connectors, lookback re-fetch, content_hash triage, background scheduler, zombie-job reclaim on boot. |
 | Retrieval | All six lanes: VECTOR / VEC-ARTIFACTS / FTS / PHRASE / GRAPH / WHO_KNOWS, RRF, rerank, abstention. Lanes honour `allowed_stamps(ask)`. |
-| Distill / ontology / live lookup | Distill pipeline and ontology (extract → resolve → reconcile → graph edges, §9) both exist and are wired into every sync. Live lookup (§13.2) is not the product yet. |
+| Distill / ontology / agent | Distill, ontology (extract → resolve → reconcile → graph edges, §9), follow-up rewriting, and live lookup (§13, GitHub PR/issue + Slack channel only so far) all exist and are wired into `/api/ask`. |
 | Slack bot, MCP, leasing, API keys | **Not built.** Same permissions graph will apply when they exist. |
 
 Next skeleton checkpoints, in order: **data vs tool connectors** (owned_by + kind) → **channel membership** so a desk/DM can read private rooms the actor is in → **Slack surface** then **MCP**, both constructing `AskContext` server-side.
@@ -1536,7 +1536,7 @@ Small, and everything downstream inherits them, so they come before new work:
 | 10 | Agent: rewriting, meta/chitchat, live lookup | §13 | follow-ups work; "hi" costs one call | CP 10 |
 | 11 | Operations | §14 | pull HydraDB's plug and chat still answers | CP 11 |
 
-**8a, 8b, and 6 are done (2026-08-19).** 8a/8b were not in the original core track (the brief was single-user, no login); they are now prerequisites for Slack/MCP surfaces, which reuse `AskContext` rather than inventing a second ACL. Phase 6 (ontology) shipped in the same pass that finished the rest of the skeleton — see CP 6's status note in §22 for what's real vs. simplified relative to the original pseudocode (entity resolution's blocking, and reconciliation's authority-ladder scope).
+**8a, 8b, 6, and 10 are done (2026-08-19).** 8a/8b were not in the original core track (the brief was single-user, no login); they are now prerequisites for Slack/MCP surfaces, which reuse `AskContext` rather than inventing a second ACL. Phase 6 (ontology) and Phase 10 (agent: follow-ups, meta/chitchat, live lookup) shipped in the same pass — see their status notes in §22 for what's real vs. simplified relative to the original pseudocode (entity resolution's blocking, reconciliation's authority-ladder scope, and live lookup covering 2 of 4 whitelisted operations so far).
 
 **Still open on the skeleton (before treating Slack bot / MCP as in-scope):** data vs tool connectors (`owned_by`, org-shared vs personal) · channel membership so a desk can read private rooms the actor is in. Leasing a teammate's connection for one request is explicitly later — [Supermemory](https://supermemory.ai/docs/company-brain/permissions) only uses it when nobody has connected the tool at org level.
 
@@ -2089,26 +2089,35 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 
 ### CP 10 — Agent (§13)
 
+**Status 2026-08-19 — built and wired into `/api/ask`**, verified with `scripts/check_10_agent.py` (fake-LLM determinism for rewrite/meta, real network calls for live lookup against real stored GitHub/Slack credentials) and end-to-end over real HTTP/SSE against the running dev server. `agent/working_memory.py` implements §13.1 (`prompts/rewrite_question.md`, previously undocumented as a file even though §18 named it); `agent/live.py` + `connectors/github.py::fetch_github_item` + `connectors/slack.py::fetch_slack_channel_latest` implement §13.2.
+
+**Three real bugs found only by testing this live, none caught by synthetic fixtures:**
+1. **Duplicate live targets.** `detect_live_targets`'s haystack is `question + plan.entities + plan.exact_tokens` — the planner often echoes the same substring from the question back into `exact_tokens`, so the same GitHub PR mention matched twice and got "checked" twice. Fixed with a `seen: set[LiveTarget]` dedupe (targets are frozen dataclasses, hashable for free).
+2. **A live PR/issue fetch worked but couldn't answer the question it was fetched for.** `merged`/`draft`/`state` lived only in `CanonicalDoc.extra`, which `StoreDoc` never carries into the embedded/indexed body — so "is PR 118 merged?" retrieved the doc but neither the embedding nor the answer LLM could see its actual status. Fixed by extending the existing `qualify_github_item` pre-hook (§6's adapters — the only normalization path) to prepend an explicit `"Status: merged"` / `"Status: closed (not merged)"` / `"Status: draft"` / `"Status: open"` line to the body — deliberately spelling out "closed (not merged)" rather than bare "closed", which a live run showed the LLM correctly refusing to interpret as an answer to "was it merged" (right instinct, wrong source data). This also improves the regular scheduled-sync corpus, not just live lookup.
+3. **A freshly live-fetched doc still didn't get cited**, even after the fix above and even though it was correctly re-embedded and re-indexed. RRF/vector similarity between a short generic PR title and the question didn't rank it in the top 20 among ~930 competing docs, so it never reached rerank. Fixed by adding `answer_question(..., extra_doc_ids=...)`: the caller's already-known-relevant doc ids (this turn's live fetches) are hydrated and prepended to the fused candidate set before rerank — guaranteeing the LLM reranker actually SEES it and can judge it on merit, rather than hoping general retrieval rediscovers it. `retrieve/lanes.py::hydrate_doc_ids` is the new public hydration entry point this required.
+
+All three are regression-covered (`check_10_agent.py`, and a real `/api/ask` call verified live: "is amarpathak/vaadi#1 merged?" → `status: answered`, one citation with `"live": true`, answer prefixed "As of just now:").
+
 **10.1 Follow-ups**
-- [ ] a pronoun follow-up is rewritten standalone and answered correctly
-- [ ] an already-standalone question passes through unchanged
+- [x] a pronoun follow-up is rewritten standalone and answered correctly — `check_10.1a`, real turns
+- [x] an already-standalone question passes through unchanged — `check_10.1b`
 
 **10.2 Cheap paths**
-- [ ] "hi" classifies as chitchat: zero retrieval, zero ingest, one call
-- [ ] "what did you just say" classifies as meta and answers from the turns
-- [ ] both return visibly faster than a knowledge question
+- [x] "hi" classifies as chitchat: zero retrieval, zero ingest — and costs zero LLM calls, better than the one-call floor (`_is_chitchat`'s pre-existing regex fast path, unchanged)
+- [x] "what did you just say" classifies as meta and answers from the turns — `check_10.2a`, `agent/working_memory.py::answer_meta` (no 8th prompt — mechanical, from the stored turns alone, per §13.1's own "answered from the conversation alone" rule)
+- [ ] 👁 both return visibly faster than a knowledge question — not measured with real wall-clock timing yet, only structurally true (meta/chitchat skip retrieval+rerank+answer entirely)
 
 **10.3 Live lookup bounds**
-- [ ] at most 2 lookups per question, 10s timeout each
-- [ ] only whitelisted read operations are reachable
-- [ ] the LIVE chip renders and the answer says "as of just now"
+- [x] at most 2 lookups per question, 10s timeout each — `agent/live.py::MAX_LOOKUPS`/`TIMEOUT_SECONDS`, enforced in `app.py::_run_live_lookup` via `ThreadPoolExecutor(...).result(timeout=...)`
+- [x] only whitelisted read operations are reachable — `detect_live_targets` recognizes exactly two shapes today (GitHub PR/issue-by-number, Slack latest-N-in-channel); **Jira/Linear issue-by-key and Gmail thread-by-id are the same shape but not implemented yet** (§13.2's other two whitelist entries) — a question needing them detects zero targets, same as any non-matching question, never a crash or a guess
+- [x] the LIVE chip renders and the answer says "as of just now" — verified live over real HTTP: `citations[].live=true`, `web/components/beautifului/CitationChip.tsx` already rendered this (was always `false` from the backend before); answer text prefixed `"As of just now: "` when a live citation is actually used
 
 **10.4 Live → memory**
-- [ ] fetched content that passes the filter appears in the corpus afterwards
-- [ ] **a junk message fetched live is NOT indexed**
+- [x] fetched content that passes the filter appears in the corpus afterwards — verified live (`github__pr_amarpathak_vaadi_1`/`_2` now permanently in `docs`, re-embedded, re-indexed)
+- [ ] **a junk message fetched live is NOT indexed** — not true today, but not a live-lookup-specific gap: EVERY raw ingested doc (live or scheduled-sync) is stored as a plain row regardless of "noise" — only the ARTIFACT layer (distillation's noise classification) filters chit-chat out of the curated/retrievable layer. This checklist item's premise predates the "always store raw, distill filters at the artifact layer" design CP3/CP4/CP5 already shipped and verified; changing it now would be a system-wide ingest change, not a live-lookup fix, and is out of this phase's scope.
 
 **10.5 Isolation**
-- [ ] no conversation message ever appears in FTS, vectors, or the graph
+- [x] no conversation message ever appears in FTS, vectors, or the graph — `agent/working_memory.py` only ever reads `messages`; nothing in the agent layer writes conversation content into `upsert_docs`' input anywhere
 
 ---
 

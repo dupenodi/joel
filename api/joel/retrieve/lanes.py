@@ -66,6 +66,20 @@ class RetrievedDoc:
     ts: str | None
 
 
+def hydrate_doc_ids(
+    conn: sqlite3.Connection,
+    doc_ids: list[str],
+    *,
+    allowed: frozenset[str] | None = None,
+) -> list[RetrievedDoc]:
+    """Public wrapper around `_hydrate`, in id order — for callers that
+    already know exactly which doc_ids they want (§13.2's live lookup:
+    a freshly-fetched doc must get a real shot at this turn's rerank, not
+    hope RRF happens to rediscover it among everything else in the corpus)."""
+    hydrated = _hydrate(conn, doc_ids, allowed=allowed)
+    return _order_by_ids(hydrated, doc_ids)
+
+
 def _hydrate(
     conn: sqlite3.Connection,
     doc_ids: list[str],
@@ -392,5 +406,6 @@ __all__ = [
     "graph_lane",
     "who_knows_lane",
     "run_lanes",
+    "hydrate_doc_ids",
     "ONTOLOGY_PREDICATES",
 ]

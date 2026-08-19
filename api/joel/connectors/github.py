@@ -355,4 +355,38 @@ def fetch_github_docs(
     return docs
 
 
-__all__ = ["GitHubAPIError", "GitHubClient", "fetch_github_docs", "GITHUB_ACCEPT"]
+def fetch_github_item(
+    *, request: RequestFn, owner: str, repo: str, number: int
+) -> CanonicalDoc | None:
+    """§13.2 live mode: the CURRENT state of ONE issue/PR by number -- a
+    single request, never `fetch_github_docs`'s full-account, every-repo
+    scan. Returns `None` for a 404/410 (deleted, wrong number, no access)
+    rather than raising, matching live lookup's "nothing found" shape."""
+    client = GitHubClient(request)
+    full_name = f"{owner}/{repo}"
+    try:
+        data, _headers = client.get(f"/repos/{full_name}/issues/{number}")
+    except GitHubAPIError as exc:
+        if exc.status in {404, 410}:
+            return None
+        raise
+    if not isinstance(data, dict) or data.get("number") is None:
+        return None
+    payload = _with_repo(data, full_name)
+    is_pr = isinstance(data.get("pull_request"), dict)
+    if is_pr:
+        payload["draft"] = bool(data.get("draft", False))
+        payload["merged"] = bool(data.get("merged", False))
+        docs = adapt_many(GITHUB_PR, [payload])
+    else:
+        docs = adapt_many(GITHUB_ISSUE, [payload])
+    return docs[0] if docs else None
+
+
+__all__ = [
+    "GitHubAPIError",
+    "GitHubClient",
+    "fetch_github_docs",
+    "fetch_github_item",
+    "GITHUB_ACCEPT",
+]

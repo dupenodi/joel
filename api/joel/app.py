@@ -14,6 +14,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -38,6 +39,13 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from joel.adapters import triage_batch
+from joel.agent.live import (
+    TIMEOUT_SECONDS as LIVE_TIMEOUT_SECONDS,
+    GitHubItemTarget,
+    detect_live_targets,
+    fetch_live_target,
+)
+from joel.agent.working_memory import Turn, answer_meta, load_recent_turns, rewrite_question
 from joel.connectors.composio_conn import (
     ComposioError,
     find_active_account,
@@ -1830,6 +1838,83 @@ def _save_assistant_message(conn: sqlite3.Connection, conversation_id: str, assi
     )
 
 
+def _run_live_lookup(
+    conn: sqlite3.Connection,
+    rt: dict[str, Any],
+    settings_map: dict[str, str],
+    llm_call: Any,
+    question: str,
+    plan: QueryPlan,
+) -> tuple[list[str], list[str]]:
+    """§13.2: at most `live.MAX_LOOKUPS` whitelisted point-lookups, each
+    under `live.TIMEOUT_SECONDS`, only against providers this workspace has
+    actually connected. Fetched docs go through the exact same
+    `_persist_canonical_docs` + `run_store_pipeline` front door as a
+    scheduled sync (§13.2's "nothing skips distillation and the noise
+    filter" rule) — no second write path. Returns `(stored_doc_ids,
+    checked_descriptions)`; `stored_doc_ids` is empty when nothing
+    whitelisted matched, nothing was found, or a fetch timed out/errored —
+    all of which degrade to "not found live either", never a crash.
+    """
+    targets = detect_live_targets(conn, question, plan)
+    if not targets:
+        return [], []
+
+    ready_providers = {
+        r["provider"]
+        for r in conn.execute("SELECT provider FROM connections WHERE status='ready'")
+    }
+    checked: list[str] = []
+    fetched_docs: list[CanonicalDoc] = []
+
+    for target in targets:
+        provider = "github" if isinstance(target, GitHubItemTarget) else "slack"
+        if provider not in ready_providers:
+            continue
+        conn_row = conn.execute(
+            "SELECT id FROM connections WHERE provider=? AND status='ready'", (provider,)
+        ).fetchone()
+        if conn_row is None:
+            continue
+        try:
+            credentials = _credential(conn, conn_row["id"])
+            if provider == "github":
+                request = _provider_request(
+                    credentials, settings_map, GitHubAPIError, extra_headers={"Accept": GITHUB_ACCEPT}
+                )
+                kwargs: dict[str, Any] = {"github_request": request}
+            else:
+                kwargs = {
+                    "slack_token": _slack_token(credentials),
+                    "slack_caller": _slack_caller(credentials, settings_map),
+                }
+        except Exception:
+            continue  # credentials missing/invalid -- skip this lookup, don't fail the question
+
+        checked.append(target.description)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(fetch_live_target, target, **kwargs)
+            try:
+                result = future.result(timeout=LIVE_TIMEOUT_SECONDS)
+            except Exception:
+                continue  # timeout, network error, or provider error -- skip, not a crash
+        fetched_docs.extend(result.docs)
+
+    if not fetched_docs:
+        return [], checked
+
+    live_docs = [d.model_copy(update={"ingested_via": "live"}) for d in fetched_docs]
+    _, dirty_docs = _persist_canonical_docs(conn, live_docs)
+    if dirty_docs and llm_call is not None:
+        run_store_pipeline(
+            conn, rt["live_index"], rt["hydra_store"], _embed_fn, llm_call, dirty_docs, data_dir=DATA_DIR
+        )
+    # Every fetched doc is now indexed (freshly, via dirty_docs above, or
+    # already from an earlier live/sync pass) and citable — not just the
+    # ones that happened to change THIS call.
+    return [d.doc_id for d in live_docs], checked
+
+
 @app.post("/api/ask")
 def ask(request: Request, body: AskIn) -> StreamingResponse:
     question = body.question.strip()
@@ -1885,11 +1970,11 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
         yield _sse("status", {"stage": "rewriting"})
 
         if _is_chitchat(question):
-            # §13.2's cheap-path spirit: a bare greeting/ack costs zero
-            # retrieval and zero LLM calls, not just a cheap one. Real
-            # intent classification (meta questions like "what did you
-            # just say") is CP10 scope and isn't built yet — anything past
-            # a plain greeting/ack falls through to full retrieval below.
+            # Zero-cost fast path for the most obvious greetings/acks — a
+            # bare "hi" costs zero retrieval AND zero LLM calls, strictly
+            # better than §13.1's "one cheap call" floor. Anything less
+            # obvious falls through to the real rewrite_question call below,
+            # which also classifies chitchat (just not for free).
             answer_text = (
                 "Hey! Ask me anything about the company and I'll answer from "
                 "what's been ingested — or say honestly when it's not in there."
@@ -1906,14 +1991,9 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
                 _save_assistant_message(conn, body.conversation_id, assistant)
             return
 
-        # No conversation-level follow-up rewrite yet (CP10 gap — every
-        # question is retrieved standalone); "rewritten" still fires so the
-        # UI's trace has something to show for this stage.
-        yield _sse("rewritten", {"question": question, "kind": "knowledge"})
-        yield _sse("status", {"stage": "planning"})
-
         with db() as conn:
             settings_map = _settings_map(conn)
+            turns = load_recent_turns(conn, body.conversation_id)
         llm_call = make_openrouter_caller(settings_map) if settings_map.get("llm_api_key") else None
         call_counts: dict[str, int] = {}
 
@@ -1921,6 +2001,53 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             raw = llm_call(stage, system_prompt, user_prompt)
             call_counts[stage] = call_counts.get(stage, 0) + 1
             return raw
+
+        # §13.1: rewrite the raw message into a standalone question and
+        # classify it — knowledge/meta/chitchat — before planning anything.
+        rewritten_question = question
+        kind = "knowledge"
+        if llm_call is not None:
+            result = rewrite_question(tracked_llm, turns, question)
+            rewritten_question = result.question
+            kind = result.kind
+        yield _sse("rewritten", {"question": rewritten_question, "kind": kind})
+
+        if kind == "chitchat":
+            answer_text = (
+                "Hey! Ask me anything about the company and I'll answer from "
+                "what's been ingested — or say honestly when it's not in there."
+            )
+            yield _sse("status", {"stage": "answering"})
+            for token in answer_text.split(" "):
+                yield _sse("token", {"text": token + " "})
+            assistant = _assistant_payload(answer_text, status="answered")
+            yield _sse("citations", {"citations": []})
+            yield _sse("reasoning_path", {"paths": []})
+            yield _sse("done", {"status": "answered", "message": assistant})
+            with db() as conn:
+                _save_assistant_message(conn, body.conversation_id, assistant)
+                for stage, n in call_counts.items():
+                    conn.execute("UPDATE spend SET calls = calls + ? WHERE stage=?", (n, stage))
+            return
+
+        if kind == "meta":
+            # §13.1: answered from the conversation alone — no lanes, no
+            # rerank, no ingest.
+            answer_text = answer_meta(turns, rewritten_question)
+            yield _sse("status", {"stage": "answering"})
+            for token in answer_text.split(" "):
+                yield _sse("token", {"text": token + " "})
+            assistant = _assistant_payload(answer_text, status="answered")
+            yield _sse("citations", {"citations": []})
+            yield _sse("reasoning_path", {"paths": []})
+            yield _sse("done", {"status": "answered", "message": assistant})
+            with db() as conn:
+                _save_assistant_message(conn, body.conversation_id, assistant)
+                for stage, n in call_counts.items():
+                    conn.execute("UPDATE spend SET calls = calls + ? WHERE stage=?", (n, stage))
+            return
+
+        yield _sse("status", {"stage": "planning"})
 
         try:
             rt = _runtime()
@@ -1930,7 +2057,7 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
                     rt["live_index"],
                     _embed_fn,
                     tracked_llm if llm_call else None,
-                    question,
+                    rewritten_question,
                     ask=ask_ctx,
                     hydra_store=rt["hydra_store"],
                 )
@@ -1941,16 +2068,61 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             # context would, not a dropped connection the UI can't recover
             # from. Logged server-side; not surfaced to the user as a stack
             # trace.
-            logging.getLogger(__name__).exception("answer_question failed for %r", question)
-            trace = RetrievalTrace(question=question, plan=QueryPlan(intent="lookup"))
+            logging.getLogger(__name__).exception("answer_question failed for %r", rewritten_question)
+            trace = RetrievalTrace(question=rewritten_question, plan=QueryPlan(intent="lookup"))
 
         yield _sse("plan", {"lanes": list(trace.lane_results.keys()), "intent": trace.plan.intent})
         for lane, docs in trace.lane_results.items():
             yield _sse("lane", {"lane": lane, "status": "done", "hits": len(docs), "provider": None})
         yield _sse("status", {"stage": "reranking"})
+
+        # §13.2: live lookup fires on exactly two conditions — planner
+        # intent is "live", or the abstention gate fired. Memory-first,
+        # always: this only ever runs AFTER the real retrieval above.
+        live_doc_ids: list[str] = []
+        live_checked: list[str] = []
+        if llm_call is not None and (trace.plan.intent == "live" or trace.answer.status == "absent"):
+            yield _sse("status", {"stage": "live"})
+            try:
+                with db() as conn:
+                    live_doc_ids, live_checked = _run_live_lookup(
+                        conn, rt, settings_map, tracked_llm, rewritten_question, trace.plan
+                    )
+            except Exception:
+                logging.getLogger(__name__).exception("live lookup failed for %r", rewritten_question)
+            if live_checked:
+                yield _sse("live", {"checked": live_checked, "found": bool(live_doc_ids)})
+            if live_doc_ids:
+                # Something new (or already-live-known) is now in the index
+                # — re-run retrieval once so this turn can actually cite it,
+                # rather than making the user ask again.
+                try:
+                    with db() as conn:
+                        trace = answer_question(
+                            conn,
+                            rt["live_index"],
+                            _embed_fn,
+                            tracked_llm,
+                            rewritten_question,
+                            ask=ask_ctx,
+                            hydra_store=rt["hydra_store"],
+                            extra_doc_ids=tuple(live_doc_ids),
+                        )
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "post-live-lookup answer_question failed for %r", rewritten_question
+                    )
+
         yield _sse("status", {"stage": "answering"})
 
         answer_text = trace.answer.answer
+        live_doc_id_set = set(live_doc_ids)
+        cited_live = live_doc_id_set.intersection(trace.answer.citations)
+        if live_checked and not live_doc_ids and trace.answer.status == "absent":
+            # §13.2's ✅ DO: abstain honestly, don't hide the live attempt.
+            answer_text += f" A live check of {', '.join(live_checked)} found nothing either."
+        elif cited_live and trace.answer.status in {"answered", "partial"}:
+            answer_text = f"As of just now: {answer_text}"
         for token in answer_text.split(" "):
             yield _sse("token", {"text": token + " "})
 
@@ -1960,7 +2132,7 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
                 "doc_id": doc_id,
                 "title": doc_lookup[doc_id].title if doc_id in doc_lookup else doc_id,
                 "url": doc_lookup[doc_id].url if doc_id in doc_lookup else None,
-                "live": False,
+                "live": doc_id in live_doc_id_set,
                 "provider": None,
                 "source_type": doc_lookup[doc_id].source_type if doc_id in doc_lookup else None,
             }

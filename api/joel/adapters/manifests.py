@@ -108,6 +108,14 @@ def qualify_github_item(kind: str):
     """Qualify issue/PR identity by repo so #1 in two repos cannot collide.
 
     Empty/short bodies fall back to the title so a PR still becomes a doc.
+
+    Also prepends a one-line status ("Status: merged"/"draft"/"open"/
+    "closed") to the body. Without this, "is PR 118 merged?" has no way to
+    be answered from the doc's own text — a PR description essentially
+    never restates its own merge state, and `merged`/`draft`/`state` lived
+    only in `extra`, which retrieval and the answer LLM never read (§13.2's
+    live PR-state lookup surfaced this — the fetch worked, but the fetched
+    doc still couldn't answer the question it was fetched for).
     """
 
     def hook(raw: dict[str, Any]) -> dict[str, Any]:
@@ -116,6 +124,19 @@ def qualify_github_item(kind: str):
         title = str(out.get("title") or "").strip()
         if (not isinstance(body, str) or len(body.strip()) < 20) and title:
             out["body"] = title
+        if kind == "pr":
+            state = str(out.get("state") or "open")
+            if out.get("merged"):
+                status = "merged"
+            elif out.get("draft"):
+                status = "draft"
+            elif state == "closed":
+                status = "closed (not merged)"  # explicit -- "closed" alone leaves merged-or-not ambiguous
+            else:
+                status = state
+        else:
+            status = str(out.get("state") or "open")
+        out["body"] = f"Status: {status}\n\n{out.get('body') or ''}".rstrip()
         repo = _github_repo(out)
         number = out.get("number")
         if repo and number is not None:

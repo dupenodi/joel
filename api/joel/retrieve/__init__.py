@@ -22,12 +22,12 @@ import numpy as np
 from joel.live_index import LiveIndex
 from joel.llm import LLMCallFn
 from joel.retrieve.fuse import rrf_fuse
-from joel.retrieve.lanes import RetrievedDoc, run_lanes
+from joel.retrieve.lanes import RetrievedDoc, hydrate_doc_ids, run_lanes
 from joel.retrieve.planner import QueryPlan, plan_query
 from joel.retrieve.rerank import RerankedDoc, rerank_candidates
 from joel.retrieve.synthesize import AnswerResult, synthesize_answer
 from joel.store import HydraStore
-from joel.visibility import AskContext
+from joel.visibility import AskContext, allowed_stamps
 
 EmbedFn = Callable[[list[str]], np.ndarray]
 
@@ -56,11 +56,24 @@ def answer_question(
     *,
     ask: AskContext | None = None,
     hydra_store: HydraStore | None = None,
+    extra_doc_ids: tuple[str, ...] = (),
 ) -> RetrievalTrace:
     question = question.strip()
     plan = plan_query(llm_call, question) if llm_call is not None else QueryPlan(intent="lookup")
     lane_results = run_lanes(conn, index, embed_fn, plan, question, ask=ask, hydra_store=hydra_store)
     fused = rrf_fuse(lane_results, top_n=FUSE_TOP_N)
+    if extra_doc_ids:
+        # §13.2: a doc the caller already knows is relevant this turn (a
+        # freshly live-fetched one) gets a guaranteed shot at rerank rather
+        # than hoping RRF rediscovers it among everything else in the
+        # corpus — rerank's own LLM judgment still decides whether it
+        # actually answers the question, this only guarantees it's SEEN.
+        allowed = None if ask is None else allowed_stamps(ask)
+        already = {d.id for d in fused}
+        extra = [
+            d for d in hydrate_doc_ids(conn, list(extra_doc_ids), allowed=allowed) if d.id not in already
+        ]
+        fused = extra + fused
     reranked = rerank_candidates(llm_call, question, fused) if llm_call is not None else []
     answer = synthesize_answer(llm_call, question, reranked)
     return RetrievalTrace(

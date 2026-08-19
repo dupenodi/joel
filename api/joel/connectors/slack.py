@@ -282,10 +282,76 @@ def fetch_slack_docs(
     )
 
 
+def fetch_slack_channel_latest(
+    token: str = "",
+    *,
+    channel_name: str,
+    limit: int = 20,
+    session: requests.Session | None = None,
+    caller: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+) -> list[CanonicalDoc]:
+    """§13.2 live mode: the latest N messages in ONE channel, resolved by
+    NAME against the live channel list (not a stored channel_id) -- a
+    single bounded `conversations.history` call, never `SlackClient.
+    messages`'s full-history pagination a real sync does. Resolving by name
+    live, rather than trusting `docs.extra_json.channel_id`, sidesteps
+    real-world ingest gaps where that field came back empty."""
+    client = SlackClient(token, session=session, caller=caller)
+    channels = client.channels()
+    channel = next(
+        (c for c in channels if str(c.get("name") or "") == channel_name), None
+    )
+    if channel is None:
+        return []
+    channel_id = str(channel.get("id") or "")
+    if not channel_id:
+        return []
+    auth = client.call("auth.test")
+    users = client.user_handles()
+    team_url = str(auth.get("url") or "").rstrip("/")
+    team_domain = team_url.removeprefix("https://").removeprefix("http://").split(
+        ".slack.com", 1
+    )[0]
+
+    data = client.call("conversations.history", channel=channel_id, limit=limit)
+    messages = [m for m in (data.get("messages") or []) if isinstance(m, dict)]
+
+    raw_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in messages:
+        ts = str(item.get("ts") or "")
+        if not ts or item.get("subtype") in {
+            "channel_join",
+            "channel_leave",
+            "channel_name",
+            "channel_purpose",
+            "channel_topic",
+        }:
+            continue
+        enriched = dict(item)
+        enriched["channel"] = channel_name
+        enriched["channel_id"] = channel_id
+        enriched["channel_kind"] = channel_kind(channel)
+        enriched["team_domain"] = team_domain
+        user_id = str(item.get("user") or "")
+        enriched["author_handle"] = users.get(
+            user_id, f"@{user_id}" if user_id else None
+        )
+        enriched["mentions"] = _mention_handles(str(item.get("text") or ""), users)
+        enriched["permalink"] = (
+            f"{team_url}/archives/{channel_id}/p{ts.replace('.', '')}"
+            if team_url
+            else None
+        )
+        raw_by_key[(channel_id, ts)] = enriched
+
+    return adapt_many(SLACK, raw_by_key.values())
+
+
 __all__ = [
     "SlackAPIError",
     "SlackClient",
     "SlackFetchResult",
     "channel_kind",
     "fetch_slack_docs",
+    "fetch_slack_channel_latest",
 ]
