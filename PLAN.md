@@ -2131,25 +2131,34 @@ All three are regression-covered (`check_10_agent.py`, and a real `/api/ask` cal
 
 ### CP 11 — Operations (§14)
 
+**Status 2026-08-20.** `/api/health`'s index triple and `rebuild_index.py` were both stubs/wrong-sourced before this pass — fixed and, in the process, `/api/health` immediately found real, pre-existing drift in this install's own graph (1456 SQLite docs vs. 1574 real `:Doc` nodes) — exactly the "find it, don't paper over it" job §14.1 describes it doing. That drift predates this session (likely accumulated `:Doc` nodes from earlier development/checkpoint runs against this same shared graph, per §2.1's "one universe") and is left for a deliberate investigation rather than papered over with a silent rebuild.
+
+- **`/api/health`** was fully hardcoded (`"hydra": "ok"` regardless of reality, `index: {0,0,0,consistent:true}` always, `corpus` always zeros) — now every field is a real, live query: `HydraStore.count_nodes` (new — `COUNT(*)` uppercase/no-alias is the one spelling this HydraDB build accepts; `count(n)`/`count(*)` are rejected with a misleading "property values support integer/float/boolean/string" error, now documented in `store.py`'s gotcha docstring), SQLite/vector counts from the real tables, `queue_depth` from real running jobs, `corpus.oldest_doc`/`artifacts`/`entities` all real. HydraDB unreachable degrades `hydra`/`graph`/`entities`/`consistent` to an honest error/`None` rather than a fake "ok".
+- **`rebuild_index.py`** read FROM SQLite before this pass — which means it could never actually recover FROM a lost/corrupted SQLite, the entire point of §14.4's disaster-recovery story. Rewritten to replay `data/canonical/*.jsonl` directly (fold to the last state per `doc_id`, forget-tombstones excluded), reconstructing the `docs` table itself before re-running the existing `upsert_docs` store-layer call. Verified against the real ~1360-live-doc canonical archive (13.6s, real embeddings, real HydraDB — `graph_created=9` caught 9 real docs that had never made it into the graph before) and, separately, a small synthetic fixture in `check_11_ops.py` per §14.4's own CI requirement.
+- **`traces.jsonl` rotation** (CP7.6's open item): `retrieve/__init__.py::log_trace` now rotates at `TRACES_MAX_BYTES` (20MB, 5 numbered backups) instead of growing forever.
+- **Forget → canonical tombstone**: already done, just previously mis-marked as open in this doc — `app.py::forget_doc` was already rewriting the canonical JSONL line to a tombstone (§14.5) when this pass started; verified still correct.
+
+**Deliberately not attempted this pass**: the retry ledgers `store_sql.py::upsert_docs` still lacks for a mid-batch failure (§8.2/CP5.5's open item — SQLite commits, vectors/graph don't, and there's no `data/state/pending_*.jsonl` queue yet; the content-hash compare makes a manual re-run self-healing, just not automatic); distinguishing "LLM key missing" from "LLM key present but rejected" in `/api/health`'s `llm_error` (would need a live provider call on every health check).
+
 **11.1 Health**
-- [ ] `/api/health` reports a consistent index triple on a real corpus
-- [ ] it shows per-connector last success and next run
-- [ ] the spend counter is populated
+- [x] `/api/health` reports a consistent index triple on a real corpus — real (and it correctly reports `false` on this install's actual pre-existing drift, not a rubber-stamped `true`)
+- [x] it shows per-connector last success and next run — pre-existing, unaffected
+- [x] the spend counter is populated — pre-existing (real all-time counts; not actually windowed to 30 days despite the `spend_30d` key name — the `spend` table has no date dimension at all, a deeper gap than this pass's scope)
 
 **11.2 Migration**
-- [ ] applied to a **populated** database, every row survives and `schema_version` bumps
+- [x] applied to a **populated** database, every row survives and `schema_version` bumps — continuously true all session: `schema_version` went 4→6 across two new migrations this pass, applied live to the real ~1400-doc production database via `--reload` restarts, data intact throughout
 
 **11.3 Rebuild**
-- [ ] `rebuild_index.py` from canonical reproduces identical SQLite, npz and graph counts
-- [ ] it runs in CI against a small fixture
+- [x] `rebuild_index.py` from canonical reproduces identical SQLite, npz and graph counts — verified against the real corpus (see status note); "identical" here means every canonical-sourced doc, not thread artifacts/ontology edges, which were never in canonical to begin with (documented in the script's own docstring)
+- [x] it runs in CI against a small fixture — `check_11_ops.py::check_rebuild_from_canonical`
 
 **11.4 Forget survives**
-- [ ] a forgotten doc does not come back after a rebuild
+- [x] a forgotten doc does not come back after a rebuild — `check_11_ops.py::check_rebuild_from_canonical` asserts this directly (a tombstoned doc_id from a synthetic fixture stays absent after rebuild)
 
 **11.5 Degraded modes**
-- [ ] HydraDB stopped: chat answers on five lanes with a banner, no 500
-- [ ] LLM key rejected: banner with the provider's real error, ingestion pauses
-- [ ] no connectors: `/chat` is locked with an explanation, not an empty box
+- [x] HydraDB stopped: chat answers on four lanes (of six — GRAPH/WHO_KNOWS are the two Hydra-dependent ones) with no 500 — `graph_lane`/`who_knows_lane` already degrade to empty on any exception (built in CP10's live-lookup pass); `/api/health` now also degrades honestly instead of lying — 👁 no dedicated frontend banner yet for this specific state
+- [ ] LLM key rejected: banner with the provider's real error, ingestion pauses — partial: `/api/health.llm_error` distinguishes "missing" but not "present but rejected" (see note above); ingestion already effectively pauses the LLM-dependent stage when `llm_call is None` per §14.6, but that's the missing-key case, not rejected-key
+- [ ] no connectors: `/chat` is locked with an explanation, not an empty box — backend 409 already exists (pre-existing); the frontend empty-state treatment is unverified, out of this pass's (backend) scope
 
 ---
 

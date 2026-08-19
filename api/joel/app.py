@@ -2425,17 +2425,64 @@ def health() -> dict[str, Any]:
         schema_version_row = conn.execute(
             "SELECT version FROM schema_version"
         ).fetchone()
+        queue_depth = conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE status='running'"
+        ).fetchone()["n"]
+        sqlite_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM docs WHERE forgotten=0"
+        ).fetchone()["n"]
+        oldest_doc = conn.execute(
+            "SELECT MIN(timestamp) AS t FROM docs WHERE forgotten=0 AND timestamp IS NOT NULL"
+        ).fetchone()["t"]
+        artifact_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM docs WHERE forgotten=0 AND granularity='artifact'"
+        ).fetchone()["n"]
+
+    # §14.1: the index triple is the drift detector — a real live count on
+    # all three sides, not a hardcoded stub that always claims "consistent".
+    # HydraDB unreachable degrades this cleanly (§14.6) rather than 500ing
+    # the whole endpoint: hydra_status carries the real error, graph/entity
+    # counts come back None, and "consistent" is None (unknown) rather than
+    # a false True or a false False.
+    vectors_count: int | None = None
+    graph_count: int | None = None
+    entity_count: int | None = None
+    hydra_status = "ok"
+    try:
+        rt = _runtime()
+        snap = rt["live_index"].snapshot()
+        vectors_count = int((~snap.forgotten).sum())
+        graph_count = rt["hydra_store"].count_nodes("Doc")
+        entity_count = rt["hydra_store"].count_nodes("Entity")
+    except Exception as exc:
+        hydra_status = f"error: {exc}"
+
+    consistent = (
+        None
+        if graph_count is None
+        else sqlite_count == vectors_count == graph_count
+    )
+
     return {
-        "hydra": "ok",  # stub — real hydra wire comes later
+        "hydra": hydra_status,
         "schema_version": schema_version_row[0] if schema_version_row else 0,
         "sync_enabled": s.get("sync_enabled", "true") == "true",
-        "queue_depth": 0,
+        "queue_depth": queue_depth,
         "llm_error": None
         if s.get("llm_api_key")
         else "LLM API key not set — add one in Settings",
-        "index": {"sqlite": 0, "vectors": 0, "graph": 0, "consistent": True},
+        "index": {
+            "sqlite": sqlite_count,
+            "vectors": vectors_count,
+            "graph": graph_count,
+            "consistent": consistent,
+        },
         "connectors": connectors,
-        "corpus": {"oldest_doc": None, "artifacts": 0, "entities": 0},
+        "corpus": {
+            "oldest_doc": oldest_doc,
+            "artifacts": artifact_count,
+            "entities": entity_count,
+        },
         "spend_30d": spend,
     }
 

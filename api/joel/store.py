@@ -396,6 +396,22 @@ class HydraStore:
                 )
         return results
 
+    def count_nodes(self, label: str) -> int:
+        """§14.1's index-triple health check: a real, live count of one
+        node label -- never a proxy like `graph_written`'s row count, which
+        would miss anything that changed the graph out from under it.
+        `count(n)`/`count(*)` (lowercase, or with an alias) are rejected by
+        this build ("property values support integer, float, boolean, and
+        string literals" -- an unhelpful message for what's actually an
+        unsupported aggregate spelling); bare uppercase `COUNT(*)` with no
+        alias is the form that actually works, verified live."""
+        rows = self.hydra.bolt(f"MATCH (n:{label}) RETURN COUNT(*)")
+        if not rows:
+            return 0
+        row = rows[0]
+        value = row["COUNT(*)"] if "COUNT(*)" in row.keys() else list(row.values())[0]
+        return int(_unwrap(value))
+
     # ---- §9/§10 ontology + GRAPH/WHO_KNOWS lane support ----------------
 
     def edges_from(

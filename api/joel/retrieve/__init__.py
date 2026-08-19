@@ -86,11 +86,38 @@ def answer_question(
     )
 
 
+TRACES_MAX_BYTES = 20 * 1024 * 1024  # 20MB per file
+TRACES_MAX_BACKUPS = 5
+
+
+def _rotate_if_needed(traces_path: Path) -> None:
+    """§7.6/CP11: `traces.jsonl` appends unboundedly forever otherwise —
+    the file this session has been writing to for real already knows how
+    that goes. Simple numbered rotation (`.1` newest backup .. `.N`
+    oldest, dropped past `TRACES_MAX_BACKUPS`), checked once per write
+    rather than on a timer, so it needs no background task of its own."""
+    try:
+        if not traces_path.exists() or traces_path.stat().st_size < TRACES_MAX_BYTES:
+            return
+    except OSError:
+        return
+    oldest = traces_path.with_suffix(f"{traces_path.suffix}.{TRACES_MAX_BACKUPS}")
+    if oldest.exists():
+        oldest.unlink()
+    for n in range(TRACES_MAX_BACKUPS - 1, 0, -1):
+        src = traces_path.with_suffix(f"{traces_path.suffix}.{n}")
+        if src.exists():
+            src.rename(traces_path.with_suffix(f"{traces_path.suffix}.{n + 1}"))
+    traces_path.rename(traces_path.with_suffix(f"{traces_path.suffix}.1"))
+
+
 def log_trace(traces_path: Path, trace: RetrievalTrace, *, extra: dict | None = None) -> None:
-    """§10.6: one line per question, file rotated by the caller rather than
-    growing forever. These traces are how RERANK_FLOOR gets tuned later and,
-    per §16.3, the free evaluation set once there's enough of them."""
+    """§10.6: one line per question, rotated at `TRACES_MAX_BYTES` rather
+    than growing forever. These traces are how RERANK_FLOOR gets tuned
+    later and, per §16.3, the free evaluation set once there's enough of
+    them."""
     traces_path.parent.mkdir(parents=True, exist_ok=True)
+    _rotate_if_needed(traces_path)
     line = {
         "id": uuid.uuid4().hex[:12],
         "ts": time.time(),
@@ -106,4 +133,11 @@ def log_trace(traces_path: Path, trace: RetrievalTrace, *, extra: dict | None = 
         handle.write(json.dumps(line) + "\n")
 
 
-__all__ = ["RetrievalTrace", "answer_question", "log_trace", "FUSE_TOP_N"]
+__all__ = [
+    "RetrievalTrace",
+    "answer_question",
+    "log_trace",
+    "FUSE_TOP_N",
+    "TRACES_MAX_BYTES",
+    "TRACES_MAX_BACKUPS",
+]
