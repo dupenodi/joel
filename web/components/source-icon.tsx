@@ -15,7 +15,7 @@ export function SourceIcon({
     return (
       <span
         className={cn(
-          "inline-flex items-center justify-center rounded-full bg-inset text-[10px] font-medium text-muted",
+          "inline-flex items-center justify-center rounded-full bg-inset text-[10px] font-medium text-ink-3",
           className,
         )}
         style={{ width: size, height: size }}

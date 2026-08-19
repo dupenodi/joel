@@ -1,10 +1,10 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useState } from "react";
-import { Banner } from "@/components/banner";
+import { MemoryBanner } from "@/components/beautifului";
 import { getHealth } from "@/lib/api";
 import type { Health } from "@/lib/types";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 
 export function SystemBanners() {
   const [health, setHealth] = useState<Health | null>(null);
@@ -39,31 +39,30 @@ export function SystemBanners() {
 
   if (!health) return null;
 
+  const reauth = health.connectors.filter((c) => c.status === "needs_reauth");
+
   return (
-    <div className="flex flex-col">
-      {health.llm_error && <Banner tone="accent">{health.llm_error}</Banner>}
-      {health.hydra === "down" && (
-        <Banner tone="warn">
-          Relationship search unavailable — HydraDB unreachable.
-        </Banner>
+    <div className="flex flex-col gap-px">
+      {health.llm_error && (
+        <MemoryBanner kind="llm">{health.llm_error}</MemoryBanner>
       )}
-      {health.connectors.some((c) =>
-        ["syncing", "backfilling", "distilling", "linking"].includes(c.status),
-      ) && (
-        <Banner tone="muted">
-          Still ingesting — answers may be incomplete.
-        </Banner>
-      )}
-      {health.connectors
-        .filter((c) => c.status === "needs_reauth")
-        .map((c) => (
-          <Banner key={c.provider} tone="accent">
-            {c.provider} needs reconnect.{" "}
-            <Link href="/connectors" className="underline underline-offset-2">
+      {health.hydra === "down" && <MemoryBanner kind="degraded" />}
+      {reauth.map((c) => (
+        <MemoryBanner
+          key={c.provider}
+          kind="reauth"
+          action={
+            <Link
+              href="/integrations"
+              className="shrink-0 font-medium underline-offset-2 hover:underline"
+            >
               Fix it
             </Link>
-          </Banner>
-        ))}
+          }
+        >
+          {c.provider} needs reconnect.
+        </MemoryBanner>
+      ))}
     </div>
   );
 }

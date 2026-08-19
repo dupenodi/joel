@@ -1,0 +1,412 @@
+/*
+  Beautiful UI light-mode tokens.
+  Scoped under `.bui` so joel product chrome keeps its own paper/ink theme.
+  Source: https://www.beautifului.dev/  MIT © 2026 Shane Levine
+*/
+
+@theme inline {
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-hover: var(--hover);
+  --color-hover-2: var(--hover-2);
+  --color-field: var(--field);
+  --color-canvas: var(--canvas);
+  --color-page: var(--page);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-tint: var(--accent-tint);
+  --color-green: var(--green);
+  --color-green-tint: var(--green-tint);
+  --color-orange: var(--orange);
+  --color-orange-tint: var(--orange-tint);
+  --color-red: var(--red);
+  --color-red-tint: var(--red-tint);
+}
+
+.bui {
+  --page: oklch(98.5% 0.001 286.376);
+  --canvas: oklch(96.1% 0.002 247.84);
+  --surface: oklch(100% 0 0);
+  --inset: oklch(97.9% 0.002 247.839);
+  --hover: oklch(97% 0.002 247.839);
+  --hover-2: oklch(93.3% 0.003 247.86);
+  --ink: oklch(24.7% 0.006 258.361);
+  --ink-2: oklch(50.6% 0.01 264.477);
+  --ink-3: oklch(69.5% 0.009 264.505);
+  --line: oklch(94.6% 0.003 264.542);
+  --line-strong: oklch(91.2% 0.005 258.326);
+  --field: oklch(96.1% 0.001 286.375);
+  --accent: oklch(62.6% 0.205 254.947);
+  --accent-ink: oklch(55.6% 0.187 255.617);
+  --accent-tint: oklch(96% 0.019 252.878);
+  --green: oklch(60.3% 0.155 150.883);
+  --green-tint: oklch(95.8% 0.017 159.118);
+  --orange: oklch(68.9% 0.179 49.902);
+  --orange-tint: oklch(96.4% 0.021 67.581);
+  --red: oklch(62.1% 0.192 23.042);
+  --red-tint: oklch(95.6% 0.017 17.462);
+  --tooltip-bg: oklch(27.2% 0.008 264.435);
+  --tooltip-fg: oklch(97.6% 0.002 247.839);
+  --tooltip-muted: oklch(73.1% 0.008 260.731);
+  --tooltip-border: oklch(35.6% 0.007 264.474);
+  --shadow-xs: 0 0 4px 0 #0000000a;
+  --shadow-sm:
+    0 18px 47px 0 #00000008, 0 7.5px 19px 0 #00000005, 0 4px 10.5px 0 #00000005,
+    0 2.3px 5.8px 0 #00000003, 0 1.2px 3.1px 0 #00000003, 0 0.5px 1.3px 0 #00000003;
+  --shadow-md:
+    0 17.54px 23.39px 0 #0000000a, 0 9.4px 12.5px 0 #00000008, 0 5.25px 7px 0 #00000005,
+    0 2.79px 3.72px -2px #00000003, 0 1.16px 1.5px 0 #00000003;
+  --shadow-lg:
+    0 25px 50px 0 #0000000d, 0 12px 24px 0 #0000000a, 0 6px 12px 0 #00000008,
+    0 3px 6px 0 #00000005, 0 1.5px 3px 0 #00000005;
+  --shadow-hairline: 0 0 0 1px var(--line);
+  --shadow-btn: 0 0 0 1px var(--line-strong), var(--shadow-xs);
+  --shadow-card: 0 0 0 1px var(--line), var(--shadow-sm);
+  --shadow-raised: 0 0 0 1px var(--line), var(--shadow-md);
+  --shadow-overlay: 0 0 0 1px var(--line), var(--shadow-lg);
+  --radius-chip: 6px;
+  --radius-control: 8px;
+  --radius-card: 10px;
+  --ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-link: cubic-bezier(0.16, 1, 0.3, 1);
+  /* App frame — header + pages share these, then pick a content column. */
+  --app-max: 72rem;
+  --app-gutter: 1.75rem;
+  --header-h: 4rem;
+  --chat-max: 44rem;
+  --page-max: 44rem;
+  --wide-max: 54rem;
+  /* Product aliases so leftover chrome maps onto this language. */
+  --bg: var(--page);
+  --ink-soft: var(--ink-2);
+  --muted: var(--ink-3);
+  --ok: var(--green);
+  --ok-soft: var(--green-tint);
+  --warn: var(--orange);
+  --warn-soft: var(--orange-tint);
+  --accent-soft: var(--accent-tint);
+  --partial: var(--orange);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+@utility rounded-chip {
+  border-radius: 6px;
+}
+@utility rounded-control {
+  border-radius: 8px;
+}
+@utility rounded-card {
+  border-radius: 10px;
+}
+@utility shadow-hairline {
+  box-shadow: var(--shadow-hairline);
+}
+@utility shadow-btn {
+  box-shadow: var(--shadow-btn);
+}
+@utility shadow-card {
+  box-shadow: var(--shadow-card);
+}
+@utility shadow-raised {
+  box-shadow: var(--shadow-raised);
+}
+@utility shadow-overlay {
+  box-shadow: var(--shadow-overlay);
+}
+
+.bui .primitive-card-pad {
+  padding: 12px;
+}
+.bui .primitive-card-bar,
+.bui .primitive-card-footer,
+.bui .primitive-table-cell {
+  padding: 10px 12px;
+}
+.bui .primitive-icon-button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-control);
+}
+
+.bui .animated-underline {
+  display: inline-block;
+  position: relative;
+}
+.bui .animated-underline::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: 0;
+  transition: transform 0.28s var(--ease-link);
+}
+.bui a:hover .animated-underline::after,
+.bui a:focus-visible .animated-underline::after {
+  transform: scaleX(1);
+}
+
+.bui .source-avatar {
+  box-shadow: 0 0 0 1px oklch(21% 0.034 263.436 / 0.1);
+}
+
+.bui .filter-status-todo,
+.bui .filter-status-progress,
+.bui .filter-status-done {
+  border: 1px solid transparent;
+}
+.bui .filter-status-todo {
+  color: color-mix(in srgb, oklch(75.7% 0.153 66.401) 92%, var(--ink));
+  background: color-mix(in srgb, oklch(75.7% 0.153 66.401) 20%, var(--surface));
+  border-color: color-mix(in srgb, oklch(75.7% 0.153 66.401) 34%, var(--surface));
+}
+.bui .filter-status-progress {
+  color: color-mix(in srgb, oklch(67.1% 0.118 219.351) 92%, var(--ink));
+  background: color-mix(in srgb, oklch(67.1% 0.118 219.351) 20%, var(--surface));
+  border-color: color-mix(in srgb, oklch(67.1% 0.118 219.351) 34%, var(--surface));
+}
+.bui .filter-status-done {
+  color: color-mix(in srgb, oklch(65.2% 0.131 162.865) 92%, var(--ink));
+  background: color-mix(in srgb, oklch(65.2% 0.131 162.865) 20%, var(--surface));
+  border-color: color-mix(in srgb, oklch(65.2% 0.131 162.865) 34%, var(--surface));
+}
+
+.bui .insight-chart-stage {
+  overflow: hidden;
+}
+.bui .insight-chart-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: 1px;
+  background: var(--ink);
+  opacity: 0.26;
+  pointer-events: none;
+}
+.bui .insight-chart-tooltip-anchor {
+  position: absolute;
+  top: 8px;
+  z-index: 5;
+  pointer-events: none;
+  transform: translate(-50%);
+}
+.bui .insight-chart-tooltip {
+  min-width: 154px;
+  padding: 9px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--tooltip-bg);
+  color: var(--tooltip-fg);
+  box-shadow: var(--shadow-overlay);
+  font-size: 12px;
+}
+.bui .insight-chart-tooltip-time {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--tooltip-muted);
+  font-size: 11px;
+}
+.bui .insight-chart-tooltip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  line-height: 1.65;
+}
+.bui .insight-chart-tooltip-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.bui .insight-chart-tooltip-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+}
+
+@keyframes shimmer-text {
+  0% {
+    background-position: 150%;
+  }
+  to {
+    background-position: -50%;
+  }
+}
+@keyframes fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes fade-in {
+  0% {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes records-pulse {
+  0%,
+  to {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes eq-bounce {
+  0%,
+  to {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+@keyframes stream-in {
+  0% {
+    opacity: 0;
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+@keyframes caret-blink {
+  0%,
+  to {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+@keyframes pixel-on {
+  0%,
+  to {
+    opacity: 0.15;
+  }
+  18%,
+  42% {
+    opacity: 1;
+  }
+  62% {
+    opacity: 0.15;
+  }
+}
+@keyframes bone-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes bui-rainbow-sweep {
+  0% {
+    opacity: 0;
+    transform: translateX(-80%);
+  }
+  35% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(80%);
+  }
+}
+@keyframes asterisk-spin {
+  to {
+    transform: rotate(1turn);
+  }
+}
+/* Landing-style idle bob: uneven height + light tilt, not a flat sine. */
+@keyframes asterisk-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  22% {
+    transform: translateY(-16px) rotate(-1.6deg);
+  }
+  48% {
+    transform: translateY(-5px) rotate(1.1deg);
+  }
+  72% {
+    transform: translateY(-13px) rotate(-0.7deg);
+  }
+}
+@keyframes asterisk-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.035);
+  }
+}
+/* Landing blink cadence, with a rare double blink in the cycle. */
+@keyframes asterisk-blink {
+  0%,
+  38%,
+  46%,
+  72%,
+  78%,
+  84%,
+  100% {
+    transform: scaleY(1);
+  }
+  42% {
+    transform: scaleY(0.08);
+  }
+  75%,
+  81% {
+    transform: scaleY(0.08);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bui * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .joel-mark-animated,
+  .joel-mark-animated * {
+    animation: none !important;
+  }
+}

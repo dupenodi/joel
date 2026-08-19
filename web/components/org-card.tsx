@@ -1,5 +1,3 @@
-import { Surface } from "@/components/surface";
-
 export function OrgCard({
   name,
   domain,
@@ -10,19 +8,19 @@ export function OrgCard({
   logoUrl: string;
 }) {
   return (
-    <Surface elevation="hard" className="flex items-center gap-3 p-4">
+    <div className="flex items-center gap-2.5 rounded-card bg-surface p-3 shadow-card">
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={logoUrl}
         alt=""
-        width={40}
-        height={40}
-        className="rounded-[10px] bg-inset"
+        width={32}
+        height={32}
+        className="rounded-control bg-inset"
       />
       <div className="min-w-0">
-        <p className="truncate font-medium text-ink">{name}</p>
-        <p className="truncate text-sm text-muted">{domain}</p>
+        <p className="truncate text-[13px] font-medium text-ink">{name}</p>
+        <p className="truncate text-[12px] text-ink-3">{domain}</p>
       </div>
-    </Surface>
+    </div>
   );
 }

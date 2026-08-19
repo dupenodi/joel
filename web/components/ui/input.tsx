@@ -11,7 +11,7 @@ export const Input = forwardRef<
       aria-invalid={ariaInvalid}
       data-invalid={ariaInvalid === true || ariaInvalid === "true" ? "true" : undefined}
       className={cn(
-        "w-full rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--inset)] px-3.5 py-2.5 text-[15px] text-ink outline-none transition-[border-color,background,box-shadow] placeholder:text-muted focus:border-[var(--line-strong)] focus:bg-surface focus:shadow-[var(--shadow-sm)] disabled:cursor-not-allowed disabled:opacity-50 data-[invalid=true]:border-accent data-[invalid=true]:bg-[var(--accent-soft)] data-[invalid=true]:focus:border-accent",
+        "h-9 w-full rounded-control bg-field px-2.5 text-[14px] text-ink shadow-hairline outline-none placeholder:text-ink-3 transition-colors duration-150 hover:bg-hover focus:bg-surface focus:shadow-btn disabled:cursor-not-allowed disabled:opacity-50 data-[invalid=true]:shadow-[0_0_0_1px_var(--red)]",
         className,
       )}
       {...props}

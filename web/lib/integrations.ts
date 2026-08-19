@@ -16,11 +16,15 @@ export type IntegrationDef = {
   group: IntegrationGroup;
   connectable: boolean;
   ingest: boolean;
-  scope: string;
+  /** OAuth scopes actually requested. */
+  permissions: string[];
+  /** Constraint that isn’t a scope string (e.g. no DMs). */
+  permissionNote?: string;
   defaultLookbackDays: number;
   defaultIntervalMin: number;
 };
 
+/** Talk → mail → code → tracker → docs → CRM → meetings. */
 export const INTEGRATIONS: IntegrationDef[] = [
   {
     id: "slack",
@@ -29,20 +33,16 @@ export const INTEGRATIONS: IntegrationDef[] = [
     group: "chat",
     connectable: true,
     ingest: true,
-    scope: "Channels you pick, plus threads. No DMs.",
+    permissions: [
+      "channels:read",
+      "channels:history",
+      "groups:read",
+      "groups:history",
+      "users:read",
+    ],
+    permissionNote: "No DMs (no im:history).",
     defaultLookbackDays: 30,
     defaultIntervalMin: 15,
-  },
-  {
-    id: "github",
-    toolkit: "github",
-    name: "GitHub",
-    group: "code",
-    connectable: true,
-    ingest: true,
-    scope: "Issues, PRs, review comments, and language-aware code chunks.",
-    defaultLookbackDays: 30,
-    defaultIntervalMin: 30,
   },
   {
     id: "gmail",
@@ -51,9 +51,21 @@ export const INTEGRATIONS: IntegrationDef[] = [
     group: "mail",
     connectable: true,
     ingest: true,
-    scope: "Mail threads you’re authorized for.",
+    permissions: ["gmail.readonly"],
     defaultLookbackDays: 30,
     defaultIntervalMin: 20,
+  },
+  {
+    id: "github",
+    toolkit: "github",
+    name: "GitHub",
+    group: "code",
+    connectable: true,
+    ingest: true,
+    permissions: ["repo"],
+    permissionNote: "Issues, PRs, review comments, and file contents.",
+    defaultLookbackDays: 30,
+    defaultIntervalMin: 30,
   },
   {
     id: "linear",
@@ -62,18 +74,8 @@ export const INTEGRATIONS: IntegrationDef[] = [
     group: "tracker",
     connectable: true,
     ingest: true,
-    scope: "Issues and comments.",
-    defaultLookbackDays: 30,
-    defaultIntervalMin: 30,
-  },
-  {
-    id: "jira",
-    toolkit: "jira",
-    name: "Jira",
-    group: "tracker",
-    connectable: true,
-    ingest: true,
-    scope: "Issues and comments.",
+    permissions: ["read"],
+    permissionNote: "Issues and comments.",
     defaultLookbackDays: 30,
     defaultIntervalMin: 30,
   },
@@ -84,18 +86,8 @@ export const INTEGRATIONS: IntegrationDef[] = [
     group: "docs",
     connectable: true,
     ingest: true,
-    scope: "Pages you’re authorized for.",
-    defaultLookbackDays: 30,
-    defaultIntervalMin: 60,
-  },
-  {
-    id: "confluence",
-    toolkit: "confluence",
-    name: "Confluence",
-    group: "docs",
-    connectable: true,
-    ingest: true,
-    scope: "Spaces and pages you’re authorized for.",
+    permissions: ["read"],
+    permissionNote: "Pages the connected account can already open.",
     defaultLookbackDays: 30,
     defaultIntervalMin: 60,
   },
@@ -106,7 +98,32 @@ export const INTEGRATIONS: IntegrationDef[] = [
     group: "docs",
     connectable: true,
     ingest: true,
-    scope: "Docs, text files, and PDFs you’re authorized for.",
+    permissions: ["drive.readonly"],
+    permissionNote: "Docs, text files, and PDFs.",
+    defaultLookbackDays: 30,
+    defaultIntervalMin: 60,
+  },
+  {
+    id: "jira",
+    toolkit: "jira",
+    name: "Jira",
+    group: "tracker",
+    connectable: true,
+    ingest: true,
+    permissions: ["read:jira-work"],
+    permissionNote: "Issues and comments.",
+    defaultLookbackDays: 30,
+    defaultIntervalMin: 30,
+  },
+  {
+    id: "confluence",
+    toolkit: "confluence",
+    name: "Confluence",
+    group: "docs",
+    connectable: true,
+    ingest: true,
+    permissions: ["read:confluence-content.all"],
+    permissionNote: "Spaces and pages the connected account can already open.",
     defaultLookbackDays: 30,
     defaultIntervalMin: 60,
   },
@@ -117,7 +134,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     group: "crm",
     connectable: true,
     ingest: true,
-    scope: "Deals in pipelines you’re authorized for.",
+    permissions: ["crm.objects.deals.read"],
     defaultLookbackDays: 30,
     defaultIntervalMin: 60,
   },
@@ -128,7 +145,8 @@ export const INTEGRATIONS: IntegrationDef[] = [
     group: "meetings",
     connectable: true,
     ingest: true,
-    scope: "Meeting transcripts.",
+    permissions: ["read"],
+    permissionNote: "Meeting transcripts.",
     defaultLookbackDays: 30,
     defaultIntervalMin: 60,
   },
@@ -169,6 +187,28 @@ export function integrationGroupLabel(group: IntegrationGroup): string {
 
 export function integrationLogoUrl(toolkitSlug: string): string {
   return `https://logos.composio.dev/api/${encodeURIComponent(toolkitSlug)}`;
+}
+
+export function integrationIdFromParam(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const needle = raw.trim().toLowerCase();
+  const hit = INTEGRATIONS.find(
+    (item) => item.id === needle || item.toolkit === needle,
+  );
+  return hit?.id ?? null;
+}
+
+/** Attention first, then live, then the rest in catalog order. */
+export function sortIntegrations<T extends { id: string; connectable: boolean }>(
+  items: T[],
+  rank: (item: T) => number,
+): T[] {
+  const index = new Map(items.map((item, i) => [item.id, i]));
+  return [...items].sort((a, b) => {
+    const d = rank(a) - rank(b);
+    if (d !== 0) return d;
+    return (index.get(a.id) ?? 0) - (index.get(b.id) ?? 0);
+  });
 }
 
 export const LOOKBACK_OPTIONS = [

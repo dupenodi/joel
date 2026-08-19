@@ -1,5 +1,21 @@
-import type { ConnectorCard } from "./types";
+import type { ConnectorCard, ConnectorStatus } from "./types";
 import { INTEGRATIONS } from "./integrations";
+
+export const SYNCING_STATUSES: ReadonlySet<ConnectorStatus> = new Set([
+  "backfilling",
+  "syncing",
+  "distilling",
+  "linking",
+]);
+
+export function isSyncing(status: ConnectorStatus | undefined | null): boolean {
+  return status != null && SYNCING_STATUSES.has(status);
+}
+
+/** Pipeline stages collapse to one user-facing state. */
+export function surfaceStatus(status: ConnectorStatus): ConnectorStatus {
+  return isSyncing(status) ? "syncing" : status;
+}
 
 /** Ids that have a fetcher. Derived from the allowlist so this cannot drift. */
 export const SHIPPED_PROVIDERS = INTEGRATIONS.filter((item) => item.ingest).map(
@@ -11,17 +27,15 @@ export const COMING_SOON_PROVIDERS = INTEGRATIONS.filter(
 ).map((item) => item.id);
 
 const BLURBS: Record<string, string> = {
-  slack:
-    "Channels and threads — decisions, commitments, the hallway talk that never made it into a doc.",
-  github: "Issues, PRs, review comments, and language-aware code chunks.",
-  gmail:
-    "Mail threads that hold the real answer when the ticket just says 'see email'.",
+  slack: "Channels you pick, plus threads. No DMs.",
+  github: "Issues, PRs, review comments, and file contents.",
+  gmail: "Mail threads (gmail.readonly).",
   jira: "Issues and comments.",
   linear: "Issues and comments.",
-  notion: "Pages you’re authorized for.",
-  confluence: "Spaces and pages you’re authorized for.",
-  googledrive: "Docs, text files, and PDFs you’re authorized for.",
-  hubspot: "Deals in pipelines you’re authorized for.",
+  notion: "Pages the connected account can already open.",
+  confluence: "Spaces and pages the connected account can already open.",
+  googledrive: "Docs, text files, and PDFs (drive.readonly).",
+  hubspot: "Deals in pipelines the connected account can already open.",
   fireflies: "Meeting transcripts.",
 };
 
@@ -33,7 +47,7 @@ export const PROVIDER_META: Record<
     item.id,
     {
       label: item.name,
-      blurb: BLURBS[item.id] ?? item.scope,
+      blurb: BLURBS[item.id] ?? item.permissionNote ?? item.permissions.join(" "),
       icon: `/icons/${item.id}.svg`,
       defaultInterval: item.defaultIntervalMin,
     },

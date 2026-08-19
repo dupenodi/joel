@@ -41,7 +41,10 @@ export function Field({
       <Label htmlFor={fieldId}>{label}</Label>
       {child}
       {hasNote && (
-        <p id={noteId} className={cn("text-xs", error ? "text-accent" : "text-muted")}>
+        <p
+          id={noteId}
+          className={cn("text-[11.5px]", error ? "text-red" : "text-ink-3")}
+        >
           {error ?? hint}
         </p>
       )}

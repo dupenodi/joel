@@ -1,7 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <!-- Ink-on-paper brand mark - matches the web app's "ink" logo variant -->
-  <rect width="512" height="512" rx="112" fill="#FAFAFA"/>
-
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="88 68 336 336" width="512" height="512">
+  <!-- Transparent canvas — the rounded paper square used to sit over the wordmark. -->
   <g transform="translate(256 256) skewY(-10) translate(-256 -256)">
     <!-- Drop shadow -->
     <g transform="translate(268, 268)" fill="#121212" opacity="0.14">

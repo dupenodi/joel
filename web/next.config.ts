@@ -7,6 +7,14 @@ const apiOrigin =
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  async redirects() {
+    return [
+      { source: "/chat", destination: "/", permanent: false },
+      { source: "/connectors", destination: "/integrations", permanent: false },
+      { source: "/profile", destination: "/settings", permanent: false },
+      { source: "/memories", destination: "/graph", permanent: false },
+    ];
+  },
   async rewrites() {
     return [
       {

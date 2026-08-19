@@ -23,6 +23,54 @@ export interface Org {
   created_at: string;
 }
 
+export type MemberRole = "admin" | "member";
+
+export interface Workspace {
+  id: string;
+  domain: string;
+  name: string;
+  logo_url: string;
+  created_at: string;
+  created_by: string;
+}
+
+export interface WorkspaceMember {
+  id: string;
+  email: string;
+  display_name: string;
+  role: MemberRole;
+  created_at: string;
+}
+
+export interface WorkspaceInvite {
+  id: string;
+  email: string;
+  role: MemberRole;
+  created_at: string;
+  expires_at: string;
+  accepted_at: string | null;
+}
+
+export interface Me {
+  id: string;
+  email: string;
+  display_name: string;
+  role: MemberRole;
+}
+
+export interface AuthStatus {
+  state: "setup" | "login" | "ok";
+  me: Me | null;
+  workspace: Workspace | null;
+}
+
+export interface InvitePeek {
+  email: string;
+  role: MemberRole;
+  workspace_name: string;
+  workspace_domain: string;
+}
+
 export interface ReadinessChecklist {
   fetched: boolean;
   distilled: boolean;
@@ -50,13 +98,14 @@ export interface ConnectorCard {
   coming_soon: boolean;
   ingest?: boolean;
   checklist?: ReadinessChecklist;
+  sync_started_at?: string | null;
 }
 
 export interface JobRow {
   id: string;
   started_at: string;
   finished_at: string | null;
-  status: "running" | "ok" | "error";
+  status: "running" | "ok" | "error" | "cancelled";
   new_count: number;
   changed_count: number;
   unchanged_count: number;

@@ -1,23 +1,50 @@
 /** Browser client for joel-api (§12.2). */
 
 import type {
+  AuthStatus,
   ConnectorCard,
   Conversation,
   Health,
+  InvitePeek,
   JobRow,
+  Me,
   Message,
   Org,
   Profile,
   ReadinessChecklist,
   Settings,
   ComposioStatus,
+  Workspace,
+  WorkspaceInvite,
+  WorkspaceMember,
 } from "./types";
 
 const API = process.env.NEXT_PUBLIC_API ?? "";
 
+function apiMessage(text: string, fallback: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return fallback;
+  try {
+    const parsed = JSON.parse(trimmed) as { detail?: unknown };
+    if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+      return parsed.detail.trim();
+    }
+    if (Array.isArray(parsed.detail) && parsed.detail[0]) {
+      const first = parsed.detail[0] as { msg?: string };
+      if (typeof first.msg === "string" && first.msg.trim()) {
+        return first.msg.trim();
+      }
+    }
+  } catch {
+    /* not JSON */
+  }
+  return trimmed;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API}${path}`, {
     ...init,
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...(init?.headers ?? {}),
@@ -26,7 +53,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || `${res.status} ${res.statusText}`);
+    throw new Error(apiMessage(text, `${res.status} ${res.statusText}`));
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
@@ -42,11 +69,92 @@ export async function getOrg(): Promise<OrgResponse> {
   return api("/api/org");
 }
 
-export async function createOrg(domain: string): Promise<Org> {
-  return api("/api/org", {
+export async function getAuthStatus(): Promise<AuthStatus> {
+  return api("/api/auth/status");
+}
+
+export async function setupWorkspace(input: {
+  email: string;
+  password: string;
+  display_name?: string;
+  domain?: string;
+}): Promise<AuthStatus> {
+  return api("/api/auth/setup", {
     method: "POST",
-    body: JSON.stringify({ domain }),
+    body: JSON.stringify(input),
   });
+}
+
+export async function login(email: string, password: string): Promise<AuthStatus> {
+  return api("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export async function logout(): Promise<void> {
+  await api("/api/auth/logout", { method: "POST" });
+}
+
+export async function peekInvite(token: string): Promise<InvitePeek> {
+  return api(`/api/auth/invite/${encodeURIComponent(token)}`);
+}
+
+export async function acceptInvite(
+  token: string,
+  input: { password: string; display_name?: string },
+): Promise<AuthStatus> {
+  return api(`/api/auth/invite/${encodeURIComponent(token)}/accept`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function getWorkspace(): Promise<{
+  workspace: Workspace;
+  me: Me;
+  members: WorkspaceMember[];
+  invites: WorkspaceInvite[];
+}> {
+  return api("/api/workspace");
+}
+
+export async function patchWorkspace(body: {
+  domain?: string;
+  name?: string;
+}): Promise<{ workspace: Workspace }> {
+  return api("/api/workspace", {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+export async function createInvite(input: {
+  email: string;
+  role: "admin" | "member";
+}): Promise<{ invite_id: string; token: string; invites: WorkspaceInvite[] }> {
+  return api("/api/workspace/invites", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function revokeInvite(inviteId: string): Promise<void> {
+  await api(`/api/workspace/invites/${inviteId}`, { method: "DELETE" });
+}
+
+export async function setMemberRole(
+  userId: string,
+  role: "admin" | "member",
+): Promise<void> {
+  await api(`/api/workspace/members/${userId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ role }),
+  });
+}
+
+export async function removeMember(userId: string): Promise<void> {
+  await api(`/api/workspace/members/${userId}`, { method: "DELETE" });
 }
 
 export async function wipeOrg(domain: string): Promise<void> {
@@ -66,6 +174,10 @@ export async function disconnectConnector(id: string): Promise<void> {
 
 export async function syncConnector(id: string): Promise<{ job_id: string }> {
   return api(`/api/connectors/${id}/sync`, { method: "POST" });
+}
+
+export async function cancelConnector(id: string): Promise<void> {
+  await api(`/api/connectors/${id}/cancel`, { method: "POST" });
 }
 
 export async function patchConnector(
@@ -111,7 +223,7 @@ export async function setComposioKey(
 
 export async function connectComposioToolkit(input: {
   toolkit: string;
-  returnTo: "connectors" | "onboarding";
+  returnTo: "integrations" | "onboarding" | "connectors";
   lookbackDays?: number;
 }): Promise<{ redirect_url: string }> {
   return api("/api/composio/connect", {
@@ -199,13 +311,14 @@ export async function askStream(
 ): Promise<void> {
   const res = await fetch(`${API}/api/ask`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ conversation_id: conversationId, question }),
     signal,
   });
   if (!res.ok || !res.body) {
     const text = await res.text();
-    throw new Error(text || `ask failed: ${res.status}`);
+    throw new Error(apiMessage(text, `ask failed: ${res.status}`));
   }
 
   const reader = res.body.getReader();

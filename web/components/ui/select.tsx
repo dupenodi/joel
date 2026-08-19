@@ -1,5 +1,4 @@
 import { cn } from "@/lib/utils";
-import { ChevronDown } from "lucide-react";
 import { forwardRef, type SelectHTMLAttributes } from "react";
 
 export const Select = forwardRef<
@@ -18,18 +17,26 @@ export const Select = forwardRef<
           ariaInvalid === true || ariaInvalid === "true" ? "true" : undefined
         }
         className={cn(
-          "w-full appearance-none rounded-[var(--radius-sm)] border border-[var(--line)] bg-[var(--inset)] px-3.5 py-2.5 pr-9 text-[15px] text-ink outline-none transition-[border-color,background,box-shadow] focus:border-[var(--line-strong)] focus:bg-surface focus:shadow-[var(--shadow-sm)] disabled:cursor-not-allowed disabled:opacity-50 data-[invalid=true]:border-accent data-[invalid=true]:bg-[var(--accent-soft)] data-[invalid=true]:focus:border-accent",
+          "h-9 w-full appearance-none rounded-control bg-field px-2.5 pr-8 text-[14px] text-ink shadow-hairline outline-none transition-colors duration-150 hover:bg-hover focus:bg-surface focus:shadow-btn disabled:cursor-not-allowed disabled:opacity-50",
           className,
         )}
         {...props}
       >
         {children}
       </select>
-      <ChevronDown
-        size={14}
+      <svg
+        width="12"
+        height="12"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
         aria-hidden="true"
-        className="pointer-events-none absolute top-1/2 right-3.5 -translate-y-1/2 text-muted"
-      />
+        className="pointer-events-none absolute top-1/2 right-2.5 -translate-y-1/2 text-ink-3"
+      >
+        <path d="M6 9l6 6 6-6" />
+      </svg>
     </div>
   );
 });
