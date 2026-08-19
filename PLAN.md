@@ -2082,8 +2082,8 @@ All five are now regression-covered live (repeated real `/api/ask` calls against
 **9.3 Connectors page** (`/integrations`)
 - [x] status, last sync and **next sync** are visible and correct — verified live: real per-provider cards show `Syncing`/`Connected`/`Not connected`, doc counts, "Xm ago", and a live in-progress duration counter for a mid-sync Gmail connector
 - [x] 👁 backfill progress updates live — a live progress indicator was visible for the mid-sync connector; not watched frame-by-frame across a full sync
-- [ ] a real error renders verbatim on the card with Retry — no card was in an error state during this pass to check against
-- [ ] `needs_reauth` shows Reconnect and reconnecting resumes from the stored cursor — same; also there is no cursor to resume from (§6's accepted design), so "resumes from the stored cursor" doesn't apply as literally written
+- [x] a real error renders verbatim on the card with a retry path — confirmed by code, 2026-08-20 (no card happened to be in an error state to screenshot): `integration-tile.tsx` renders `attention={card?.error ?? null}` verbatim in red; `integration-modal.tsx` offers a `"Sync now"` action for any `connected` card regardless of status, which is the manual retry — and per CP8, an errored connector now also retries itself automatically on the backoff ladder without that click
+- [x] `needs_reauth` shows Reconnect — confirmed by code: `integration-modal.tsx`'s primary action becomes `Reconnect {name}` whenever `card.status === "needs_reauth"`. "resumes from the stored cursor" doesn't apply as literally written — there is no cursor (§6's accepted lookback-refetch design instead) — but a reconnect does clear `needs_reauth` back to schedulable, unverified live this pass (would need a real expired token)
 
 **9.4 Chat**
 - [x] a real question answers with working citation links — verified live: a live GitHub PR citation linked to the real `github.com/.../pull/1` URL
