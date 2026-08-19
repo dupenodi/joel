@@ -188,10 +188,16 @@ class SlackClient:
         channel_id: str,
         *,
         oldest: str | None = None,
+        latest: str | None = None,
     ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"channel": channel_id}
         if oldest:
             params["oldest"] = oldest
+        if latest:
+            # §11.3 deep backfill: bounds the window from ABOVE too, so a
+            # backward walk fetches [oldest, latest) one page at a time
+            # instead of re-fetching everything back to `oldest` every call.
+            params["latest"] = latest
         messages: list[dict[str, Any]] = []
         for page in self.pages("conversations.history", "messages", **params):
             messages.extend(page)
@@ -233,6 +239,7 @@ def fetch_slack_docs(
     token: str = "",
     *,
     oldest: str | None = None,
+    latest: str | None = None,
     channel_ids: list[str] | None = None,
     session: requests.Session | None = None,
     caller: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
@@ -257,7 +264,7 @@ def fetch_slack_docs(
             continue
         channel_name = str(channel.get("name") or channel_id)
         try:
-            roots = client.messages(channel_id, oldest=oldest)
+            roots = client.messages(channel_id, oldest=oldest, latest=latest)
         except SlackAPIError as exc:
             if exc.error in {"not_in_channel", "channel_not_found", "is_archived"}:
                 continue
@@ -378,6 +385,25 @@ def fetch_slack_channel_latest(
     return adapt_many(SLACK, raw_by_key.values())
 
 
+def slack_channels_floor(
+    token: str = "",
+    *,
+    channel_ids: list[str] | None = None,
+    session: requests.Session | None = None,
+    caller: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+) -> float | None:
+    """§11.3's provider-reported "true beginning": a channel cannot have a
+    message older than the channel itself, so the earliest `created` among
+    the selected channels is a safe, cheap floor for the deep-backfill
+    walk -- once the cursor reaches it, every selected channel's full
+    history is covered, no page-by-page "is this really the end" guessing
+    needed."""
+    client = SlackClient(token, session=session, caller=caller)
+    channels = client.channels(channel_ids=channel_ids)
+    created = [float(c["created"]) for c in channels if c.get("created")]
+    return min(created) if created else None
+
+
 __all__ = [
     "SlackAPIError",
     "SlackClient",
@@ -385,4 +411,5 @@ __all__ = [
     "channel_kind",
     "fetch_slack_docs",
     "fetch_slack_channel_latest",
+    "slack_channels_floor",
 ]

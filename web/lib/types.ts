@@ -91,6 +91,7 @@ export interface ConnectorCard {
   next_sync_at: string | null;
   backfill_done: boolean;
   backfill_progress: number | null;
+  backfill_cursor?: string | null;
   error: string | null;
   interval_min: number;
   lookback_days?: number;

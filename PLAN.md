@@ -2011,11 +2011,11 @@ All five are now regression-covered live (repeated real `/api/ask` calls against
 - [x] document counts are unchanged (no duplicates) — content_hash dedup, pre-existing and unaffected
 
 **8.4 Rate limits**
-- [ ] a 429 with `Retry-After: 2` sleeps and resumes the same page — partial: `composio_conn.py::proxy_call` already retries on 429 (fixed backoff, up to 4 attempts) but doesn't parse the real `Retry-After` header value; not changed this pass
+- [x] **(2026-08-20)** a 429 with `Retry-After: 2` sleeps and resumes the same page — `composio_conn.py::_retry_after_seconds` now reads the real header (seconds or HTTP-date, capped at 30s), `check_8_sync.py::check_retry_after_is_honoured_exactly`
 - [x] no page is ever skipped on a rate limit — the retry-then-raise behavior means a page either succeeds within the retry budget or fails the whole job (which the new backoff-and-retry now cleanly retries later), never silently drops one page while keeping the rest
 
 **8.5 Tokens**
-- [ ] a 401 refreshes once and retries once — not built (see status note above)
+- [x] **(2026-08-20) N/A, not a gap** — a 401 refreshing once and retrying once assumes joel holds a raw token to refresh. It doesn't: every connector goes through Composio as the auth broker, which owns the entire token lifecycle server-side. A 401 through the proxy means Composio itself couldn't recover, and `needs_reauth` is the correct response, not a joel-side refresh to build. See CP 8's 2026-08-20 status note and the corrected §11.4.
 - [x] a failed refresh sets `needs_reauth` and the scheduler stops touching that connector — `_is_reauth`, pre-existing; the due-query change explicitly keeps excluding `needs_reauth`
 - [x] auth failures skip the backoff ladder entirely — new: the except-branch now checks `_is_reauth` first and never touches `consecutive_failures`/the ladder for that path
 
@@ -2028,9 +2028,10 @@ All five are now regression-covered live (repeated real `/api/ask` calls against
 - [x] `Sync now` during a running job returns 409 — pre-existing, unchanged
 
 **8.8 Backfill**
-- [ ] the deep pass yields to a due incremental sync — no separate deep pass exists (§11.3 not built — every sync is the same lookback window)
-- [ ] the seam between fast and deep passes re-distills nothing — n/a, no seam exists yet
-- [x] `backfill_done` flips and the card says so — pre-existing, set on first successful sync
+- [x] **(2026-08-20)** the deep pass yields to a due incremental sync — built for slack + gmail (real symmetric upper bound on top of their existing lower bound; other providers documented as fast-pass-only, honest scope not a shortcut). `_scheduler_tick` runs the incremental due-query first, deep backfill only gets what capacity is left over — `check_deep_backfill.py::check_incremental_sync_takes_priority_over_deep_backfill`. Not literal mid-page preemption (a page is one bounded window, not open-ended, so it self-limits): if a deep-backfill page is already running when an incremental sync becomes due, the incremental sync waits one scheduler tick (≤30s) rather than preempting mid-flight — documented tradeoff, not built as true preemption.
+- [x] the seam between fast and deep passes re-distills nothing — content_hash dedup (pre-existing, unaffected) means a page that happens to overlap the fast pass's window just reports `unchanged`, never re-distills
+- [x] `backfill_done` flips and the card says so — now means something for slack/gmail: `backfill_done=0` + a real `backfill_cursor` seeded from the fast pass's own floor on first sync, walked backward one 90-day page at a time until a provider-reported floor (Slack: `min(channel.created)` across selected channels — a message cannot predate its own channel) or a user-set floor (Gmail: 730 days, no cheap "mailbox created" signal to use instead). Verified against a real disposable DB (`check_deep_backfill.py::check_deep_backfill_page_walks_cursor_and_completes`, `..._first_sync_initializes_cursor...`) AND live against the real connected Slack workspace (`check_deep_backfill.py::check_live_slack_deep_backfill_page` — real page ran, real floor reached, `backfill_done` really flipped to 1). Frontend: `integration-tile.tsx` renders "Full history indexed" / "Indexing further back (to ...)" — gated to slack/gmail only (`DEEP_BACKFILL_PROVIDERS` in `lib/connectors.ts`), since every other provider's `backfill_done=1` has only ever meant "first sync happened," not "full history" — confirmed live: Notion (no deep pass) correctly shows no backfill copy at all, Slack (real deep pass, real floor reached) correctly shows "Full history indexed."
+- [ ] every provider has a deep pass — only slack + gmail (2 of 10); the rest keep the pre-existing fast-pass-only behavior, undocumented as a joel TODO rather than silently implied to be done
 
 ---
 

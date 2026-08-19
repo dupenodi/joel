@@ -12,6 +12,13 @@ export function isSyncing(status: ConnectorStatus | undefined | null): boolean {
   return status != null && SYNCING_STATUSES.has(status);
 }
 
+/** §11.3: providers with a real backward-walking deep-backfill pass, kept
+ * in sync with `DEEP_BACKFILL_PROVIDERS` in api/joel/app.py. Every other
+ * provider's `backfill_done` is `true` the moment its first (and only)
+ * sync completes -- true but not "full history," so the UI must not claim
+ * that for them. */
+export const DEEP_BACKFILL_PROVIDERS: ReadonlySet<string> = new Set(["slack", "gmail"]);
+
 /** Pipeline stages collapse to one user-facing state. */
 export function surfaceStatus(status: ConnectorStatus): ConnectorStatus {
   return isSyncing(status) ? "syncing" : status;

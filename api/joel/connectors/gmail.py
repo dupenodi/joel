@@ -108,6 +108,7 @@ class GmailClient:
 def fetch_gmail_docs(
     *,
     after: datetime,
+    before: datetime | None = None,
     request: RequestFn,
 ) -> list[CanonicalDoc]:
     client = GmailClient(request)
@@ -115,6 +116,12 @@ def fetch_gmail_docs(
     mailbox = str(profile.get("emailAddress") or "me")
     after_day = after.astimezone(timezone.utc).strftime("%Y/%m/%d")
     query = f"-in:spam -in:trash after:{after_day}"
+    if before is not None:
+        # §11.3 deep backfill: bounds the window from ABOVE too, so a
+        # backward walk fetches [after, before) one page at a time instead
+        # of re-fetching everything back to `after` on every call.
+        before_day = before.astimezone(timezone.utc).strftime("%Y/%m/%d")
+        query += f" before:{before_day}"
 
     stubs: list[dict[str, Any]] = []
     page_token: str | None = None

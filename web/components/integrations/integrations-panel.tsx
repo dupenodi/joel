@@ -25,7 +25,7 @@ import {
 import type { ComposioStatus, ConnectorCard, JobRow } from "@/lib/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { IntegrationGridSkeleton } from "@/components/skeletons";
-import { isSyncing } from "@/lib/connectors";
+import { DEEP_BACKFILL_PROVIDERS, isSyncing } from "@/lib/connectors";
 
 const ACTIVE = new Set(["ACTIVE", "SUCCESS", "CONNECTED"]);
 const OPEN_KEY = "joel:open-integration";
@@ -355,6 +355,8 @@ export function IntegrationsPanel({
                 docCount={card?.doc_count}
                 lastSyncAt={card?.last_sync_at}
                 syncStartedAt={card?.sync_started_at}
+                backfillDone={DEEP_BACKFILL_PROVIDERS.has(def.id) ? (card?.backfill_done ?? false) : false}
+                backfillCursor={DEEP_BACKFILL_PROVIDERS.has(def.id) ? (card?.backfill_cursor ?? null) : null}
                 onClick={() => setOpenId(def.id)}
               />
             );

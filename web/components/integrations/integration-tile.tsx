@@ -16,6 +16,8 @@ export function IntegrationTile({
   docCount,
   lastSyncAt,
   syncStartedAt,
+  backfillDone,
+  backfillCursor,
   onClick,
 }: {
   name: string;
@@ -27,6 +29,8 @@ export function IntegrationTile({
   docCount?: number;
   lastSyncAt?: string | null;
   syncStartedAt?: string | null;
+  backfillDone?: boolean;
+  backfillCursor?: string | null;
   onClick: () => void;
 }) {
   const connected = status !== "pending_auth" && status !== "coming_soon";
@@ -69,10 +73,24 @@ export function IntegrationTile({
       ) : attention ? (
         <p className="mt-1 line-clamp-2 text-[12.5px] text-red">{attention}</p>
       ) : connected && docCount != null ? (
-        <p className="mt-1 text-[12.5px] text-ink-3">
-          {docCount} docs
-          {lastSyncAt ? ` · ${formatRelative(lastSyncAt)}` : ""}
-        </p>
+        <>
+          <p className="mt-1 text-[12.5px] text-ink-3">
+            {docCount} docs
+            {lastSyncAt ? ` · ${formatRelative(lastSyncAt)}` : ""}
+          </p>
+          {/* §11.3: the deep-backfill pass's own visible progress — a
+              connector reads "ready" the moment the fast pass finishes,
+              this is the separate, slower walk to full history. */}
+          {backfillDone ? (
+            <p className="mt-0.5 text-[11.5px] text-ink-3">Full history indexed</p>
+          ) : (
+            backfillCursor && (
+              <p className="mt-0.5 text-[11.5px] text-ink-3">
+                Indexing further back (to {formatRelative(backfillCursor)})
+              </p>
+            )
+          )}
+        </>
       ) : (
         <p className="mt-1 text-[12.5px] text-ink-3">
           {comingSoon ? "Coming soon" : "Not connected"}

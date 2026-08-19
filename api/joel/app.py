@@ -91,7 +91,12 @@ from joel.connectors.fireflies import fetch_fireflies_docs
 from joel.connectors.jira import fetch_jira_docs
 from joel.connectors.gmail import GmailAPIError, fetch_gmail_docs
 from joel.connectors.github import GITHUB_ACCEPT, GitHubAPIError, fetch_github_docs
-from joel.connectors.slack import SlackAPIError, SlackClient, fetch_slack_docs
+from joel.connectors.slack import (
+    SlackAPIError,
+    SlackClient,
+    fetch_slack_docs,
+    slack_channels_floor,
+)
 from joel.config import Settings
 from joel.hydra import Hydra
 from joel.live_index import LiveIndex
@@ -672,6 +677,33 @@ def _scheduler_tick() -> None:
         except Exception:
             continue
 
+    # §11.3: deep backfill only ever runs with capacity left over after
+    # every due incremental sync above has started -- "yields immediately
+    # when [an incremental sync] becomes due" is enforced structurally by
+    # ordering (incremental first, this second) plus jobs' own
+    # one-running-job-per-connection guard, not by preempting a page
+    # mid-flight. `len(rows)` over-counts slightly when a start above
+    # failed/was skipped; that just leaves a little capacity unused for
+    # one tick, self-correcting on the next one.
+    deep_capacity = capacity - len(rows)
+    if deep_capacity <= 0:
+        return
+    with db() as conn:
+        placeholders = ",".join("?" * len(DEEP_BACKFILL_PROVIDERS))
+        deep_rows = conn.execute(
+            f"""SELECT id, provider FROM connections
+                WHERE paused=0 AND status='ready' AND backfill_done=0
+                  AND backfill_cursor IS NOT NULL AND provider IN ({placeholders})
+                  AND id NOT IN (SELECT connection_id FROM jobs WHERE status='running')
+                LIMIT ?""",
+            (*DEEP_BACKFILL_PROVIDERS, deep_capacity),
+        ).fetchall()
+    for row in deep_rows:
+        try:
+            _start_deep_backfill(row["id"], provider=str(row["provider"]))
+        except Exception:
+            continue
+
 
 @app.on_event("startup")
 def _startup() -> None:
@@ -707,6 +739,7 @@ def _row_connector(r: sqlite3.Row) -> dict[str, Any]:
         "next_sync_at": r["next_sync_at"],
         "backfill_done": bool(r["backfill_done"]),
         "backfill_progress": r["backfill_progress"],
+        "backfill_cursor": r["backfill_cursor"] if "backfill_cursor" in r.keys() else None,
         "error": r["error"],
         "interval_min": r["interval_min"],
         "lookback_days": r["lookback_days"] if "lookback_days" in r.keys() else 30,
@@ -792,6 +825,66 @@ def _fetch_provider_docs(
     raise RuntimeError(f"Ingest for {provider} isn’t shipped yet")
 
 
+# §11.3 progressive deep backfill: the fast pass above gets a connector
+# ready in minutes on a fixed lookback window; this is the second,
+# backward-walking pass that eventually reaches the account's true
+# beginning. Built for slack and gmail today -- both have a natural
+# symmetric upper bound (`latest`/`before:`) on top of their existing
+# lower bound. The other providers stay on the fast-pass-only behavior
+# that already shipped (honest scope, not a shortcut: PLAN.md documents
+# which providers have the deep pass and which don't, same as CP10's "2 of
+# 4 live-lookup ops implemented").
+DEEP_BACKFILL_PROVIDERS = {"slack", "gmail"}
+DEEP_BACKFILL_PAGE_DAYS = 90
+# Gmail has no cheap "mailbox creation date" signal the way a Slack
+# channel's own `created` field gives one -- so it gets a user-set floor
+# per §11.3's own wording ("...or a user-set floor") instead of a true
+# provider-reported beginning.
+DEEP_BACKFILL_GMAIL_FLOOR_DAYS = 730
+
+
+def _deep_backfill_floor(
+    provider: str, credentials: dict[str, Any], settings: dict[str, str], row: sqlite3.Row | None
+) -> datetime:
+    if provider == "slack":
+        channel_ids = _channel_ids(row) if row is not None else []
+        floor_ts = slack_channels_floor(
+            _slack_token(credentials), channel_ids=channel_ids, caller=_slack_caller(credentials, settings)
+        )
+        if floor_ts is not None:
+            return datetime.fromtimestamp(floor_ts, timezone.utc)
+    return datetime.now(timezone.utc) - timedelta(days=DEEP_BACKFILL_GMAIL_FLOOR_DAYS)
+
+
+def _fetch_provider_docs_deep(
+    provider: str,
+    credentials: dict[str, Any],
+    settings: dict[str, str],
+    row: sqlite3.Row | None,
+    *,
+    since: datetime,
+    until: datetime,
+) -> list[CanonicalDoc]:
+    if provider == "slack":
+        channel_ids = _channel_ids(row) if row is not None else []
+        if not channel_ids:
+            return []
+        return fetch_slack_docs(
+            _slack_token(credentials),
+            oldest=str(since.timestamp()),
+            latest=str(until.timestamp()),
+            channel_ids=channel_ids,
+            caller=_slack_caller(credentials, settings),
+        ).docs
+    if provider == "gmail":
+        return fetch_gmail_docs(
+            after=since,
+            before=until,
+            request=_provider_request(credentials, settings, GmailAPIError),
+        )
+    raise RuntimeError(f"Deep backfill for {provider} isn't implemented yet")
+
+
 def _job_running(job_id: str) -> bool:
     with db() as conn:
         row = conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -810,6 +903,7 @@ def _run_ingest(
                 "SELECT lookback_days, channel_ids_json FROM connections WHERE id=?",
                 (connection_id,),
             ).fetchone()
+        lookback_days = int(row["lookback_days"] or 30) if row is not None else 30
         docs = _fetch_provider_docs(provider, credentials, settings, row)
         if provider == "slack":
             try:
@@ -926,15 +1020,36 @@ def _run_ingest(
             interval = conn.execute(
                 "SELECT interval_min FROM connections WHERE id=?", (connection_id,)
             ).fetchone()["interval_min"]
+            # §11.3: a provider with a real deep-backfill pass starts that
+            # pass fresh (backfill_done=0, cursor = the fast pass's own
+            # floor) the first time it goes ready, instead of the old
+            # unconditional backfill_done=1 that made the field mean
+            # nothing more than "first sync happened." Every other
+            # provider, and every non-first sync of a deep-backfill
+            # provider, leaves both columns untouched -- the deep-backfill
+            # job (if any) owns them from here on, not the incremental
+            # sync path.
+            if first_sync and provider in DEEP_BACKFILL_PROVIDERS:
+                backfill_clause = "backfill_done=0, backfill_progress=NULL, backfill_cursor=?,"
+                backfill_params: tuple[Any, ...] = (
+                    (datetime.now(timezone.utc) - timedelta(days=lookback_days)).isoformat(),
+                )
+            elif first_sync:
+                backfill_clause = "backfill_done=1, backfill_progress=NULL,"
+                backfill_params = ()
+            else:
+                backfill_clause = "backfill_progress=NULL,"
+                backfill_params = ()
             conn.execute(
-                """UPDATE connections SET status='ready', last_sync_at=?,
-                   next_sync_at=?, backfill_done=1, backfill_progress=NULL,
+                f"""UPDATE connections SET status='ready', last_sync_at=?,
+                   next_sync_at=?, {backfill_clause}
                    error=NULL, consecutive_failures=0 WHERE id=?""",
                 (
                     finished,
                     datetime.fromtimestamp(
                         time.time() + interval * 60, timezone.utc
                     ).isoformat(),
+                    *backfill_params,
                     connection_id,
                 ),
             )
@@ -1020,6 +1135,119 @@ def _start_ingest(connection_id: str, *, first_sync: bool, provider: str) -> str
         name=f"sync-{connection_id}",
     )
     _ready_timers[connection_id] = thread
+    thread.start()
+    return job_id
+
+
+def _run_deep_backfill_page(connection_id: str, job_id: str, *, provider: str) -> None:
+    """§11.3: one bounded, backward-walking page beyond the fast pass's
+    lookback window. Never touches `connections.status` -- the connector
+    stays `ready` throughout, this is a background enhancement, not a
+    foreground state. A failure here never flips the connector to
+    'error'/'needs_reauth' either (that's the incremental sync path's
+    retry ladder, §11.2) -- the next scheduler tick just retries the same
+    window."""
+    started = time.monotonic()
+    try:
+        with db() as conn:
+            credentials = _credential(conn, connection_id)
+            settings = _settings_map(conn)
+            row = conn.execute(
+                "SELECT backfill_cursor, channel_ids_json FROM connections WHERE id=?",
+                (connection_id,),
+            ).fetchone()
+        if row is None or not row["backfill_cursor"]:
+            with db() as conn:
+                conn.execute(
+                    "UPDATE jobs SET finished_at=?, status='ok', duration_ms=? WHERE id=?",
+                    (_now(), int((time.monotonic() - started) * 1000), job_id),
+                )
+            return
+        until = datetime.fromisoformat(row["backfill_cursor"])
+        floor = _deep_backfill_floor(provider, credentials, settings, row)
+        since = max(until - timedelta(days=DEEP_BACKFILL_PAGE_DAYS), floor)
+        docs = _fetch_provider_docs_deep(provider, credentials, settings, row, since=since, until=until)
+        if not _job_running(job_id):
+            return
+        with db() as conn:
+            counts, dirty_docs = _persist_canonical_docs(conn, docs)
+
+        pipeline_error: str | None = None
+        try:
+            if dirty_docs:
+                rt = _runtime()
+                llm_call = (
+                    make_openrouter_caller(settings) if settings.get("llm_api_key") else None
+                )
+                with db() as conn:
+                    pipeline_report = run_store_pipeline(
+                        conn, rt["live_index"], rt["hydra_store"], _embed_fn, llm_call, dirty_docs,
+                        data_dir=DATA_DIR,
+                    )
+                errors = [*pipeline_report.distill_errors, *pipeline_report.ontology.extract_errors]
+                if errors:
+                    pipeline_error = "; ".join(errors[:3])
+        except Exception as exc:
+            pipeline_error = str(exc)
+
+        if not _job_running(job_id):
+            return
+        finished = _now()
+        done = since <= floor
+        with db() as conn:
+            conn.execute(
+                """UPDATE connections SET backfill_done=?, backfill_cursor=?,
+                   doc_count=(SELECT COUNT(*) FROM docs WHERE source_type=? AND forgotten=0)
+                   WHERE id=?""",
+                (1 if done else 0, None if done else since.isoformat(), provider, connection_id),
+            )
+            conn.execute(
+                """UPDATE jobs SET finished_at=?, status='ok', new_count=?,
+                   changed_count=?, unchanged_count=?, duration_ms=?, error=?
+                   WHERE id=?""",
+                (
+                    finished,
+                    counts["new"],
+                    counts["changed"],
+                    counts["unchanged"],
+                    int((time.monotonic() - started) * 1000),
+                    pipeline_error,
+                    job_id,
+                ),
+            )
+    except Exception as exc:
+        if not _job_running(job_id):
+            return
+        with db() as conn:
+            conn.execute(
+                """UPDATE jobs SET finished_at=?, status='error', duration_ms=?,
+                   error=? WHERE id=?""",
+                (_now(), int((time.monotonic() - started) * 1000), str(exc), job_id),
+            )
+
+
+def _start_deep_backfill(connection_id: str, *, provider: str) -> str:
+    job_id = f"job_{uuid.uuid4().hex[:10]}"
+    with db() as conn:
+        running = conn.execute(
+            "SELECT id FROM jobs WHERE connection_id=? AND status='running'",
+            (connection_id,),
+        ).fetchone()
+        if running:
+            raise HTTPException(409, "Job already running")
+        conn.execute(
+            """INSERT INTO jobs(id, connection_id, started_at, status,
+               new_count, changed_count, unchanged_count)
+               VALUES (?,?,?,'running',0,0,0)""",
+            (job_id, connection_id, _now()),
+        )
+    thread = threading.Thread(
+        target=_run_deep_backfill_page,
+        args=(connection_id, job_id),
+        kwargs={"provider": provider},
+        daemon=True,
+        name=f"deep-backfill-{connection_id}",
+    )
     thread.start()
     return job_id
 
