@@ -5,6 +5,28 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Callable, Sequence
+from datetime import datetime, timedelta, timezone
+
+# §11.2's ladder: 1m -> 5m -> 15m -> 1h -> 6h, capped. Index 0 is the delay
+# after the FIRST failure (consecutive_failures==1); every failure past the
+# ladder's length repeats the last (longest) rung rather than growing
+# unbounded.
+BACKOFF_LADDER_SECONDS = (60, 300, 900, 3600, 21600)
+
+
+def backoff_seconds(consecutive_failures: int) -> int:
+    """Seconds to wait before the next retry after `consecutive_failures`
+    failures in a row. `consecutive_failures` is expected to already
+    include the failure that just happened (i.e. call this AFTER
+    incrementing the counter, not before)."""
+    if consecutive_failures <= 0:
+        return 0
+    index = min(consecutive_failures - 1, len(BACKOFF_LADDER_SECONDS) - 1)
+    return BACKOFF_LADDER_SECONDS[index]
+
+
+def next_retry_at(now: datetime, consecutive_failures: int) -> str:
+    return (now + timedelta(seconds=backoff_seconds(consecutive_failures))).isoformat()
 
 
 def ingest_is_schedulable(
@@ -80,4 +102,11 @@ def release_running_jobs(
     return len(rows)
 
 
-__all__ = ["ingest_is_schedulable", "release_running_jobs", "start_scheduler"]
+__all__ = [
+    "ingest_is_schedulable",
+    "release_running_jobs",
+    "start_scheduler",
+    "backoff_seconds",
+    "next_retry_at",
+    "BACKOFF_LADDER_SECONDS",
+]

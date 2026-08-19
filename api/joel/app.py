@@ -72,7 +72,12 @@ from joel.connectors.oauth import (
     encrypt_credentials,
     validate_return_to,
 )
-from joel.syncer import ingest_is_schedulable, release_running_jobs, start_scheduler
+from joel.syncer import (
+    ingest_is_schedulable,
+    next_retry_at,
+    release_running_jobs,
+    start_scheduler,
+)
 from joel import identity
 from joel.connectors.catalog import (
     ProviderAPIError,
@@ -164,6 +169,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "llm_model_resolve": "anthropic/claude-haiku-4.5",
     "llm_model_rerank": "anthropic/claude-haiku-4.5",
     "sync_enabled": "true",
+    "sync_max_concurrent_jobs": "2",
     "sync_default_interval_min": "15",
     "history_floor": "",
     "composio_api_key": "",
@@ -629,13 +635,30 @@ def _scheduler_tick() -> None:
         settings = _settings_map(conn)
         if settings.get("sync_enabled", "true").lower() in {"0", "false", "no"}:
             return
+        try:
+            max_concurrent = max(1, int(settings.get("sync_max_concurrent_jobs", "2")))
+        except ValueError:
+            max_concurrent = 2
+        running = conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE status='running'"
+        ).fetchone()["n"]
+        capacity = max_concurrent - running
+        if capacity <= 0:
+            return
         now = _now()
+        # status IN ('ready','error'): an errored connector must come back
+        # for retry once its backoff window (§11.2) elapses via
+        # next_sync_at, not sit invisible to the scheduler forever.
+        # needs_reauth is deliberately excluded — only a reconnect flips
+        # that back to 'ready'.
         rows = conn.execute(
             """SELECT id, provider, channel_ids_json FROM connections
-               WHERE paused=0 AND status='ready'
+               WHERE paused=0 AND status IN ('ready','error')
                  AND next_sync_at IS NOT NULL AND next_sync_at<=?
-                 AND id NOT IN (SELECT connection_id FROM jobs WHERE status='running')""",
-            (now,),
+                 AND id NOT IN (SELECT connection_id FROM jobs WHERE status='running')
+               ORDER BY next_sync_at
+               LIMIT ?""",
+            (now, capacity),
         ).fetchall()
     for row in rows:
         provider = str(row["provider"])
@@ -888,7 +911,7 @@ def _run_ingest(
             conn.execute(
                 """UPDATE connections SET status='ready', last_sync_at=?,
                    next_sync_at=?, backfill_done=1, backfill_progress=NULL,
-                   error=NULL WHERE id=?""",
+                   error=NULL, consecutive_failures=0 WHERE id=?""",
                 (
                     finished,
                     datetime.fromtimestamp(
@@ -915,10 +938,31 @@ def _run_ingest(
         if not _job_running(job_id):
             return
         with db() as conn:
-            conn.execute(
-                "UPDATE connections SET status=?, error=? WHERE id=?",
-                ("needs_reauth" if _is_reauth(exc) else "error", str(exc), connection_id),
-            )
+            if _is_reauth(exc):
+                # §11.4: auth failures skip the backoff ladder entirely —
+                # retrying a revoked token on a timer helps nobody. The
+                # scheduler's due-query only ever selects 'ready'/'error',
+                # so next_sync_at is irrelevant here until reconnect resets
+                # status back to 'ready'.
+                conn.execute(
+                    "UPDATE connections SET status='needs_reauth', error=? WHERE id=?",
+                    (str(exc), connection_id),
+                )
+            else:
+                row = conn.execute(
+                    "SELECT consecutive_failures FROM connections WHERE id=?", (connection_id,)
+                ).fetchone()
+                failures = (row["consecutive_failures"] if row else 0) + 1
+                conn.execute(
+                    """UPDATE connections SET status='error', error=?,
+                       consecutive_failures=?, next_sync_at=? WHERE id=?""",
+                    (
+                        str(exc),
+                        failures,
+                        next_retry_at(datetime.now(timezone.utc), failures),
+                        connection_id,
+                    ),
+                )
             conn.execute(
                 """UPDATE jobs SET finished_at=?, status='error', duration_ms=?,
                    error=? WHERE id=?""",

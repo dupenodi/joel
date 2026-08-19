@@ -54,7 +54,7 @@ Honest snapshot of the repo, not the original v1 brief. Distillation/ontology/ag
 | Auth UX | `/setup`, `/login`, `/join?token=`. Product pages behind `AuthGate`. Cookie session; almost all `/api/*` require it. |
 | Visibility stamp | `docs.visibility`: `org` · `channel:slack:C…` · `user:gmail:…`. Derived at ingest (`joel/visibility.py`). Migration `004`. Slack needs a re-sync to stamp private channels (old extra had no `channel_kind`). Gmail restamped on migrate. |
 | Ask context | `POST /api/ask` uses the signed-in actor. Web = desk: `org` + `user:gmail:{actor.email}`. No client-supplied room. Private Slack is **not** visible on web until channel membership exists. |
-| Ingest | Ten connectors, lookback re-fetch, content_hash triage, background scheduler, zombie-job reclaim on boot. |
+| Ingest | Ten connectors, lookback re-fetch, content_hash triage, background scheduler (concurrency-capped, errored connectors retry on a backoff ladder), zombie-job reclaim on boot. |
 | Retrieval | All six lanes: VECTOR / VEC-ARTIFACTS / FTS / PHRASE / GRAPH / WHO_KNOWS, RRF, rerank, abstention. Lanes honour `allowed_stamps(ask)`. |
 | Distill / ontology / agent | Distill, ontology (extract → resolve → reconcile → graph edges, §9), follow-up rewriting, and live lookup (§13, GitHub PR/issue + Slack channel only so far) all exist and are wired into `/api/ask`. |
 | Slack bot, MCP, leasing, API keys | **Not built.** Same permissions graph will apply when they exist. |
@@ -1985,39 +1985,43 @@ All four are now regression-covered live (repeated real `/api/ask` calls against
 
 ### CP 8 — Sync engine (§11)
 
+**Status 2026-08-19 — the real gap closed: an errored connector now retries itself.** Before this pass, `_scheduler_tick`'s due-query only ever selected `status='ready'` — the instant a sync failed for any non-auth reason, the connector fell to `status='error'` and became permanently invisible to the scheduler. Nothing retried it until a human clicked Sync now; §18's own risk list names this exact failure mode ("the scheduler stops and nobody notices"). Fixed with `syncer.py::backoff_seconds`/`next_retry_at` (the 1m→5m→15m→1h→6h ladder, capped) driving a new `connections.consecutive_failures` column (migration `005_sync_backoff.sql`), and the due-query now selects `status IN ('ready','error')` — `needs_reauth` stays excluded until a reconnect. `SYNC_MAX_CONCURRENT_JOBS` (a `settings` key, `sync_max_concurrent_jobs`, like every other runtime-editable setting — not an env var) is now actually enforced by counting `jobs.status='running'` before starting new ones. Verified against a real disposable DB with `_start_ingest` mocked (`scripts/check_8_sync.py`, new) and confirmed live: the running dev server picked up the change via `--reload` and a real scheduled sync ran cleanly under it.
+
+**Deliberately not attempted this pass** (real scope, not a shortcut): proactive/reactive OAuth token refresh (401 → refresh → retry once) — no token-refresh code exists anywhere in this codebase yet for any provider; today a 401 just becomes `needs_reauth` directly, which is safe but not the full §11.4 flow. Composio proxy 429 backoff uses a fixed `1+attempt` sleep, not the literal `Retry-After` header value (Slack's own direct-client path, unused in production, does honor the real header). Progressive deep backfill (§11.3's separate backward-walking pass) doesn't exist — every sync is still the lookback-window re-fetch §6/§16.2 already documented as the accepted design instead of cursors, so "crash resume" is really "the next lookback re-fetch is idempotent via content_hash," not a literal cursor resume.
+
 **8.1 It fires**
-- [ ] a connector on a 1-minute interval runs twice with nobody watching
-- [ ] `next_run_at` is computed at job **finish**
+- [ ] 👁 a connector on a 1-minute interval runs twice with nobody watching — not run unattended for real wall-clock time this pass; structurally true from the fixed due-query + tick loop
+- [x] `next_run_at` is computed at job **finish** — true on both the success path (unchanged) and now the failure path (`next_retry_at` computed when the failure is handled, not scheduled ahead of time)
 
 **8.2 Repeat syncs are free**
-- [ ] the second run reports ~all-unchanged with **zero LLM calls**
-- [ ] job rows show new/changed/unchanged counts
+- [x] the second run reports ~all-unchanged with **zero LLM calls** — verified in the 2026-08-18 real-data pass (§16.2), unaffected by this phase
+- [x] job rows show new/changed/unchanged counts — unchanged, pre-existing
 
 **8.3 Crash resume**
-- [ ] kill the API mid-backfill, restart: the job resumes from its cursor
-- [ ] document counts are unchanged (no duplicates)
+- [ ] kill the API mid-backfill, restart: the job resumes from its cursor — **no cursor exists** (§6's accepted lookback-re-fetch design); `release_running_jobs` (pre-existing) resets a crashed job's connector to `ready`/`pending_setup` on boot, and the next tick's full lookback re-fetch is idempotent via content_hash, which is this system's actual (different) answer to the same problem
+- [x] document counts are unchanged (no duplicates) — content_hash dedup, pre-existing and unaffected
 
 **8.4 Rate limits**
-- [ ] a 429 with `Retry-After: 2` sleeps and resumes the same page
-- [ ] no page is ever skipped on a rate limit
+- [ ] a 429 with `Retry-After: 2` sleeps and resumes the same page — partial: `composio_conn.py::proxy_call` already retries on 429 (fixed backoff, up to 4 attempts) but doesn't parse the real `Retry-After` header value; not changed this pass
+- [x] no page is ever skipped on a rate limit — the retry-then-raise behavior means a page either succeeds within the retry budget or fails the whole job (which the new backoff-and-retry now cleanly retries later), never silently drops one page while keeping the rest
 
 **8.5 Tokens**
-- [ ] a 401 refreshes once and retries once
-- [ ] a failed refresh sets `needs_reauth` and the scheduler stops touching that connector
-- [ ] auth failures skip the backoff ladder entirely
+- [ ] a 401 refreshes once and retries once — not built (see status note above)
+- [x] a failed refresh sets `needs_reauth` and the scheduler stops touching that connector — `_is_reauth`, pre-existing; the due-query change explicitly keeps excluding `needs_reauth`
+- [x] auth failures skip the backoff ladder entirely — new: the except-branch now checks `_is_reauth` first and never touches `consecutive_failures`/the ladder for that path
 
 **8.6 Catch-up**
-- [ ] `next_run_at` set 7 days in the past produces **exactly one** run
+- [x] `next_run_at` set 7 days in the past produces **exactly one** run — `check_8.2`
 
 **8.7 Concurrency**
-- [ ] two connectors due at once respect `SYNC_MAX_CONCURRENT_JOBS`
-- [ ] a connector never has two jobs running at once
-- [ ] `Sync now` during a running job returns 409
+- [x] two connectors due at once respect `SYNC_MAX_CONCURRENT_JOBS` — `check_8.1a`
+- [x] a connector never has two jobs running at once — `check_8.1c`, plus the pre-existing `_start_ingest` 409 guard
+- [x] `Sync now` during a running job returns 409 — pre-existing, unchanged
 
 **8.8 Backfill**
-- [ ] the deep pass yields to a due incremental sync
-- [ ] the seam between fast and deep passes re-distills nothing
-- [ ] `backfill_done` flips and the card says so
+- [ ] the deep pass yields to a due incremental sync — no separate deep pass exists (§11.3 not built — every sync is the same lookback window)
+- [ ] the seam between fast and deep passes re-distills nothing — n/a, no seam exists yet
+- [x] `backfill_done` flips and the card says so — pre-existing, set on first successful sync
 
 ---
 
