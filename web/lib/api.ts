@@ -1,6 +1,7 @@
 /** Browser client for joel-api (§12.2). */
 
 import type {
+  ApiKey,
   AuthStatus,
   ConnectorCard,
   Conversation,
@@ -162,6 +163,21 @@ export async function wipeOrg(domain: string): Promise<void> {
     method: "POST",
     body: JSON.stringify({ domain }),
   });
+}
+
+export async function listApiKeys(): Promise<ApiKey[]> {
+  return api("/api/api-keys");
+}
+
+export async function createApiKey(label: string): Promise<{ id: string; key: string }> {
+  return api("/api/api-keys", {
+    method: "POST",
+    body: JSON.stringify({ label }),
+  });
+}
+
+export async function revokeApiKey(id: string): Promise<void> {
+  await api(`/api/api-keys/${id}`, { method: "DELETE" });
 }
 
 export async function listConnectors(): Promise<ConnectorCard[]> {

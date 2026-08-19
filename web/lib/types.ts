@@ -58,6 +58,14 @@ export interface Me {
   role: MemberRole;
 }
 
+export interface ApiKey {
+  id: string;
+  label: string;
+  last4: string;
+  created_at: string;
+  last_used_at: string | null;
+}
+
 export interface AuthStatus {
   state: "setup" | "login" | "ok";
   me: Me | null;

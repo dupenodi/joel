@@ -199,6 +199,58 @@ def actor_from_session(conn: sqlite3.Connection, session_id: str | None) -> Acto
         return None
 
 
+API_KEY_PREFIX = "joel_sk_"
+
+
+def create_api_key(conn: sqlite3.Connection, user_id: str, label: str) -> tuple[str, str]:
+    """MCP identity (§0.3's "API keys — not built"): a key maps to exactly
+    ONE person's normal Actor, so a request made with it gets that
+    person's normal permissions through the exact same AskContext/
+    allowed_stamps machinery every other surface uses -- no separate
+    privilege model to keep in sync. The raw key is returned ONCE; only
+    its hash is ever stored, same as `hash_token` already does for invite
+    tokens."""
+    key_id = _new_id("key")
+    raw = API_KEY_PREFIX + secrets.token_urlsafe(32)
+    conn.execute(
+        """INSERT INTO api_keys(id, user_id, label, key_hash, key_last4, created_at)
+           VALUES (?,?,?,?,?,?)""",
+        (key_id, user_id, label.strip() or "API key", hash_token(raw), raw[-4:], _iso(_now())),
+    )
+    return key_id, raw
+
+
+def list_api_keys(conn: sqlite3.Connection, user_id: str) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT id, label, key_last4, created_at, last_used_at FROM api_keys WHERE user_id=? ORDER BY created_at DESC",
+        (user_id,),
+    ).fetchall()
+
+
+def revoke_api_key(conn: sqlite3.Connection, user_id: str, key_id: str) -> bool:
+    cur = conn.execute("DELETE FROM api_keys WHERE id=? AND user_id=?", (key_id, user_id))
+    return cur.rowcount > 0
+
+
+def actor_from_api_key(conn: sqlite3.Connection, raw_key: str | None) -> Actor | None:
+    """Same shape as `actor_from_session`, keyed by a hashed bearer token
+    instead of a cookie -- the MCP surface's identity path (§13's third
+    tier of surfaces, alongside web and, eventually, Slack)."""
+    if not raw_key or not raw_key.startswith(API_KEY_PREFIX):
+        return None
+    row = conn.execute(
+        "SELECT user_id FROM api_keys WHERE key_hash=?", (hash_token(raw_key),)
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        actor = _actor_row(conn, row["user_id"])
+    except IdentityError:
+        return None
+    conn.execute("UPDATE api_keys SET last_used_at=? WHERE key_hash=?", (_iso(_now()), hash_token(raw_key)))
+    return actor
+
+
 def workspace_row(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM orgs WHERE id=?", (ORG_ID,)).fetchone()
 
@@ -526,9 +578,12 @@ __all__ = [
     "SESSION_DAYS",
     "accept_invite",
     "actor_dict",
+    "actor_from_api_key",
     "actor_from_session",
+    "create_api_key",
     "create_invite",
     "favicon",
+    "list_api_keys",
     "list_invites",
     "list_members",
     "login",
@@ -536,6 +591,7 @@ __all__ = [
     "normalize_domain",
     "peek_invite",
     "remove_member",
+    "revoke_api_key",
     "revoke_invite",
     "set_member_role",
     "setup",

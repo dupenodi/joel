@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 # path degrades LLM/network failures elsewhere.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
+import anyio
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
@@ -79,6 +80,7 @@ from joel.syncer import (
     start_scheduler,
 )
 from joel import identity
+from joel.mcp_server import build_mcp_app
 from joel.connectors.catalog import (
     ProviderAPIError,
     fetch_gdrive_docs,
@@ -557,6 +559,12 @@ def _is_public_path(method: str, path: str) -> bool:
         return True
     if (method, path) in _PUBLIC_EXACT:
         return True
+    if path.startswith("/mcp"):
+        # §13's MCP surface authenticates its own requests by API key
+        # (mcp_server.py's _BearerAuthASGI), never the joel_session cookie
+        # -- it must bypass this cookie-session gate entirely rather than
+        # 401ing before its own auth even runs.
+        return True
     return path.startswith("/api/auth/invite/")
 
 
@@ -632,6 +640,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _mcp_actor_resolver(raw_key: str) -> identity.Actor | None:
+    with db() as conn:
+        return identity.actor_from_api_key(conn, raw_key)
 
 _ready_timers: dict[str, threading.Thread] = {}
 _scheduler_stop: threading.Event | None = None
@@ -2270,6 +2283,68 @@ def _run_live_lookup(
     return [d.doc_id for d in live_docs], checked
 
 
+def _mcp_ask_sync(actor: identity.Actor, question: str) -> dict[str, Any]:
+    """§13's MCP surface: the same `answer_question` retrieval/synthesis
+    pipeline `/api/ask` uses, AskContext built server-side from the
+    API-key's owner exactly like the web session path. Deliberately NOT
+    (yet) wrapped in follow-up rewriting or live lookup -- each MCP call
+    is a standalone question answered from memory alone; see
+    `mcp_server.py`'s module docstring for the honest scope note."""
+    question = question.strip()
+    if not question:
+        return {"answer": "Ask a question.", "status": "absent", "citations": []}
+    with db() as conn:
+        settings_map = _settings_map(conn)
+        ask_ctx = AskContext.web(
+            actor.user_id,
+            aliases={Visibility.user("gmail", actor.email).stamp},
+            channels=member_channel_stamps(conn, actor.user_id),
+        )
+    llm_call = make_openrouter_caller(settings_map) if settings_map.get("llm_api_key") else None
+    rt = _runtime()
+    with db() as conn:
+        trace = answer_question(
+            conn, rt["live_index"], _embed_fn, llm_call, question,
+            ask=ask_ctx, hydra_store=rt["hydra_store"],
+        )
+    doc_lookup = {r.doc.id: r.doc for r in trace.reranked} or {d.id: d for d in trace.fused}
+    citations = [
+        {
+            "title": doc_lookup[doc_id].title if doc_id in doc_lookup else doc_id,
+            "url": doc_lookup[doc_id].url if doc_id in doc_lookup else None,
+        }
+        for doc_id in trace.answer.citations
+    ]
+    return {"answer": trace.answer.answer, "status": trace.answer.status, "citations": citations}
+
+
+async def _mcp_ask(actor: identity.Actor, question: str) -> dict[str, Any]:
+    return await anyio.to_thread.run_sync(_mcp_ask_sync, actor, question)
+
+
+_mcp_mount = build_mcp_app(ask_fn=_mcp_ask, actor_resolver=_mcp_actor_resolver)
+app.mount("/mcp", _mcp_mount.asgi_app)
+_mcp_session_cm = None
+
+
+@app.on_event("startup")
+async def _start_mcp_session_manager() -> None:
+    # `app.mount()` does not chain a sub-app's `lifespan` into the outer
+    # app's -- the Streamable HTTP transport's task group is never
+    # started/stopped unless something does that explicitly. This is that
+    # something, kept separate from `_startup()` above (which is sync)
+    # rather than folding MCP's async setup into it.
+    global _mcp_session_cm
+    _mcp_session_cm = _mcp_mount.run_forever()
+    await _mcp_session_cm.__aenter__()
+
+
+@app.on_event("shutdown")
+async def _stop_mcp_session_manager() -> None:
+    if _mcp_session_cm is not None:
+        await _mcp_session_cm.__aexit__(None, None, None)
+
+
 @app.post("/api/ask")
 def ask(request: Request, body: AskIn) -> StreamingResponse:
     question = body.question.strip()
@@ -2714,6 +2789,50 @@ def put_profile(body: ProfileIn, request: Request) -> dict[str, str]:
     if body.display_name is not None:
         with db() as conn:
             identity.update_display_name(conn, actor, body.display_name)
+    return {"status": "ok"}
+
+
+# ── API keys (§13's MCP surface identity) ───────────────────────────────────
+
+
+class ApiKeyIn(BaseModel):
+    label: str = "API key"
+
+
+@app.get("/api/api-keys")
+def list_api_keys(request: Request) -> list[dict[str, Any]]:
+    actor = _require_actor(request)
+    with db() as conn:
+        rows = identity.list_api_keys(conn, actor.user_id)
+    return [
+        {
+            "id": r["id"],
+            "label": r["label"],
+            "last4": r["key_last4"],
+            "created_at": r["created_at"],
+            "last_used_at": r["last_used_at"],
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/api-keys")
+def create_api_key(body: ApiKeyIn, request: Request) -> dict[str, str]:
+    """The raw key is returned exactly once, here -- only its hash is ever
+    stored (identity.py's create_api_key), same as an invite token."""
+    actor = _require_actor(request)
+    with db() as conn:
+        key_id, raw = identity.create_api_key(conn, actor.user_id, body.label)
+    return {"id": key_id, "key": raw}
+
+
+@app.delete("/api/api-keys/{key_id}")
+def delete_api_key(key_id: str, request: Request) -> dict[str, str]:
+    actor = _require_actor(request)
+    with db() as conn:
+        removed = identity.revoke_api_key(conn, actor.user_id, key_id)
+    if not removed:
+        raise HTTPException(404, "Key not found")
     return {"status": "ok"}
 
 

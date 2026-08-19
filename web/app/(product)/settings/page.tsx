@@ -1,5 +1,6 @@
 "use client";
 
+import { ApiKeysPanel } from "@/components/api-keys-panel";
 import { ContentFrame } from "@/components/app-frame";
 import { InstallPanel } from "@/components/install-panel";
 import { PageHeader } from "@/components/page-header";
@@ -15,6 +16,7 @@ export default function SettingsPage() {
         />
         <div className="space-y-8">
           <WorkspacePanel />
+          <ApiKeysPanel />
           <InstallPanel />
         </div>
       </ContentFrame>
