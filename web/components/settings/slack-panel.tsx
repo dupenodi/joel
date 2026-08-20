@@ -31,6 +31,11 @@ export function SlackPanel() {
     return `${window.location.origin}/api/slack/events`;
   }, []);
 
+  const interactionsUrl = useMemo(() => {
+    if (typeof window === "undefined") return "/api/slack/interactions";
+    return `${window.location.origin}/api/slack/interactions`;
+  }, []);
+
   const manifestUrl = useMemo(() => {
     if (typeof window === "undefined") return "/slack-app-manifest.yaml";
     return `${window.location.origin}/slack-app-manifest.yaml`;
@@ -106,6 +111,7 @@ export function SlackPanel() {
         {install === "manifest" && (
           <ManifestInstall
             eventsUrl={eventsUrl}
+            interactionsUrl={interactionsUrl}
             manifestUrl={manifestUrl}
             secret={secret}
             token={token}
@@ -264,6 +270,7 @@ function OAuthInstall({
 
 function ManifestInstall({
   eventsUrl,
+  interactionsUrl,
   manifestUrl,
   secret,
   token,
@@ -277,6 +284,7 @@ function ManifestInstall({
   onSave,
 }: {
   eventsUrl: string;
+  interactionsUrl: string;
   manifestUrl: string;
   secret: string;
   token: string;
@@ -333,6 +341,12 @@ function ManifestInstall({
               {eventsUrl}
             </code>
             <CopyButton className="ml-1.5 align-middle" text={eventsUrl} />
+            {" "}and Interactivity Request URL to{" "}
+            <code className="break-all rounded-[4px] bg-surface px-1 py-0.5 text-[12px] text-ink">
+              {interactionsUrl}
+            </code>
+            <CopyButton className="ml-1.5 align-middle" text={interactionsUrl} />
+            {" "}(both are in the manifest).
           </span>
         </li>
         <li className="flex gap-2.5">

@@ -106,7 +106,12 @@ from joel.slack_bot import (
     authenticate_slack_request,
     email_for_slack_user,
     parse_app_mention,
+    parse_connect_action,
+    parse_interaction_payload,
+    post_connect_me,
     post_reply,
+    post_response_url,
+    profile_for_slack_user,
     strip_mention,
     web_api_caller,
 )
@@ -2923,10 +2928,25 @@ def _handle_slack_mention(
     try:
         with db() as conn:
             actor = _resolve_slack_actor(conn, slack_user_id, org_id)
-            if actor is None:
-                return
             client = _slack_bot_client(conn, org_id)
             caller = _as_slack_caller(client) if client is not None else None
+            if actor is None:
+                # Pending invite → ephemeral Connect me. Unknown email → silence.
+                if caller is None:
+                    return
+                profile = profile_for_slack_user(caller, slack_user_id)
+                if not profile.email:
+                    return
+                if identity.pending_invite_for_email(conn, org_id, profile.email) is None:
+                    return
+                pub = identity.workspace_public(conn, org_id) or {}
+                post_connect_me(
+                    caller,
+                    channel=channel,
+                    slack_user_id=slack_user_id,
+                    workspace_name=str(pub.get("name") or "this workspace"),
+                )
+                return
         question = strip_mention(text, bot_user_id)
         if not question:
             return
@@ -2938,6 +2958,54 @@ def _handle_slack_mention(
             post_reply(caller, channel=channel, thread_ts=thread_ts, text=answer)
     except Exception:
         logging.getLogger(__name__).exception("slack bot mention handling failed for event %s", event_id)
+
+
+def _handle_slack_connect(action_org_id: int, slack_user_id: str, response_url: str) -> None:
+    """Consume pending invite for the Slack user's profile email."""
+    try:
+        with db() as conn:
+            client = _slack_bot_client(conn, action_org_id)
+            if client is None:
+                post_response_url(
+                    response_url, text="joel isn't connected to Slack yet. Ask an admin."
+                )
+                return
+            caller = _as_slack_caller(client)
+            profile = profile_for_slack_user(caller, slack_user_id)
+            if not profile.email:
+                post_response_url(
+                    response_url,
+                    text="Couldn't read your Slack email. Check that the app has users:read.email.",
+                )
+                return
+            try:
+                actor = identity.accept_invite_from_slack(
+                    conn,
+                    action_org_id,
+                    profile.email,
+                    display_name=profile.display_name,
+                )
+            except identity.IdentityError as err:
+                if err.status == 404:
+                    post_response_url(
+                        response_url,
+                        text="No open invite for your Slack email. Ask an admin to invite you.",
+                    )
+                else:
+                    post_response_url(response_url, text=str(err))
+                return
+            pub = identity.workspace_public(conn, action_org_id) or {}
+            name = str(pub.get("name") or "joel")
+            post_response_url(
+                response_url,
+                text=f"You're connected to {name} as {actor.email}. @joel me again to ask.",
+            )
+    except Exception:
+        logging.getLogger(__name__).exception("slack connect-me failed")
+        try:
+            post_response_url(response_url, text="Something went wrong connecting. Try again.")
+        except Exception:
+            pass
 
 
 def _org_signing_secrets(conn: sqlite3.Connection) -> list[tuple[int, str]]:
@@ -3151,6 +3219,47 @@ async def slack_events(request: Request) -> dict[str, Any]:
         ),
         daemon=True,
         name=f"slack-mention-{mention.event_id}",
+    ).start()
+    return {"ok": True}
+
+
+@app.post("/api/slack/interactions")
+async def slack_interactions(request: Request) -> dict[str, Any]:
+    """Connect me button (and future Block Kit actions). Same HMAC as events."""
+    body = await request.body()
+    timestamp = request.headers.get("x-slack-request-timestamp", "")
+    signature = request.headers.get("x-slack-signature", "")
+    with db() as conn:
+        ok, org_from_secret = authenticate_slack_request(
+            timestamp=timestamp,
+            body=body,
+            signature=signature,
+            env_signing_secret=slack_signing_secret(),
+            org_signing_secrets=_org_signing_secrets(conn),
+        )
+    if not ok:
+        raise HTTPException(401, "Invalid Slack signature")
+
+    payload = parse_interaction_payload(body)
+    if payload is None:
+        raise HTTPException(400, "Invalid Slack payload")
+
+    action = parse_connect_action(payload)
+    if action is None:
+        return {"ok": True}
+
+    verified_org_id = org_from_secret
+    if verified_org_id is None:
+        with db() as conn:
+            verified_org_id = _org_id_for_slack_team(conn, action.team_id)
+        if verified_org_id is None:
+            return {"ok": True}
+
+    threading.Thread(
+        target=_handle_slack_connect,
+        args=(verified_org_id, action.slack_user_id, action.response_url),
+        daemon=True,
+        name=f"slack-connect-{action.slack_user_id}",
     ).start()
     return {"ok": True}
 

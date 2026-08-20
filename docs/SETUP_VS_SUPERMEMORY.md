@@ -56,9 +56,9 @@ Ranked by how much it changes “a team actually turns this on,” not by agent 
 
 **SM:** Connect me in Slack → passwordless from Slack email → employee memory + starter questions from the seeded company profile → prompt to connect personal tools. Admins still use the web once.
 
-**joel:** Invite link → `/join` → name + password (or existing password). No Slack card, no passwordless Slack identity, no seeded “what does this company do?” before connectors sync, no first-run personal-tool prompt.
+**joel:** Invite link → `/join` → name + password (or existing password). **Also:** pending invite + `@joel` → ephemeral Connect me (no password). No seeded company profile yet, no first-run personal-tool prompt. Web passwordless from Slack is later.
 
-**Gap to close:** Slack identity as join (email match already exists for mentions); a first-session script (welcome + 2–3 questions) that does not depend on ingest being done.
+**Gap to close:** a first-session script (welcome + 2–3 questions) that does not depend on ingest being done. Join-from-Slack (Connect me) is shipped.
 
 ### 3. First-run is serial and empty
 
@@ -135,8 +135,8 @@ The Composio key is the sharp edge: members cannot connect Gmail until an admin 
 
 Do **not** start with sandbox debugging, long-horizon research, calendar, or “smarter answers.”
 
-1. **Slack install that a non-engineer can finish** — OAuth app, channel join approvals, bootstrap channel. Keep mention-to-answer working.
-2. **Join from Slack** — Connect-me equivalent; bind Slack email to a membership without a password form.
+1. **Slack install that a non-engineer can finish** — Hosted Add to Slack done; channel join approvals + bootstrap channel still open.
+2. **Join from Slack** — Connect me shipped (pending invite + Slack email, no password form).
 3. **First-run parallel rail** — people + Slack + tools on one screen; optional company blurb so Chat isn’t mute.
 4. **Connections page: Memory vs Live + custom MCP URL** — catalog honesty. Personal GitHub/Linear.
 5. **MCP attach story** — URL + OAuth shipped; workspace/room picker still later.

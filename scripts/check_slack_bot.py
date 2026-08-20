@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -148,7 +150,7 @@ def check_email_for_slack_user() -> None:
     def ok_caller(method: str, params: dict) -> dict:
         assert method == "users.info"
         assert params == {"user": "U123"}
-        return {"ok": True, "user": {"id": "U123", "profile": {"email": "Ada@Acme.dev"}}}
+        return {"ok": True, "user": {"id": "U123", "profile": {"email": "Ada@Acme.dev", "real_name": "Ada Lovelace"}}}
 
     assert email_for_slack_user(ok_caller, "U123") == "ada@acme.dev"
 
@@ -159,6 +161,116 @@ def check_email_for_slack_user() -> None:
     assert email_for_slack_user(missing, "U123") is None
     assert email_for_slack_user(lambda *_: {"ok": False, "error": "user_not_found"}, "U123") is None
     print("ok  sb.8: email_for_slack_user reads users.info, never guesses")
+
+
+def check_connect_me_parse_and_blocks() -> None:
+    from joel.slack_bot import (
+        CONNECT_ACTION_ID,
+        connect_me_blocks,
+        parse_connect_action,
+        parse_interaction_payload,
+        profile_for_slack_user,
+    )
+
+    blocks = connect_me_blocks(workspace_name="Acme")
+    assert any(CONNECT_ACTION_ID in json.dumps(b) for b in blocks)
+    assert "Acme" in json.dumps(blocks)
+
+    body = (
+        "payload="
+        + urllib.parse.quote(
+            json.dumps(
+                {
+                    "type": "block_actions",
+                    "user": {"id": "U9"},
+                    "channel": {"id": "C9"},
+                    "team": {"id": "T9"},
+                    "response_url": "https://hooks.slack.com/actions/T9/1/x",
+                    "actions": [{"action_id": CONNECT_ACTION_ID}],
+                }
+            )
+        )
+    ).encode()
+    payload = parse_interaction_payload(body)
+    assert payload is not None
+    action = parse_connect_action(payload)
+    assert action is not None
+    assert action.slack_user_id == "U9" and action.team_id == "T9"
+    assert parse_connect_action({"type": "block_actions", "actions": [{"action_id": "other"}]}) is None
+    assert parse_interaction_payload(b"not-form") is None
+
+    def named(method: str, params: dict) -> dict:
+        del method, params
+        return {
+            "ok": True,
+            "user": {
+                "id": "U1",
+                "name": "ada",
+                "profile": {"email": "ada@acme.dev", "real_name": "Ada"},
+            },
+        }
+
+    prof = profile_for_slack_user(named, "U1")
+    assert prof.email == "ada@acme.dev" and prof.display_name == "Ada"
+    print("ok  sb.8b: Connect me blocks + interaction parse + profile_for_slack_user")
+
+
+def check_accept_invite_from_slack() -> None:
+    import tempfile
+
+    import joel.app as app
+    import joel.identity as identity
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        app.DATA_DIR = tmp
+        app.DB_PATH = tmp / "index" / "joel.db"
+        app.init_db()
+        with app.db() as conn:
+            owner, _ = identity.setup(
+                conn,
+                email="ada@acme.dev",
+                password="secretsecret",
+                display_name="Ada",
+                domain="acme.dev",
+            )
+            app.seed_org_defaults(conn, owner.org_id)
+            assert identity.pending_invite_for_email(conn, owner.org_id, "sam@acme.dev") is None
+            identity.create_invite(conn, owner, email="sam@acme.dev")
+            assert identity.pending_invite_for_email(conn, owner.org_id, "sam@acme.dev") is not None
+
+            # Unknown email: no invite → error, no user row
+            missing = None
+            try:
+                identity.accept_invite_from_slack(conn, owner.org_id, "stranger@acme.dev")
+            except identity.IdentityError as err:
+                missing = err
+            assert missing is not None and missing.status == 404
+            assert (
+                conn.execute(
+                    "SELECT id FROM users WHERE email=?", ("stranger@acme.dev",)
+                ).fetchone()
+                is None
+            )
+
+            sam = identity.accept_invite_from_slack(
+                conn, owner.org_id, "Sam@Acme.dev", display_name="Sam"
+            )
+            assert sam.email == "sam@acme.dev" and sam.role == "member"
+            assert identity.pending_invite_for_email(conn, owner.org_id, "sam@acme.dev") is None
+
+            # Idempotent second tap
+            again = identity.accept_invite_from_slack(conn, owner.org_id, "sam@acme.dev")
+            assert again.user_id == sam.user_id
+
+            # Existing user, re-invited after remove: Slack email match, no password
+            owner_again = identity.actor_for_user(conn, owner.user_id, owner.org_id)
+            identity.remove_member(conn, owner_again, sam.user_id)
+            identity.create_invite(conn, owner_again, email="sam@acme.dev")
+            rejoined = identity.accept_invite_from_slack(conn, owner.org_id, "sam@acme.dev")
+            assert rejoined.user_id == sam.user_id
+            assert rejoined.org_id == owner.org_id
+    print("ok  sb.8c: accept_invite_from_slack joins on invite, silent on unknown, idempotent")
 
 
 def check_bot_token_without_ingest_connection() -> None:
@@ -416,6 +528,8 @@ def main() -> None:
     check_seen_events_dedupe()
     check_web_api_caller_posts_bearer_json()
     check_email_for_slack_user()
+    check_connect_me_parse_and_blocks()
+    check_accept_invite_from_slack()
     check_bot_token_without_ingest_connection()
     check_secret_setting_covers_bot_token()
     check_authenticate_slack_request_org_secret()

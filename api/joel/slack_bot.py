@@ -6,29 +6,34 @@ built server-side from the mentioning Slack user's own identity, matched
 to a workspace Actor by email -- the identical signal channel membership
 and Gmail visibility already use -- never from anything in the event
 payload itself. An unrecognized Slack user gets silence, never an
-org-wide answer.
+org-wide answer. A pending invite for that email gets an ephemeral
+Connect me card instead of silence.
 
 Slack's Events API needs a response within 3 seconds or it retries the
 same delivery; `app.py`'s route handler returns immediately and does the
 real work (which involves real LLM calls, seconds not milliseconds) on a
 background thread, deduping repeat deliveries by `event_id` so a slow
-first response can't produce two replies.
+first response can't produce two replies. Interactivity (Connect me)
+uses `/api/slack/interactions` with the same HMAC.
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import re
 import time
 from dataclasses import dataclass
 from collections.abc import Sequence
 from typing import Any, Callable
+from urllib.parse import parse_qs
 
 import requests
 
 SIGNATURE_MAX_AGE_SECONDS = 60 * 5  # Slack's own documented replay window
 SLACK_API = "https://slack.com/api"
+CONNECT_ACTION_ID = "joel_connect_me"
 _MENTION_RE = re.compile(r"^\s*<@([A-Z0-9]+)>\s*")
 
 
@@ -89,6 +94,20 @@ class MentionEvent:
     thread_ts: str | None
 
 
+@dataclass(frozen=True)
+class SlackUserProfile:
+    email: str | None
+    display_name: str
+
+
+@dataclass(frozen=True)
+class ConnectAction:
+    slack_user_id: str
+    team_id: str
+    channel_id: str
+    response_url: str
+
+
 def strip_mention(text: str, bot_user_id: str) -> str:
     """`<@BOTID> what's the refund policy?` -> `what's the refund policy?`.
     Only strips a LEADING mention of the bot itself -- a mention of
@@ -127,6 +146,84 @@ def parse_app_mention(payload: dict[str, Any]) -> MentionEvent | None:
         ts=ts,
         thread_ts=thread_ts if isinstance(thread_ts, str) else None,
     )
+
+
+def parse_interaction_payload(body: bytes) -> dict[str, Any] | None:
+    """Slack interactivity posts `application/x-www-form-urlencoded` with
+    a `payload` field. Returns None if the body isn't that shape."""
+    try:
+        form = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+    except UnicodeDecodeError:
+        return None
+    raw = form.get("payload")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw[0])
+    except (json.JSONDecodeError, TypeError, IndexError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def parse_connect_action(payload: dict[str, Any]) -> ConnectAction | None:
+    """Only the Connect me button. Anything else → None (ack and ignore)."""
+    if payload.get("type") != "block_actions":
+        return None
+    actions = payload.get("actions")
+    if not isinstance(actions, list) or not actions:
+        return None
+    first = actions[0]
+    if not isinstance(first, dict) or first.get("action_id") != CONNECT_ACTION_ID:
+        return None
+    user = payload.get("user")
+    channel = payload.get("channel")
+    team = payload.get("team")
+    response_url = payload.get("response_url")
+    if not isinstance(user, dict) or not isinstance(channel, dict):
+        return None
+    slack_user_id = user.get("id")
+    channel_id = channel.get("id")
+    team_id = team.get("id") if isinstance(team, dict) else ""
+    if not (
+        isinstance(slack_user_id, str)
+        and isinstance(channel_id, str)
+        and isinstance(response_url, str)
+        and response_url.startswith("https://")
+    ):
+        return None
+    return ConnectAction(
+        slack_user_id=slack_user_id,
+        team_id=str(team_id or ""),
+        channel_id=channel_id,
+        response_url=response_url,
+    )
+
+
+def connect_me_blocks(*, workspace_name: str) -> list[dict[str, Any]]:
+    name = (workspace_name or "this workspace").strip() or "this workspace"
+    return [
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"You're invited to *{name}* on joel. "
+                    "Connect me to answer from company memory — no password form."
+                ),
+            },
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "action_id": CONNECT_ACTION_ID,
+                    "text": {"type": "plain_text", "text": "Connect me"},
+                    "style": "primary",
+                }
+            ],
+        },
+    ]
 
 
 class SeenEvents:
@@ -185,35 +282,90 @@ def web_api_caller(
     return call
 
 
+def profile_for_slack_user(caller: SlackCaller, slack_user_id: str) -> SlackUserProfile:
+    """`users.info` → email + display name. Missing pieces stay empty;
+    never invent an email."""
+    data = caller("users.info", {"user": slack_user_id})
+    if not isinstance(data, dict) or data.get("ok") is False:
+        return SlackUserProfile(email=None, display_name="")
+    user = data.get("user")
+    if not isinstance(user, dict):
+        return SlackUserProfile(email=None, display_name="")
+    profile = user.get("profile")
+    if not isinstance(profile, dict):
+        profile = {}
+    email = str(profile.get("email") or "").strip().lower() or None
+    display = (
+        str(profile.get("real_name") or "").strip()
+        or str(profile.get("display_name") or "").strip()
+        or str(user.get("name") or "").strip()
+    )
+    return SlackUserProfile(email=email, display_name=display)
+
+
 def email_for_slack_user(caller: SlackCaller, slack_user_id: str) -> str | None:
     """Look up one Slack member's email via `users.info` (needs
     `users:read.email`). Missing/ok=false/no email → None, never a guess."""
-    data = caller("users.info", {"user": slack_user_id})
-    if not isinstance(data, dict) or data.get("ok") is False:
-        return None
-    user = data.get("user")
-    if not isinstance(user, dict):
-        return None
-    profile = user.get("profile")
-    if not isinstance(profile, dict):
-        return None
-    email = str(profile.get("email") or "").strip().lower()
-    return email or None
+    return profile_for_slack_user(caller, slack_user_id).email
 
 
 def post_reply(caller: SlackCaller, *, channel: str, thread_ts: str, text: str) -> None:
     caller("chat.postMessage", {"channel": channel, "thread_ts": thread_ts, "text": text})
 
 
+def post_connect_me(
+    caller: SlackCaller,
+    *,
+    channel: str,
+    slack_user_id: str,
+    workspace_name: str,
+) -> None:
+    """Ephemeral Connect me card — only the mentioned user sees it."""
+    blocks = connect_me_blocks(workspace_name=workspace_name)
+    caller(
+        "chat.postEphemeral",
+        {
+            "channel": channel,
+            "user": slack_user_id,
+            "text": f"Connect me to {workspace_name or 'joel'}",
+            "blocks": blocks,
+        },
+    )
+
+
+def post_response_url(
+    response_url: str,
+    *,
+    text: str,
+    http_post: Callable[..., Any] | None = None,
+) -> None:
+    """Replace the ephemeral / interactive message after Connect me."""
+    post = http_post or requests.post
+    post(
+        response_url,
+        json={"replace_original": True, "text": text},
+        timeout=20,
+    )
+
+
 __all__ = [
+    "CONNECT_ACTION_ID",
     "SIGNATURE_MAX_AGE_SECONDS",
     "SLACK_API",
+    "ConnectAction",
     "MentionEvent",
     "SeenEvents",
+    "SlackUserProfile",
     "authenticate_slack_request",
+    "connect_me_blocks",
     "email_for_slack_user",
     "parse_app_mention",
+    "parse_connect_action",
+    "parse_interaction_payload",
+    "post_connect_me",
     "post_reply",
+    "post_response_url",
+    "profile_for_slack_user",
     "strip_mention",
     "verify_signature",
     "web_api_caller",

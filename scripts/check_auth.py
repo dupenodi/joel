@@ -25,6 +25,7 @@ def main() -> None:
     assert classify("GET", "/api/mcp/oauth/pending") is Access.PUBLIC
     assert classify("POST", "/api/mcp/oauth/consent") is Access.ACTOR
     assert classify("POST", "/api/slack/events") is Access.PUBLIC
+    assert classify("POST", "/api/slack/interactions") is Access.PUBLIC
     assert classify("GET", "/api/slack/oauth/callback") is Access.PUBLIC
     assert classify("GET", "/api/slack/oauth/start") is Access.ACTOR
 

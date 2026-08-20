@@ -689,27 +689,49 @@ def peek_invite(
     }
 
 
-def accept_invite(
-    conn: sqlite3.Connection,
-    raw_token: str,
-    *,
-    password: str | None = None,
-    display_name: str = "",
-    session_id: str | None = None,
-) -> tuple[Actor, str]:
-    """Accept invite. Never resets an existing password.
+def pending_invite_for_email(
+    conn: sqlite3.Connection, org_id: int, email: str
+) -> dict[str, str] | None:
+    """Open invite for this email in this org, or None. Never creates anything."""
+    addr = normalize_email(email)
+    if not addr:
+        return None
+    row = conn.execute(
+        """SELECT id, email, role, expires_at FROM invites
+           WHERE org_id=? AND email=? AND accepted_at IS NULL AND expires_at>?""",
+        (org_id, addr, _iso(_now())),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": str(row["id"]),
+        "email": str(row["email"]),
+        "role": str(row["role"]),
+        "expires_at": str(row["expires_at"]),
+    }
 
-    New person: password + name creates the account.
-    Existing person, signed in as the invitee: just join.
-    Existing person, not signed in: current password proves the account.
+
+def _join_from_invite_row(
+    conn: sqlite3.Connection,
+    *,
+    org_id: int,
+    invite_id: str,
+    invite_email: str,
+    role: str,
+    password: str | None,
+    display_name: str,
+    session_user: str | None,
+    allow_unauthenticated_existing: bool,
+) -> tuple[Actor, str | None]:
+    """Shared membership insert for /join and Connect-me.
+
+    Returns (actor, reuse_session_hint). reuse_session_hint is the user_id when
+    the caller may keep an existing session cookie; None means mint a new one
+    (or skip session for Slack-only accept).
     """
-    peek = peek_invite(conn, raw_token)
-    org_id = int(peek["org_id"])
-    invite_email = str(peek["email"])
     if _active_member_id(conn, invite_email, org_id):
         raise IdentityError("That person is already in this workspace", status=409)
 
-    session_user = session_user_id(conn, session_id) if session_id else None
     existing = conn.execute(
         "SELECT id, email, display_name, password_hash FROM users WHERE email=?",
         (invite_email,),
@@ -729,7 +751,7 @@ def accept_invite(
         elif password:
             if not verify_password(password, existing["password_hash"]):
                 raise IdentityError("Email or password is wrong", status=401)
-        else:
+        elif not allow_unauthenticated_existing:
             raise IdentityError("Sign in to join this workspace", status=401)
         name = display_name.strip()
         if name:
@@ -760,21 +782,104 @@ def accept_invite(
     conn.execute(
         """INSERT INTO memberships(user_id, org_id, role, created_at)
            VALUES (?,?,?,?)""",
-        (user_id, org_id, peek["role"], created),
+        (user_id, org_id, role, created),
     )
     conn.execute(
-        "UPDATE invites SET accepted_at=? WHERE token_hash=?",
-        (created, hash_token(raw_token.strip())),
+        "UPDATE invites SET accepted_at=? WHERE id=?",
+        (created, invite_id),
     )
     _remember_org(conn, user_id, org_id)
     actor = _actor_row(conn, user_id, org_id)
-    if reuse_session and session_id:
+    return actor, (user_id if reuse_session else None)
+
+
+def accept_invite(
+    conn: sqlite3.Connection,
+    raw_token: str,
+    *,
+    password: str | None = None,
+    display_name: str = "",
+    session_id: str | None = None,
+) -> tuple[Actor, str]:
+    """Accept invite. Never resets an existing password.
+
+    New person: password + name creates the account.
+    Existing person, signed in as the invitee: just join.
+    Existing person, not signed in: current password proves the account.
+    """
+    peek = peek_invite(conn, raw_token)
+    org_id = int(peek["org_id"])
+    invite_email = str(peek["email"])
+    invite_row = conn.execute(
+        "SELECT id, role FROM invites WHERE token_hash=? AND accepted_at IS NULL",
+        (hash_token(raw_token.strip()),),
+    ).fetchone()
+    if invite_row is None:
+        raise IdentityError("Invite not found", status=404)
+
+    session_user = session_user_id(conn, session_id) if session_id else None
+    actor, reuse_user = _join_from_invite_row(
+        conn,
+        org_id=org_id,
+        invite_id=str(invite_row["id"]),
+        invite_email=invite_email,
+        role=str(invite_row["role"]),
+        password=password,
+        display_name=display_name,
+        session_user=session_user,
+        allow_unauthenticated_existing=False,
+    )
+    if reuse_user and session_id:
         conn.execute(
             "UPDATE sessions SET active_org_id=? WHERE id=?",
             (org_id, session_id),
         )
         return actor, session_id
-    return actor, _insert_session(conn, user_id, org_id)
+    return actor, _insert_session(conn, actor.user_id, org_id)
+
+
+def accept_invite_from_slack(
+    conn: sqlite3.Connection,
+    org_id: int,
+    email: str,
+    *,
+    display_name: str = "",
+) -> Actor:
+    """Connect-me: consume a pending invite for this Slack profile email.
+
+    No password form. New accounts get a random unusable password hash —
+    Slack answers work; web login waits for passwordless. Idempotent if
+    already a member. Unknown / uninvited emails raise (caller stays silent
+    or shows an error on the button, never auto-creates).
+    """
+    addr = _validate_email(email)
+    existing_id = _active_member_id(conn, addr, org_id)
+    if existing_id:
+        return actor_for_user(conn, existing_id, org_id)
+
+    invite = pending_invite_for_email(conn, org_id, addr)
+    if invite is None:
+        raise IdentityError("No pending invite for this email", status=404)
+
+    already = conn.execute(
+        "SELECT id FROM users WHERE email=?", (addr,)
+    ).fetchone()
+    # Existing account: prove identity via Slack email match, not password.
+    # Brand-new: random hash so the row satisfies NOT NULL; web login waits.
+    password = None if already else secrets.token_urlsafe(32)
+
+    actor, _ = _join_from_invite_row(
+        conn,
+        org_id=org_id,
+        invite_id=invite["id"],
+        invite_email=invite["email"],
+        role=invite["role"],
+        password=password,
+        display_name=display_name,
+        session_user=None,
+        allow_unauthenticated_existing=True,
+    )
+    return actor
 
 
 def list_members(conn: sqlite3.Connection, org_id: int) -> list[dict[str, str]]:
@@ -982,7 +1087,9 @@ __all__ = [
     "ROLES",
     "SESSION_DAYS",
     "accept_invite",
+    "accept_invite_from_slack",
     "actor_dict",
+    "pending_invite_for_email",
     "actor_for_user",
     "actor_from_api_key",
     "actor_from_session",

@@ -23,11 +23,16 @@ Reply path stays @mention. Unprompted replies later.
 
 ---
 
-## 2. How people join — keep it simple — unchanged
+## 2. How people join — `/join` + Connect me from Slack — done
 
-**Decision:** `/join` is the only way in. Invite link, set a password (or existing password). Done.
+**Shipped:**
+- `/join` invite link still works (name + password, or existing password).
+- **Connect me:** if someone `@joel`s and their Slack profile email has a pending invite, they get an ephemeral Connect me card (no password form). Button hits `/api/slack/interactions` (HMAC). Unknown emails stay silent — no auto-create on mention.
+- New Connect-me accounts get a random password hash; Slack answers work immediately. Web passwordless login is still later.
 
-Do **not** auto-create or auto-accept accounts on first Slack mention. If @joel doesn’t match a user, stay silent.
+Manifest interactivity URL: `https://YOUR-JOEL-ORIGIN/api/slack/interactions` (re-install or update the Slack app if you created it before this).
+
+Do **not** auto-create accounts on first Slack mention without an invite.
 
 ---
 
@@ -119,4 +124,4 @@ Stop. Agent / memory pipeline / Hydra / writes later.
 - **Cloud with `SLACK_*` env:** Add to Slack. Events verified with the env signing secret, routed by `orgs.slack_team_id`.
 - **Cloud without those env vars:** Slack UI says unavailable — no DIY manifest.
 
-Not in this pass: channel bootstrap, unprompted replies, join-from-Slack, billing, subdomains.
+Not in this pass: channel bootstrap, unprompted replies, billing, subdomains.

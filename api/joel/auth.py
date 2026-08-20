@@ -49,6 +49,7 @@ _PUBLIC_EXACT = {
     ("GET", "/api/composio/callback"),
     # Slack authenticates via its own request signature, not joel_session.
     ("POST", "/api/slack/events"),
+    ("POST", "/api/slack/interactions"),
     # Browser returns here from Slack; org is in the oauth state, not the cookie.
     ("GET", "/api/slack/oauth/callback"),
 }
