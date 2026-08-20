@@ -1,14 +1,15 @@
 "use client";
 
 import { ContentFrame } from "@/components/app-frame";
-import { AnswerTurn, UserTurn } from "@/components/beautifului/AnswerTurn";
-import { LaneChips } from "@/components/beautifului/LaneChips";
-import { LockedChat } from "@/components/beautifului/LockedChat";
+import { SimpleAnswer, UserTurn } from "@/components/beautifului/AnswerTurn";
+import { MemoryBanner } from "@/components/beautifului/MemoryBanner";
 import PromptBar from "@/components/beautifului/PromptBar";
+import { ToolCallChips } from "@/components/beautifului/ToolCallChips";
 import { BrandMark } from "@/components/brand-mark";
 import { ThreadHistory } from "@/components/thread-history";
 import { ChatBootSkeleton, ChatThreadSkeleton } from "@/components/skeletons";
 import { Bone } from "@/components/beautifului/primitives/bone";
+import { SourceIcon } from "@/components/source-icon";
 import {
   askStream,
   createConversation,
@@ -18,24 +19,91 @@ import {
   getProfile,
   listConversations,
 } from "@/lib/api";
-import type { Conversation, Message } from "@/lib/types";
+import type { Conversation, Message, ToolCall } from "@/lib/types";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+/** Map backend stages → agent-action labels (same language as the sim). */
 const STAGE_LABEL: Record<string, string> = {
-  rewriting: "Rewriting",
+  rewriting: "Planning",
   planning: "Planning",
-  reranking: "Reranking",
-  live: "Checking live sources",
+  reranking: "Searching memory",
+  live: "Checking live",
   answering: "Answering",
 };
 
-function welcomeCopy(name: string, org: string) {
+function welcomeCopy(name: string, org: string, memoryReady: boolean) {
   return {
     title: name ? `Hello, ${name}.` : "Hello.",
-    line: org ? `Ask about ${org}.` : "Ask a question.",
-    ask: "Ask a question",
+    line: memoryReady
+      ? org
+        ? `Ask about ${org}.`
+        : "Ask a question."
+      : org
+        ? `Ask about ${org}. Nothing in memory yet — connect a tool when you're ready.`
+        : "Ask a question. Nothing in memory yet.",
+    ask: "Ask a question…",
   };
+}
+
+function ThinkingHeader({ label, working }: { label: string; working: boolean }) {
+  return (
+    <div className="-mx-1.5 flex w-fit items-center gap-2 rounded-control px-1.5 py-1">
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill={working ? "var(--ink-2)" : "var(--ink-3)"}
+      >
+        <path d="M12 2l2.4 7.2L22 12l-7.6 2.8L12 22l-2.4-7.2L2 12l7.6-2.8z" />
+      </svg>
+      {working ? (
+        <span
+          className="bg-clip-text text-[13px] font-medium whitespace-nowrap text-transparent"
+          style={{
+            backgroundImage:
+              "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
+            backgroundSize: "200% 100%",
+            animation: "shimmer-text 1.4s linear infinite",
+          }}
+        >
+          {label}
+        </span>
+      ) : (
+        <span className="text-[13px] font-medium text-ink-2">{label}</span>
+      )}
+    </div>
+  );
+}
+
+function RelHop({ path }: { path: string }) {
+  const m = /^(.+?)\s*-\[:([^\]]+)\]->\s*(.+)$/.exec(path.trim());
+  if (!m) {
+    return (
+      <p className="px-1.5 py-1 font-mono text-[11.5px] leading-relaxed text-ink-2">
+        {path}
+      </p>
+    );
+  }
+  const [, from, edge, to] = m;
+  const superseded = /superseded/i.test(path);
+  return (
+    <div
+      className={`flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-[6px] px-1.5 py-1 ${
+        superseded ? "opacity-55" : ""
+      }`}
+    >
+      <span className="rounded-full bg-inset px-2 py-0.5 text-[12px] font-medium text-ink shadow-hairline">
+        {from.trim()}
+      </span>
+      <span className="font-mono text-[10.5px] tracking-[0.04em] text-ink-3">
+        —[{edge}]→
+      </span>
+      <span className="rounded-full bg-inset px-2 py-0.5 text-[12px] font-medium text-ink shadow-hairline">
+        {to.replace(/\s*\(.*$/, "").trim()}
+      </span>
+    </div>
+  );
 }
 
 export function ChatSurface() {
@@ -50,10 +118,9 @@ export function ChatSurface() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [stage, setStage] = useState<string | null>(null);
-  const [liveLanes, setLiveLanes] = useState<string[]>([]);
-  const [liveCheck, setLiveCheck] = useState<{ checked: string[]; found: boolean } | null>(
-    null,
-  );
+  const [toolCalls, setToolCalls] = useState<ToolCall[]>([]);
+  const [reasoningPaths, setReasoningPaths] = useState<string[]>([]);
+  const [liveProviders, setLiveProviders] = useState<string[]>([]);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,12 +139,11 @@ export function ChatSurface() {
     getOrg()
       .then(async ({ org, checklist }) => {
         if (!org) {
-          router.replace("/onboarding");
+          setReady(false);
           return;
         }
         setHello((h) => ({ ...h, org: org.name }));
         setReady(checklist.ready);
-        if (!checklist.ready) return;
         await loadList();
       })
       .catch(() => setReady(false));
@@ -90,19 +156,18 @@ export function ChatSurface() {
       })
       .catch(() => {})
       .finally(() => setProfileReady(true));
-  }, [loadList, router]);
+  }, [loadList]);
 
   useEffect(() => {
-    if (!requestedId || ready !== true) return;
+    if (!requestedId || ready === null) return;
     if (requestedId === activeId) return;
     void selectConversation(requestedId);
-    // selectConversation is stable enough as a local function; we only react to id.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestedId, ready]);
 
   useEffect(() => {
     scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight });
-  }, [messages, draft, stage]);
+  }, [messages, draft, stage, toolCalls, reasoningPaths]);
 
   async function selectConversation(id: string) {
     const seq = ++loadGen.current;
@@ -123,13 +188,18 @@ export function ChatSurface() {
     }
   }
 
+  function clearWorking() {
+    setStage(null);
+    setToolCalls([]);
+    setReasoningPaths([]);
+    setLiveProviders([]);
+    setDraft("");
+  }
+
   async function onNewChat() {
     abortRef.current?.abort();
     setBusy(false);
-    setDraft("");
-    setStage(null);
-    setLiveLanes([]);
-    setLiveCheck(null);
+    clearWorking();
     setActiveId(null);
     setMessages([]);
     setThreadPending(false);
@@ -140,9 +210,7 @@ export function ChatSurface() {
     abortRef.current?.abort();
     abortRef.current = null;
     setBusy(false);
-    setStage(null);
-    setLiveLanes([]);
-    setLiveCheck(null);
+    clearWorking();
   }
 
   async function onSend(question: string) {
@@ -158,10 +226,8 @@ export function ChatSurface() {
     const user: Message = { role: "user", content: question };
     setMessages((m) => [...m, user]);
     setBusy(true);
-    setDraft("");
+    clearWorking();
     setStage("rewriting");
-    setLiveLanes([]);
-    setLiveCheck(null);
 
     const ac = new AbortController();
     abortRef.current = ac;
@@ -172,18 +238,25 @@ export function ChatSurface() {
         question,
         {
           onStatus: (s) => setStage(s),
-          onLane: (lane) => setLiveLanes((ls) => (ls.includes(lane) ? ls : [...ls, lane])),
-          onLive: (checked, found) => setLiveCheck({ checked, found }),
+          onToolCall: (call) =>
+            setToolCalls((prev) => {
+              const i = prev.findIndex((c) => c.id === call.id);
+              if (i >= 0) {
+                const next = [...prev];
+                next[i] = call;
+                return next;
+              }
+              return [...prev, call];
+            }),
+          onLive: (checked) => setLiveProviders(checked),
+          onReasoningPath: (paths) => setReasoningPaths(paths),
           onToken: (text) => {
             tokens += text;
             setDraft(tokens);
           },
           onDone: (message) => {
             setMessages((m) => [...m, message]);
-            setDraft("");
-            setStage(null);
-            setLiveLanes([]);
-            setLiveCheck(null);
+            clearWorking();
             void loadList();
           },
         },
@@ -199,24 +272,36 @@ export function ChatSurface() {
   }
 
   const empty = messages.length === 0 && !busy && !threadPending;
-  const copy = welcomeCopy(hello.name, hello.org);
+  const copy = welcomeCopy(hello.name, hello.org, ready === true);
   const threadLoading =
     threadPending || (Boolean(requestedId) && requestedId !== activeId);
+  const thinkingLabel = stage
+    ? (STAGE_LABEL[stage] ?? stage)
+    : "Planning";
+  const streaming = draft.length > 0;
 
   if (ready === null) {
     return <ChatBootSkeleton />;
   }
 
-  if (!ready) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-        <LockedChat href="/integrations" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {ready === false && (
+        <MemoryBanner
+          kind="ingesting"
+          action={
+            <a
+              href="/integrations"
+              className="shrink-0 font-medium underline-offset-2 hover:underline"
+            >
+              Connect a tool
+            </a>
+          }
+        >
+          Nothing in memory yet. You can still ask — answers will be honest about
+          what&apos;s missing.
+        </MemoryBanner>
+      )}
       <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto">
         {threadLoading ? (
           <ChatThreadSkeleton />
@@ -237,7 +322,7 @@ export function ChatSurface() {
               m.role === "user" ? (
                 <UserTurn key={m.id ?? `u-${i}`}>{m.content}</UserTurn>
               ) : (
-                <AnswerTurn
+                <SimpleAnswer
                   key={m.id ?? `a-${i}`}
                   message={m}
                   onForget={(docId) => void forgetDoc(docId)}
@@ -246,28 +331,33 @@ export function ChatSurface() {
             )}
             {busy && (
               <div className="flex flex-col gap-2">
-                {stage && (
-                  <span
-                    className="w-fit bg-clip-text text-[14px] font-medium text-transparent"
-                    style={{
-                      backgroundImage:
-                        "linear-gradient(90deg, var(--ink-3) 35%, var(--ink) 50%, var(--ink-3) 65%)",
-                      backgroundSize: "200% 100%",
-                      animation: "shimmer-text 1.4s linear infinite",
-                    }}
-                  >
-                    {STAGE_LABEL[stage] ?? stage}
-                  </span>
+                <ThinkingHeader
+                  label={streaming ? "Answering" : thinkingLabel}
+                  working={!streaming || stage === "answering"}
+                />
+                {reasoningPaths.length > 0 && (
+                  <div className="ml-[5px] space-y-0.5 border-l border-line pl-3.5">
+                    {reasoningPaths.map((p) => (
+                      <RelHop key={p} path={p} />
+                    ))}
+                  </div>
                 )}
-                {liveLanes.length > 0 && <LaneChips lanes={liveLanes} />}
-                {liveCheck && liveCheck.checked.length > 0 && (
-                  <span className="text-[12.5px] text-ink-3">
-                    Live: {liveCheck.checked.join(", ")}
-                    {liveCheck.found ? " — found something new" : " — nothing new found"}
-                  </span>
+                {toolCalls.length > 0 && <ToolCallChips calls={toolCalls} />}
+                {liveProviders.length > 0 && toolCalls.length === 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {liveProviders.map((p) => (
+                      <span
+                        key={p}
+                        className="inline-flex h-6 items-center gap-1.5 rounded-full bg-inset pr-2 pl-1.5 text-[11.5px] text-ink-2 shadow-hairline"
+                      >
+                        <SourceIcon provider={p} size={12} />
+                        {p}
+                      </span>
+                    ))}
+                  </div>
                 )}
                 {draft && (
-                  <p className="text-[15px] leading-relaxed text-ink">
+                  <p className="text-[15px] leading-relaxed text-ink whitespace-pre-wrap">
                     {draft}
                     <span className="ml-0.5 inline-block h-3 w-0.5 translate-y-0.5 rounded-full bg-ink" />
                   </p>

@@ -69,9 +69,12 @@ def answer_question(
         # corpus — rerank's own LLM judgment still decides whether it
         # actually answers the question, this only guarantees it's SEEN.
         allowed = None if ask is None else allowed_stamps(ask)
+        org_id = None if ask is None else ask.org_id
         already = {d.id for d in fused}
         extra = [
-            d for d in hydrate_doc_ids(conn, list(extra_doc_ids), allowed=allowed) if d.id not in already
+            d
+            for d in hydrate_doc_ids(conn, list(extra_doc_ids), allowed=allowed, org_id=org_id)
+            if d.id not in already
         ]
         fused = extra + fused
     reranked = rerank_candidates(llm_call, question, fused) if llm_call is not None else []

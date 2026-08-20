@@ -655,9 +655,8 @@ const SLACK_CARD: ConnectorCard = {
 
 function Components() {
   const [loader, setLoader] = useState("Drive");
-  const [thinking, setThinking] = useState("Steps");
+  const [thinking, setThinking] = useState("Planning");
   const [tasks, setTasks] = useState("Capsules");
-  const [prompt, setPrompt] = useState("Rounded");
   const [turn, setTurn] = useState("Answered");
   const [thread, setThread] = useState("c1");
 
@@ -758,13 +757,13 @@ function Components() {
       <Stage
         id="thinking"
         title="Thinking"
-        description="Planner, graph walk, memory search, live lookups. Settles once."
+        description="Agent actions — not exclusive modes. Planning, searching, relationships, live check."
       >
         <div className="flex w-full max-w-md flex-col">
           <ThinkingState key={thinking} variant={thinking} />
           <VariantTabs
             value={thinking}
-            options={["Steps", "Reasoning", "Search", "Lookups"]}
+            options={["Planning", "Searching", "Relationships", "Live"]}
             onChange={setThinking}
           />
         </div>
@@ -789,15 +788,10 @@ function Components() {
       <Stage
         id="prompt-bar"
         title="Prompt bar"
-        description="@ Slack / GitHub / Gmail / people / docs. /who-knows, /conflict, /forget."
+        description="Question and send. No distill, slash commands, or source menus."
       >
         <div className="flex w-full max-w-lg flex-col">
-          <PromptBar key={prompt} variant={prompt} demo={false} />
-          <VariantTabs
-            value={prompt}
-            options={["Rounded", "Pill"]}
-            onChange={setPrompt}
-          />
+          <PromptBar demo={false} placeholder="Ask a question…" />
         </div>
       </Stage>
 
@@ -812,7 +806,7 @@ function Components() {
       <Stage
         id="locked-chat"
         title="Locked chat"
-        description="Chat stays locked until something is indexed."
+        description="Empty chat is allowed. Connect tools when you're ready."
       >
         <LockedChat href="/integrations" />
       </Stage>

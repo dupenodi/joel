@@ -30,7 +30,7 @@ Each risky step carries a guardrail table — **the ❌ column is a mistake an i
 
 | Question | Decision |
 |---|---|
-| Who uses it | **One self-hosted workspace, many members.** First admin runs `/setup`; everyone else is invited. Session cookie, roles `admin` / `member`. |
+| Who uses it | **Multi-workspace Mode B.** Users can belong to many orgs; sessions pick an active workspace. Roles `owner` / `admin` / `member`. Invite-only join. See [`docs/SAAS_SKELETON.md`](docs/SAAS_SKELETON.md) and [`docs/adr/0003-mode-b-multi-workspace.md`](docs/adr/0003-mode-b-multi-workspace.md). |
 | How memory is scoped | **Three rooms, not one knowledge base** — same graph as [Supermemory's permissions](https://supermemory.ai/docs/company-brain/permissions): employee / private channel / public. A doc is written to exactly one room. An ask reads as wide as the room it is asked from (§1.4). |
 | How data stays fresh | **Background scheduler**, per-connector interval, plus a manual Sync now. |
 | How much history | **Bounded first pass** so it's usable in minutes, then a low-priority job walks backwards through the whole archive. |

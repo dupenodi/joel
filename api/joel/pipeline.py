@@ -21,6 +21,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
 
 from pathlib import Path
 
@@ -73,15 +74,23 @@ def _row_to_canonical_doc(row: sqlite3.Row) -> CanonicalDoc:
     )
 
 
-def load_thread_messages(conn: sqlite3.Connection, thread_id: str) -> list[CanonicalDoc]:
+def load_thread_messages(
+    conn: sqlite3.Connection, thread_id: str, *, org_id: int | None = None
+) -> list[CanonicalDoc]:
     """The WHOLE thread, not just this sync's new/changed messages — §7.5's
     own rule ("re-distill the whole thread, not the delta") means every
     dirty thread needs its full history reconstructed from `docs`, which
     already has everything `group_bursts`/`distill_thread` need."""
-    rows = conn.execute(
-        "SELECT * FROM docs WHERE thread_id=? AND forgotten=0 ORDER BY timestamp",
-        (thread_id,),
-    ).fetchall()
+    if org_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM docs WHERE thread_id=? AND forgotten=0 AND org_id=? ORDER BY timestamp",
+            (thread_id, org_id),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM docs WHERE thread_id=? AND forgotten=0 ORDER BY timestamp",
+            (thread_id,),
+        ).fetchall()
     return [_row_to_canonical_doc(r) for r in rows]
 
 
@@ -101,11 +110,13 @@ def _distill_and_store_thread(
     thread_id: str,
     df: DocFrequencyIndex,
     report: PipelineReport,
+    *,
+    org_id: int | None = None,
 ) -> ThreadArtifact | None:
     """Returns the freshly-distilled artifact (or `None`) so the caller can
     feed it to CP6's ontology extraction — a thread's artifact is the
     extraction target for that thread, never the raw messages (§9.1)."""
-    messages = load_thread_messages(conn, thread_id)
+    messages = load_thread_messages(conn, thread_id, org_id=org_id)
     if not messages:
         return None
     bursts = group_bursts(messages)
@@ -165,7 +176,15 @@ def _distill_and_store_thread(
     # change" -- upsert_docs skips it in the graph lane for free if not, and
     # SQLite/FTS/vectors are cheap enough to just re-write every dirty-thread
     # pass rather than diffing per-field.
-    upsert_docs(conn, index, hydra_store, [*changed_burst_docs, artifact_doc], embed_fn=embed_fn, now=_now_iso())
+    upsert_docs(
+        conn,
+        index,
+        hydra_store,
+        [*changed_burst_docs, artifact_doc],
+        embed_fn=embed_fn,
+        now=_now_iso(),
+        org_id=org_id,
+    )
     remove_docs(conn, index, hydra_store, diff.to_delete)
 
     save_thread_state(
@@ -222,6 +241,7 @@ def run_store_pipeline(
     docs: list[CanonicalDoc],
     *,
     data_dir: Path | None = None,
+    org_id: int | None = None,
 ) -> PipelineReport:
     """Called once per sync with this job's new/changed docs (not the whole
     corpus). `llm_call=None` skips distillation and ontology extraction
@@ -237,7 +257,9 @@ def run_store_pipeline(
         return report
 
     store_docs = [from_canonical_doc(d) for d in docs]
-    upsert_docs(conn, index, hydra_store, store_docs, embed_fn=embed_fn, now=_now_iso())
+    upsert_docs(
+        conn, index, hydra_store, store_docs, embed_fn=embed_fn, now=_now_iso(), org_id=org_id
+    )
     report.docs_stored = len(store_docs)
 
     ontology_targets: list[ExtractInput] = []
@@ -250,10 +272,17 @@ def run_store_pipeline(
         # corpus scan every run, which is fine at hundreds-to-thousands of
         # docs. Revisit (§7.3's df.json) if that scan ever shows up as slow.
         df = DocFrequencyIndex()
-        for row in conn.execute("SELECT body FROM docs WHERE forgotten=0"):
+        df_sql = "SELECT body FROM docs WHERE forgotten=0"
+        df_params: tuple[Any, ...] = ()
+        if org_id is not None:
+            df_sql += " AND org_id=?"
+            df_params = (org_id,)
+        for row in conn.execute(df_sql, df_params):
             df.add_document(row["body"])
         for thread_id in thread_ids:
-            artifact = _distill_and_store_thread(conn, index, hydra_store, embed_fn, llm_call, thread_id, df, report)
+            artifact = _distill_and_store_thread(
+                conn, index, hydra_store, embed_fn, llm_call, thread_id, df, report, org_id=org_id
+            )
             if artifact is not None:
                 ontology_targets.append(_artifact_extract_input(artifact))
 

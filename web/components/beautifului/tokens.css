@@ -23,21 +23,22 @@
 }
 
 .bui {
-  --page: oklch(98.5% 0.001 286.376);
-  --canvas: oklch(96.1% 0.002 247.84);
-  --surface: oklch(100% 0 0);
-  --inset: oklch(97.9% 0.002 247.839);
-  --hover: oklch(97% 0.002 247.839);
-  --hover-2: oklch(93.3% 0.003 247.86);
-  --ink: oklch(24.7% 0.006 258.361);
-  --ink-2: oklch(50.6% 0.01 264.477);
-  --ink-3: oklch(69.5% 0.009 264.505);
-  --line: oklch(94.6% 0.003 264.542);
-  --line-strong: oklch(91.2% 0.005 258.326);
-  --field: oklch(96.1% 0.001 286.375);
-  --accent: oklch(62.6% 0.205 254.947);
-  --accent-ink: oklch(55.6% 0.187 255.617);
-  --accent-tint: oklch(96% 0.019 252.878);
+  /* Paper / ink — aligned with marketing, not cool-gray SaaS blue. */
+  --page: #fafafa;
+  --canvas: #f0f0f1;
+  --surface: #ffffff;
+  --inset: #f0f0f1;
+  --hover: #f3f3f4;
+  --hover-2: #e8e8ea;
+  --ink: #131313;
+  --ink-2: #4a4a4d;
+  --ink-3: #8b8b8e;
+  --line: #e6e6e8;
+  --line-strong: #d6d6d9;
+  --field: #f0f0f1;
+  --accent: #131313;
+  --accent-ink: #131313;
+  --accent-tint: rgba(19, 19, 19, 0.06);
   --green: oklch(60.3% 0.155 150.883);
   --green-tint: oklch(95.8% 0.017 159.118);
   --orange: oklch(68.9% 0.179 49.902);
@@ -75,6 +76,8 @@
   --chat-max: 44rem;
   --page-max: 44rem;
   --wide-max: 54rem;
+  --settings-max: 56rem;
+  --settings-nav-w: 11.5rem;
   /* Product aliases so leftover chrome maps onto this language. */
   --bg: var(--page);
   --ink-soft: var(--ink-2);

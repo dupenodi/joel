@@ -23,7 +23,7 @@ export interface Org {
   created_at: string;
 }
 
-export type MemberRole = "admin" | "member";
+export type MemberRole = "owner" | "admin" | "member";
 
 export interface Workspace {
   id: string;
@@ -32,6 +32,16 @@ export interface Workspace {
   logo_url: string;
   created_at: string;
   created_by: string;
+  slug?: string;
+}
+
+export interface WorkspaceMembership {
+  id: number;
+  slug: string | null;
+  domain: string;
+  name: string;
+  logo_url: string;
+  role: MemberRole;
 }
 
 export interface WorkspaceMember {
@@ -56,6 +66,8 @@ export interface Me {
   email: string;
   display_name: string;
   role: MemberRole;
+  is_admin?: boolean;
+  is_owner?: boolean;
 }
 
 export interface ApiKey {
@@ -67,9 +79,10 @@ export interface ApiKey {
 }
 
 export interface AuthStatus {
-  state: "setup" | "login" | "ok";
+  state: "setup" | "login" | "pick_workspace" | "ok";
   me: Me | null;
   workspace: Workspace | null;
+  workspaces?: WorkspaceMembership[] | null;
 }
 
 export interface InvitePeek {
@@ -77,6 +90,9 @@ export interface InvitePeek {
   role: MemberRole;
   workspace_name: string;
   workspace_domain: string;
+  workspace_logo_url?: string;
+  account_exists?: boolean;
+  viewer?: "anonymous" | "invitee" | "other";
 }
 
 export interface ReadinessChecklist {
@@ -154,6 +170,17 @@ export interface Settings {
   composio_api_key_set?: boolean;
   embed_model: string;
   slack_signing_secret_set?: boolean;
+  mail_provider?: "none" | "smtp" | "resend" | string;
+  mail_configured?: boolean;
+  mail_from?: string;
+  mail_from_name?: string;
+  mail_app_url?: string;
+  mail_smtp_host?: string;
+  mail_smtp_port?: string;
+  mail_smtp_user?: string;
+  mail_smtp_password_set?: boolean;
+  mail_smtp_tls?: string;
+  mail_resend_api_key_set?: boolean;
   raw?: Record<string, string>;
 }
 

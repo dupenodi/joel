@@ -1,36 +1,18 @@
 "use client";
 
+import { AccountMenu } from "@/components/account-menu";
 import { AppFrame } from "@/components/app-frame";
-import { BrandMark } from "@/components/brand-mark";
+import { WorkspaceSwitcher } from "@/components/workspace-switcher";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useLayoutEffect, useRef, useState } from "react";
 
-const TABS: { href: string; label: string; iconOnly?: boolean }[] = [
-  { href: "/", label: "Home", iconOnly: true },
+const TABS: { href: string; label: string; preview?: boolean }[] = [
+  { href: "/", label: "Chat" },
   { href: "/integrations", label: "Integrations" },
-  { href: "/graph", label: "Graph" },
+  { href: "/graph", label: "Graph", preview: true },
 ];
-
-function HomeIcon({ active }: { active: boolean }) {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={active ? 2.2 : 1.9}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M4 11.5 12 4l8 7.5" />
-      <path d="M6.5 10.5V20h11V10.5" />
-    </svg>
-  );
-}
 
 function tabIsActive(pathname: string, href: string) {
   return href === "/"
@@ -71,12 +53,7 @@ export function AppHeader() {
   return (
     <header className="shrink-0 border-b border-line bg-page">
       <AppFrame className="grid h-[var(--header-h)] grid-cols-[1fr_auto_1fr] items-center">
-        <Link
-          href="/"
-          className="justify-self-start rounded-control py-1 hover:opacity-80"
-        >
-          <BrandMark size={26} withWordmark />
-        </Link>
+        <WorkspaceSwitcher />
 
         <nav
           ref={navRef}
@@ -106,48 +83,29 @@ export function AppHeader() {
                   itemRefs.current[tab.href] = el;
                 }}
                 href={tab.href}
-                aria-label={tab.label}
+                aria-label={tab.preview ? `${tab.label} (preview)` : tab.label}
                 aria-current={active ? "page" : undefined}
-                title={tab.iconOnly ? tab.label : undefined}
+                title={tab.preview ? `${tab.label} · preview` : undefined}
                 onMouseEnter={() => setHovered(tab.href)}
                 onFocus={() => setHovered(tab.href)}
                 onBlur={() => setHovered(null)}
                 className={cn(
-                  "relative z-10 flex h-8 shrink-0 items-center justify-center rounded-full text-[14px] font-medium transition-colors duration-150",
-                  tab.iconOnly ? "w-8" : "px-3.5",
+                  "relative z-10 flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full px-3.5 text-[14px] font-medium transition-colors duration-150",
                   active ? "text-ink" : "text-ink-2 hover:text-ink",
                 )}
               >
-                {tab.iconOnly ? <HomeIcon active={active} /> : tab.label}
+                {tab.label}
+                {tab.preview && (
+                  <span className="text-[10px] font-medium tracking-wide text-ink-3 uppercase">
+                    Preview
+                  </span>
+                )}
               </Link>
             );
           })}
         </nav>
 
-        <Link
-          href="/settings"
-          aria-label="This install"
-          title="This workspace"
-          className={cn(
-            "justify-self-end flex size-9 items-center justify-center rounded-control text-ink-2 transition-colors duration-150 hover:bg-hover hover:text-ink",
-            pathname === "/settings" && "bg-hover text-ink",
-          )}
-        >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden
-          >
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
-          </svg>
-        </Link>
+        <AccountMenu />
       </AppFrame>
     </header>
   );

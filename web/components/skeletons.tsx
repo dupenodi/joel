@@ -166,44 +166,17 @@ export function LastPullSkeleton() {
 
 export function SettingsSkeleton() {
   return (
-    <Status label="Loading this install">
-      <div className="space-y-6">
-        <section className="rounded-card bg-surface p-5 shadow-card">
-          <div className="mb-4">
-            <h2 className="text-[11px] font-medium tracking-[0.04em] text-ink-3 uppercase">
-              You
-            </h2>
-            <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
-              Shown on Home.
-            </p>
-          </div>
-          <div className="flex flex-wrap items-end gap-2">
-            <FieldBone className="min-w-48 flex-1" />
-            <Bone className="h-8 w-14" rounded="full" />
-          </div>
-        </section>
-        <section className="rounded-card bg-surface p-5 shadow-card">
-          <div className="mb-4">
-            <h2 className="text-[11px] font-medium tracking-[0.04em] text-ink-3 uppercase">
-              Models
-            </h2>
-            <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
-              Base URL, API key, and which model each stage uses.
-            </p>
-          </div>
-          <div className="space-y-3">
-            <FieldBone />
-            <FieldBone />
-            <div className="grid gap-3 sm:grid-cols-2">
-              {Array.from({ length: 5 }, (_, i) => (
-                <FieldBone key={i} />
-              ))}
-            </div>
-            <FieldBone />
-          </div>
-          <Bone className="mt-4 h-9 w-16" rounded="full" />
-        </section>
-      </div>
+    <Status label="Loading settings">
+      <section className="rounded-card bg-surface p-5 shadow-card">
+        <Bone className="h-4 w-28" />
+        <Bone className="mt-2 h-3 w-64" />
+        <div className="mt-5 space-y-3">
+          <FieldBone />
+          <FieldBone />
+          <FieldBone />
+        </div>
+        <Bone className="mt-4 h-8 w-16" rounded="full" />
+      </section>
     </Status>
   );
 }

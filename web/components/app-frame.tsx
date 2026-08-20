@@ -20,12 +20,13 @@ export function AppFrame({
   );
 }
 
-type ContentWidth = "chat" | "page" | "wide";
+type ContentWidth = "chat" | "page" | "wide" | "settings";
 
 const WIDTH: Record<ContentWidth, string> = {
   chat: "max-w-[var(--chat-max)]",
   page: "max-w-[var(--page-max)]",
   wide: "max-w-[var(--wide-max)]",
+  settings: "max-w-[var(--settings-max)]",
 };
 
 /** Centered page column. Same gutter as the header. */

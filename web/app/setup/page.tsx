@@ -5,6 +5,7 @@ import { Button } from "@/components/beautifului/primitives/button";
 import { Field } from "@/components/field";
 import { Input } from "@/components/ui/input";
 import { getAuthStatus, setupWorkspace } from "@/lib/api";
+import { authDestination, slugPreview } from "@/lib/auth";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { OnboardingSkeleton } from "@/components/skeletons";
@@ -12,6 +13,7 @@ import { OnboardingSkeleton } from "@/components/skeletons";
 export default function SetupPage() {
   const router = useRouter();
   const [checking, setChecking] = useState(true);
+  const [companyName, setCompanyName] = useState("");
   const [domain, setDomain] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
@@ -23,15 +25,13 @@ export default function SetupPage() {
   useEffect(() => {
     void getAuthStatus()
       .then((status) => {
-        if (status.state === "ok") {
-          router.replace("/");
-          return;
-        }
-        if (status.state === "login") {
-          router.replace("/login");
+        const dest = authDestination(status, "/setup");
+        if (dest) {
+          router.replace(dest);
           return;
         }
         if (status.workspace) {
+          setCompanyName(status.workspace.name);
           setDomain(status.workspace.domain);
           setHasWorkspace(true);
         }
@@ -42,10 +42,12 @@ export default function SetupPage() {
 
   if (checking) return <OnboardingSkeleton />;
 
+  const slug = slugPreview(companyName);
+
   return (
     <AuthScreen
-      kicker="First person here becomes admin."
-      title={hasWorkspace ? "Create the admin account" : "Create this workspace"}
+      kicker="First person here becomes owner."
+      title={hasWorkspace ? "Create the owner account" : "Create this workspace"}
     >
       <form
         className="space-y-3"
@@ -57,24 +59,39 @@ export default function SetupPage() {
             email,
             password,
             display_name: displayName,
-            domain: hasWorkspace ? undefined : domain,
+            name: hasWorkspace ? undefined : companyName.trim(),
+            domain: hasWorkspace ? undefined : domain.trim() || undefined,
           })
-            .then(() => router.replace("/onboarding/llm"))
+            .then(() => router.replace("/"))
             .catch((err: unknown) => {
-              setError(err instanceof Error ? err.message : "Could not create workspace");
+              setError(
+                err instanceof Error ? err.message : "Could not create workspace",
+              );
             })
             .finally(() => setBusy(false));
         }}
       >
         {!hasWorkspace && (
-          <Field label="Company domain">
-            <Input
-              autoFocus
-              placeholder="yourco.dev"
-              value={domain}
-              onChange={(e) => setDomain(e.target.value)}
-            />
-          </Field>
+          <>
+            <Field label="Company name">
+              <Input
+                autoFocus
+                placeholder="Yourco"
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+              />
+            </Field>
+            <Field
+              label="Domain"
+              hint={slug ? `Workspace URL · ${slug}` : "Optional."}
+            >
+              <Input
+                placeholder="yourco.dev"
+                value={domain}
+                onChange={(e) => setDomain(e.target.value)}
+              />
+            </Field>
+          </>
         )}
         <Field label="Your name">
           <Input
@@ -92,7 +109,7 @@ export default function SetupPage() {
             onChange={(e) => setEmail(e.target.value)}
           />
         </Field>
-        <Field label="Password" hint="At least 8 characters. Stored only on this machine.">
+        <Field label="Password" hint="At least 8 characters.">
           <Input
             type="password"
             autoComplete="new-password"
@@ -105,7 +122,11 @@ export default function SetupPage() {
           type="submit"
           variant="accent"
           loading={busy}
-          disabled={!email.trim() || password.length < 8 || (!hasWorkspace && !domain.trim())}
+          disabled={
+            !email.trim() ||
+            password.length < 8 ||
+            (!hasWorkspace && !companyName.trim())
+          }
         >
           Continue
         </Button>

@@ -18,7 +18,7 @@ from __future__ import annotations
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 
@@ -71,12 +71,13 @@ def hydrate_doc_ids(
     doc_ids: list[str],
     *,
     allowed: frozenset[str] | None = None,
+    org_id: int | None = None,
 ) -> list[RetrievedDoc]:
     """Public wrapper around `_hydrate`, in id order — for callers that
     already know exactly which doc_ids they want (§13.2's live lookup:
     a freshly-fetched doc must get a real shot at this turn's rerank, not
     hope RRF happens to rediscover it among everything else in the corpus)."""
-    hydrated = _hydrate(conn, doc_ids, allowed=allowed)
+    hydrated = _hydrate(conn, doc_ids, allowed=allowed, org_id=org_id)
     return _order_by_ids(hydrated, doc_ids)
 
 
@@ -85,6 +86,7 @@ def _hydrate(
     doc_ids: list[str],
     *,
     allowed: frozenset[str] | None = None,
+    org_id: int | None = None,
 ) -> dict[str, RetrievedDoc]:
     if not doc_ids:
         return {}
@@ -93,11 +95,14 @@ def _hydrate(
     if allowed is not None:
         vis_sql, vis_params = sql_in(allowed, column="visibility")
         vis_sql = f" AND {vis_sql}"
+    org_sql, org_params = ("", ())
+    if org_id is not None:
+        org_sql, org_params = " AND org_id=?", (org_id,)
     rows = conn.execute(
         f"""SELECT id, title, body, source_type, container, granularity,
                    artifact_class, validity, url, timestamp
-            FROM docs WHERE id IN ({placeholders}) AND forgotten=0{vis_sql}""",
-        (*doc_ids, *vis_params),
+            FROM docs WHERE id IN ({placeholders}) AND forgotten=0{org_sql}{vis_sql}""",
+        (*doc_ids, *org_params, *vis_params),
     ).fetchall()
     return {
         r["id"]: RetrievedDoc(
@@ -150,11 +155,21 @@ def _vector_mask(
     return index.mask(**filters)
 
 
-def _visible_sql(allowed: frozenset[str] | None) -> tuple[str, tuple[str, ...]]:
-    if allowed is None:
+def _visible_sql(
+    allowed: frozenset[str] | None, *, org_id: int | None = None
+) -> tuple[str, tuple[Any, ...]]:
+    parts: list[str] = []
+    params: list[Any] = []
+    if org_id is not None:
+        parts.append("d.org_id=?")
+        params.append(org_id)
+    if allowed is not None:
+        clause, vis_params = sql_in(allowed)
+        parts.append(clause)
+        params.extend(vis_params)
+    if not parts:
         return "", ()
-    clause, params = sql_in(allowed)
-    return f" AND {clause}", params
+    return " AND " + " AND ".join(parts), tuple(params)
 
 
 def vector_lane(
@@ -165,6 +180,7 @@ def vector_lane(
     question: str,
     *,
     allowed: frozenset[str] | None = None,
+    org_id: int | None = None,
 ) -> list[RetrievedDoc]:
     """VECTOR (always): npz dot product, top-20 + once per rewrite."""
     queries = [question, *plan.rewrites]
@@ -177,7 +193,7 @@ def vector_lane(
             if doc_id not in seen:
                 seen.add(doc_id)
                 seen_order.append(doc_id)
-    hydrated = _hydrate(conn, seen_order, allowed=allowed)
+    hydrated = _hydrate(conn, seen_order, allowed=allowed, org_id=org_id)
     return _order_by_ids(hydrated, seen_order)[:VECTOR_TOP_K]
 
 
@@ -189,6 +205,7 @@ def vector_artifacts_lane(
     question: str,
     *,
     allowed: frozenset[str] | None = None,
+    org_id: int | None = None,
 ) -> list[RetrievedDoc]:
     """VEC-ARTIFACTS (always): vector masked to granularity='artifact',
     top-15 — catches distilled resolutions specifically."""
@@ -196,7 +213,7 @@ def vector_artifacts_lane(
     mask = _vector_mask(index, plan, artifacts_only=True, allowed=allowed)
     hits = index.search(np.asarray(vec), mask=mask, k=VEC_ARTIFACTS_TOP_K)
     ordered_ids = [doc_id for doc_id, _score in hits]
-    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed, org_id=org_id)
     return _order_by_ids(hydrated, ordered_ids)
 
 
@@ -229,6 +246,7 @@ def fts_lane(
     question: str,
     *,
     allowed: frozenset[str] | None = None,
+    org_id: int | None = None,
 ) -> list[RetrievedDoc]:
     """FTS (bm25 rank, top-15) — catches rare tokens plain vector similarity
     misses. `docs_fts` is contentless, so results join back through rowid;
@@ -236,7 +254,7 @@ def fts_lane(
     match_query = _or_of_quoted_tokens(question)
     if match_query is None:
         return []
-    vis_sql, vis_params = _visible_sql(allowed)
+    vis_sql, vis_params = _visible_sql(allowed, org_id=org_id)
     rows = conn.execute(
         f"""SELECT d.id AS id, bm25(docs_fts) AS rank
            FROM docs_fts f JOIN docs d ON d.rowid = f.rowid
@@ -245,7 +263,7 @@ def fts_lane(
         (match_query, *vis_params, FTS_TOP_K),
     ).fetchall()
     ordered_ids = [r["id"] for r in rows]
-    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed, org_id=org_id)
     return _order_by_ids(hydrated, ordered_ids)
 
 
@@ -255,6 +273,7 @@ def phrase_lane(
     question: str,
     *,
     allowed: frozenset[str] | None = None,
+    org_id: int | None = None,
 ) -> list[RetrievedDoc]:
     """PHRASE: FTS5 exact-phrase match per `exact_token` from the plan —
     catches pasted errors and identifiers a vector/bm25 lane would blur
@@ -265,7 +284,7 @@ def phrase_lane(
     tokens = plan.exact_tokens or [question]
     ordered_ids: list[str] = []
     seen: set[str] = set()
-    vis_sql, vis_params = _visible_sql(allowed)
+    vis_sql, vis_params = _visible_sql(allowed, org_id=org_id)
     for token in tokens:
         rows = conn.execute(
             f"""SELECT d.id AS id, bm25(docs_fts) AS rank
@@ -278,7 +297,7 @@ def phrase_lane(
             if r["id"] not in seen:
                 seen.add(r["id"])
                 ordered_ids.append(r["id"])
-    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed, org_id=org_id)
     return _order_by_ids(hydrated, ordered_ids)[:PHRASE_TOP_K]
 
 
@@ -288,6 +307,7 @@ def graph_lane(
     plan: QueryPlan,
     *,
     allowed: frozenset[str] | None = None,
+    org_id: int | None = None,
 ) -> list[RetrievedDoc]:
     """GRAPH: aliases -> entities -> expand ontology+MENTIONS <=2 hops ->
     doc_ids ranked by hop distance then ts (§10.2), via
@@ -307,7 +327,7 @@ def graph_lane(
         # the case that has to degrade, not propagate.
         return []
     ordered_ids = [doc_id for doc_id, _hop in hits]  # already hop-sorted; ts tiebreak happens in fuse's age decay
-    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed, org_id=org_id)
     return _order_by_ids(hydrated, ordered_ids)
 
 
@@ -317,6 +337,7 @@ def who_knows_lane(
     plan: QueryPlan,
     *,
     allowed: frozenset[str] | None = None,
+    org_id: int | None = None,
 ) -> list[RetrievedDoc]:
     """WHO_KNOWS (intent=who, §4.3): the evidence doc for every ontology
     edge touching an entity the question names — via `HydraStore.who_knows`.
@@ -339,7 +360,7 @@ def who_knows_lane(
             seen.add(doc_id)
             ordered_ids.append(doc_id)
     ordered_ids = ordered_ids[:WHO_KNOWS_TOP_K]
-    hydrated = _hydrate(conn, ordered_ids, allowed=allowed)
+    hydrated = _hydrate(conn, ordered_ids, allowed=allowed, org_id=org_id)
     return _order_by_ids(hydrated, ordered_ids)
 
 
@@ -364,22 +385,23 @@ def run_lanes(
     skips GRAPH/WHO_KNOWS entirely rather than failing the whole question —
     the other four lanes still answer."""
     allowed = None if ask is None else allowed_stamps(ask)
+    org_id = None if ask is None else ask.org_id
     with ThreadPoolExecutor(max_workers=6) as pool:
         vector_f = pool.submit(
-            vector_lane, conn, index, embed_fn, plan, question, allowed=allowed
+            vector_lane, conn, index, embed_fn, plan, question, allowed=allowed, org_id=org_id
         )
         vec_art_f = pool.submit(
-            vector_artifacts_lane, conn, index, embed_fn, plan, question, allowed=allowed
+            vector_artifacts_lane, conn, index, embed_fn, plan, question, allowed=allowed, org_id=org_id
         )
-        fts_f = pool.submit(fts_lane, conn, plan, question, allowed=allowed)
-        phrase_f = pool.submit(phrase_lane, conn, plan, question, allowed=allowed)
+        fts_f = pool.submit(fts_lane, conn, plan, question, allowed=allowed, org_id=org_id)
+        phrase_f = pool.submit(phrase_lane, conn, plan, question, allowed=allowed, org_id=org_id)
         graph_f = (
-            pool.submit(graph_lane, conn, hydra_store, plan, allowed=allowed)
+            pool.submit(graph_lane, conn, hydra_store, plan, allowed=allowed, org_id=org_id)
             if hydra_store is not None
             else None
         )
         who_f = (
-            pool.submit(who_knows_lane, conn, hydra_store, plan, allowed=allowed)
+            pool.submit(who_knows_lane, conn, hydra_store, plan, allowed=allowed, org_id=org_id)
             if hydra_store is not None
             else None
         )

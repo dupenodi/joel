@@ -145,12 +145,16 @@ class Room:
 @dataclass(frozen=True)
 class AskContext:
     """Who is asking, and from where. `aliases` and `channels` are already
-    complete stamps (`user:gmail:ada@x.com`, `channel:slack:C123`)."""
+    complete stamps (`user:gmail:ada@x.com`, `channel:slack:C123`).
+
+    `org_id` is the tenant boundary for FTS/SQL lanes (Mode B); LiveIndex and
+    Hydra are scoped separately by the caller using the same id."""
 
     actor_id: str
     room: Room
     aliases: frozenset[str] = frozenset()
     channels: frozenset[str] = frozenset()
+    org_id: int = 1
 
     @staticmethod
     def web(
@@ -158,12 +162,14 @@ class AskContext:
         *,
         aliases: Iterable[str] = (),
         channels: Iterable[str] = (),
+        org_id: int = 1,
     ) -> AskContext:
         return AskContext(
             actor_id=actor_id,
             room=Room.web(),
             aliases=frozenset(aliases),
             channels=frozenset(channels),
+            org_id=org_id,
         )
 
 

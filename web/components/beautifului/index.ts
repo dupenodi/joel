@@ -20,7 +20,7 @@ export { ConflictBlock } from "./ConflictBlock";
 export { NotFoundCallout, AbsentAnswer } from "./NotFoundCallout";
 export { ReasoningPath } from "./ReasoningPath";
 export { LaneChips } from "./LaneChips";
-export { AnswerTurn, UserTurn } from "./AnswerTurn";
+export { AnswerTurn, SimpleAnswer, UserTurn } from "./AnswerTurn";
 export { MemoryBanner } from "./MemoryBanner";
 export type { MemoryBannerKind } from "./MemoryBanner";
 export { ConversationList } from "./ConversationList";

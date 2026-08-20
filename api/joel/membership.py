@@ -23,6 +23,7 @@ def sync_slack_channel_memberships(
     token: str = "",
     caller: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     now: str,
+    org_id: int = 1,
 ) -> int:
     """For every configured channel, fetch its member Slack user ids, match
     them against workspace users by email, and upsert `channel_memberships`
@@ -37,7 +38,12 @@ def sync_slack_channel_memberships(
     if not slack_emails:
         return 0
     workspace_users = {
-        str(row["email"]).strip().lower(): row["id"] for row in conn.execute("SELECT id, email FROM users")
+        str(row["email"]).strip().lower(): row["id"]
+        for row in conn.execute(
+            """SELECT u.id, u.email FROM users u
+               JOIN memberships m ON m.user_id = u.id AND m.org_id=?""",
+            (org_id,),
+        )
     }
     if not workspace_users:
         return 0
@@ -50,20 +56,24 @@ def sync_slack_channel_memberships(
             if not user_id:
                 continue
             conn.execute(
-                """INSERT INTO channel_memberships(user_id, provider, channel_id, updated_at)
-                   VALUES (?,?,?,?)
-                   ON CONFLICT(user_id, provider, channel_id) DO UPDATE SET updated_at=excluded.updated_at""",
-                (user_id, "slack", channel_id, now),
+                """INSERT INTO channel_memberships(org_id, user_id, provider, channel_id, updated_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(org_id, user_id, provider, channel_id)
+                   DO UPDATE SET updated_at=excluded.updated_at""",
+                (org_id, user_id, "slack", channel_id, now),
             )
             written += 1
     return written
 
 
-def member_channel_stamps(conn: sqlite3.Connection, user_id: str) -> frozenset[str]:
+def member_channel_stamps(
+    conn: sqlite3.Connection, user_id: str, *, org_id: int = 1
+) -> frozenset[str]:
     """Every `channel:{provider}:{id}` visibility stamp this actor is a
     member of — feeds `AskContext.web`'s `channels` set directly."""
     rows = conn.execute(
-        "SELECT provider, channel_id FROM channel_memberships WHERE user_id=?", (user_id,)
+        "SELECT provider, channel_id FROM channel_memberships WHERE user_id=? AND org_id=?",
+        (user_id, org_id),
     ).fetchall()
     return frozenset(Visibility.channel(r["provider"], r["channel_id"]).stamp for r in rows)
 

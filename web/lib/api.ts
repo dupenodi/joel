@@ -74,11 +74,36 @@ export async function getAuthStatus(): Promise<AuthStatus> {
   return api("/api/auth/status");
 }
 
+export async function listWorkspaces(): Promise<{
+  workspaces: import("./types").WorkspaceMembership[];
+}> {
+  return api("/api/workspaces");
+}
+
+export async function switchWorkspace(orgId: number): Promise<AuthStatus> {
+  return api("/api/auth/workspace", {
+    method: "POST",
+    body: JSON.stringify({ org_id: orgId }),
+  });
+}
+
+export async function createWorkspace(input: {
+  name?: string;
+  domain?: string;
+  slug?: string;
+}): Promise<AuthStatus> {
+  return api("/api/workspaces", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function setupWorkspace(input: {
   email: string;
   password: string;
   display_name?: string;
   domain?: string;
+  name?: string;
 }): Promise<AuthStatus> {
   return api("/api/auth/setup", {
     method: "POST",
@@ -103,7 +128,7 @@ export async function peekInvite(token: string): Promise<InvitePeek> {
 
 export async function acceptInvite(
   token: string,
-  input: { password: string; display_name?: string },
+  input: { password?: string; display_name?: string } = {},
 ): Promise<AuthStatus> {
   return api(`/api/auth/invite/${encodeURIComponent(token)}/accept`, {
     method: "POST",
@@ -132,12 +157,32 @@ export async function patchWorkspace(body: {
 
 export async function createInvite(input: {
   email: string;
-  role: "admin" | "member";
-}): Promise<{ invite_id: string; token: string; invites: WorkspaceInvite[] }> {
+  role: "owner" | "admin" | "member";
+}): Promise<{
+  invite_id: string;
+  token: string;
+  email: string;
+  invites: WorkspaceInvite[];
+  email_sent: boolean;
+  email_error: string | null;
+  mail_configured: boolean;
+}> {
   return api("/api/workspace/invites", {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export async function resendInvite(inviteId: string): Promise<{
+  invite_id: string;
+  token: string;
+  email: string;
+  invites: WorkspaceInvite[];
+  email_sent: boolean;
+  email_error: string | null;
+  mail_configured: boolean;
+}> {
+  return api(`/api/workspace/invites/${inviteId}/resend`, { method: "POST" });
 }
 
 export async function revokeInvite(inviteId: string): Promise<void> {
@@ -146,7 +191,7 @@ export async function revokeInvite(inviteId: string): Promise<void> {
 
 export async function setMemberRole(
   userId: string,
-  role: "admin" | "member",
+  role: "owner" | "admin" | "member",
 ): Promise<void> {
   await api(`/api/workspace/members/${userId}`, {
     method: "PATCH",
@@ -289,6 +334,15 @@ export async function putSettings(
   });
 }
 
+export async function testOutboundEmail(
+  to?: string,
+): Promise<{ status: string; provider: string }> {
+  return api("/api/settings/email/test", {
+    method: "POST",
+    body: JSON.stringify({ to: to ?? "" }),
+  });
+}
+
 export async function getProfile(): Promise<Profile | null> {
   return api("/api/profile");
 }
@@ -297,6 +351,16 @@ export async function putProfile(display_name: string): Promise<void> {
   await api("/api/profile", {
     method: "PUT",
     body: JSON.stringify({ display_name }),
+  });
+}
+
+export async function changePassword(
+  current_password: string,
+  new_password: string,
+): Promise<void> {
+  await api("/api/profile/password", {
+    method: "PUT",
+    body: JSON.stringify({ current_password, new_password }),
   });
 }
 

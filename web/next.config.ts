@@ -11,7 +11,7 @@ const nextConfig: NextConfig = {
     return [
       { source: "/chat", destination: "/", permanent: false },
       { source: "/connectors", destination: "/integrations", permanent: false },
-      { source: "/profile", destination: "/settings", permanent: false },
+      { source: "/profile", destination: "/settings/profile", permanent: false },
       { source: "/memories", destination: "/graph", permanent: false },
     ];
   },

@@ -174,7 +174,13 @@ def _fts_insert(conn: sqlite3.Connection, rowid: int, title: str, body: str) -> 
     )
 
 
-def _upsert_sqlite_and_fts(conn: sqlite3.Connection, docs: list[StoreDoc], now: str) -> list[str]:
+def _upsert_sqlite_and_fts(
+    conn: sqlite3.Connection,
+    docs: list[StoreDoc],
+    now: str,
+    *,
+    org_id: int | None = None,
+) -> list[str]:
     """SQLite `docs` row (partial UPDATE on conflict — ingest-only columns
     like external_id/thread_id are never touched here) + FTS5 delete-before-
     insert (contentless tables can't reconstruct old text themselves, so the
@@ -195,39 +201,76 @@ def _upsert_sqlite_and_fts(conn: sqlite3.Connection, docs: list[StoreDoc], now: 
         had_fts_row = existing is not None and conn.execute(
             "SELECT 1 FROM docs_fts WHERE rowid=?", (existing["rowid"],)
         ).fetchone() is not None
-        conn.execute(
-            """INSERT INTO docs(
-                 id, source_type, external_id, title, body, content_hash, url,
-                 timestamp, container, extra_json, first_seen, last_seen, forgotten,
-                 granularity, artifact_class, validity, resolved, period, visibility)
-               VALUES (?,?,?,?,?,?,?,?,?,'{}',?,?,0,?,?,?,?,?,?)
-               ON CONFLICT(id) DO UPDATE SET
-                 title=excluded.title, body=excluded.body, content_hash=excluded.content_hash,
-                 url=excluded.url, timestamp=excluded.timestamp, container=excluded.container,
-                 granularity=excluded.granularity, artifact_class=excluded.artifact_class,
-                 validity=excluded.validity, resolved=excluded.resolved, period=excluded.period,
-                 visibility=excluded.visibility,
-                 last_seen=excluded.last_seen, forgotten=0""",
-            (
-                doc.id,
-                doc.source_type,
-                doc.id,  # external_id default for a store-native doc (artifact/burst)
-                doc.title,
-                doc.body,
-                doc.content_hash,
-                doc.url,
-                doc.ts,
-                doc.container,
-                now,
-                now,
-                doc.granularity,
-                doc.artifact_class,
-                doc.validity,
-                doc.resolved,
-                doc.period,
-                doc.visibility,
-            ),
-        )
+        if org_id is not None:
+            conn.execute(
+                """INSERT INTO docs(
+                     id, source_type, external_id, title, body, content_hash, url,
+                     timestamp, container, extra_json, first_seen, last_seen, forgotten,
+                     granularity, artifact_class, validity, resolved, period, visibility,
+                     org_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,'{}',?,?,0,?,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     title=excluded.title, body=excluded.body, content_hash=excluded.content_hash,
+                     url=excluded.url, timestamp=excluded.timestamp, container=excluded.container,
+                     granularity=excluded.granularity, artifact_class=excluded.artifact_class,
+                     validity=excluded.validity, resolved=excluded.resolved, period=excluded.period,
+                     visibility=excluded.visibility,
+                     last_seen=excluded.last_seen, forgotten=0""",
+                (
+                    doc.id,
+                    doc.source_type,
+                    doc.id,
+                    doc.title,
+                    doc.body,
+                    doc.content_hash,
+                    doc.url,
+                    doc.ts,
+                    doc.container,
+                    now,
+                    now,
+                    doc.granularity,
+                    doc.artifact_class,
+                    doc.validity,
+                    doc.resolved,
+                    doc.period,
+                    doc.visibility,
+                    org_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO docs(
+                     id, source_type, external_id, title, body, content_hash, url,
+                     timestamp, container, extra_json, first_seen, last_seen, forgotten,
+                     granularity, artifact_class, validity, resolved, period, visibility)
+                   VALUES (?,?,?,?,?,?,?,?,?,'{}',?,?,0,?,?,?,?,?,?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     title=excluded.title, body=excluded.body, content_hash=excluded.content_hash,
+                     url=excluded.url, timestamp=excluded.timestamp, container=excluded.container,
+                     granularity=excluded.granularity, artifact_class=excluded.artifact_class,
+                     validity=excluded.validity, resolved=excluded.resolved, period=excluded.period,
+                     visibility=excluded.visibility,
+                     last_seen=excluded.last_seen, forgotten=0""",
+                (
+                    doc.id,
+                    doc.source_type,
+                    doc.id,  # external_id default for a store-native doc (artifact/burst)
+                    doc.title,
+                    doc.body,
+                    doc.content_hash,
+                    doc.url,
+                    doc.ts,
+                    doc.container,
+                    now,
+                    now,
+                    doc.granularity,
+                    doc.artifact_class,
+                    doc.validity,
+                    doc.resolved,
+                    doc.period,
+                    doc.visibility,
+                ),
+            )
         rowid = conn.execute("SELECT rowid FROM docs WHERE id=?", (doc.id,)).fetchone()[0]
         if had_fts_row:
             _fts_delete(conn, existing["rowid"], existing["title"], existing["body"])
@@ -379,6 +422,7 @@ def upsert_docs(
     *,
     embed_fn: EmbedFn,
     now: str,
+    org_id: int | None = None,
 ) -> UpsertReport:
     """The §8.2 orchestrator. Order matters: SQLite/FTS first (source of
     truth for retrieval text), then vectors, then the graph — a crash
@@ -388,7 +432,7 @@ def upsert_docs(
     report = UpsertReport()
     if not docs:
         return report
-    report.sqlite_upserted = _upsert_sqlite_and_fts(conn, docs, now)
+    report.sqlite_upserted = _upsert_sqlite_and_fts(conn, docs, now, org_id=org_id)
     report.vectors_upserted = _upsert_vectors(index, docs, embed_fn)
     _upsert_graph(conn, hydra_store, docs, report)
     return report

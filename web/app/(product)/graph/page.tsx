@@ -33,7 +33,7 @@ export default function GraphPage() {
         <ContentFrame width="wide">
           <PageHeader
             title="Graph"
-            description="People and decisions linked across tools. Ask from Home — this is the map."
+            description="Preview — stats and a sketch of the constellation. Ask from Chat for the real map."
           />
           <GraphSkeleton />
         </ContentFrame>
@@ -51,7 +51,7 @@ export default function GraphPage() {
       <ContentFrame width="wide">
         <PageHeader
           title="Graph"
-          description="People and decisions linked across tools. Ask from Home — this is the map."
+          description="Preview — corpus health and a sketch of linked tools. Relationship search lives in chat."
         />
 
         <div className="rounded-card bg-surface p-5 shadow-card">

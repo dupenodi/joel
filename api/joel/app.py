@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sqlite3
 import threading
 import time
@@ -58,6 +59,7 @@ from joel.connectors.composio_conn import (
     slack_proxy_call,
     start_toolkit_connect,
 )
+from joel import mail as joel_mail
 from joel.connectors.gate import (
     INGEST_PROVIDERS,
     INTEGRATION_BY_ID,
@@ -79,6 +81,7 @@ from joel.syncer import (
     release_running_jobs,
     start_scheduler,
 )
+from joel import auth as joel_auth
 from joel import identity
 from joel.mcp_server import build_mcp_app
 from joel.slack_bot import SeenEvents, parse_app_mention, post_reply, strip_mention, verify_signature
@@ -100,7 +103,7 @@ from joel.connectors.slack import (
     fetch_slack_docs,
     slack_channels_floor,
 )
-from joel.config import Settings
+from joel.config import Settings, hydra_namespace_for
 from joel.hydra import Hydra
 from joel.live_index import LiveIndex
 from joel.llm import make_openrouter_caller
@@ -122,6 +125,9 @@ DB_PATH = DATA_DIR / "index" / "joel.db"
 # never pays for a Hydra connection or a model load. Long-lived by design:
 # Hydra's driver and the embedding model are meant to be constructed once
 # and reused, not per-request.
+#
+# Mode B: LiveIndex and HydraStore are cached per org_id (separate npz
+# files and Hydra namespaces). Embed model + base Settings stay shared.
 _RUNTIME: dict[str, Any] = {}
 _RUNTIME_LOCK = threading.Lock()
 
@@ -134,14 +140,43 @@ def _runtime() -> dict[str, Any]:
             settings = Settings.from_env()
             _RUNTIME["settings"] = settings
             _RUNTIME["embed_model"] = SentenceTransformer(settings.embed_model)
-        if "hydra_store" not in _RUNTIME:
-            hydra = Hydra(_RUNTIME["settings"])
-            _RUNTIME["hydra"] = hydra
-            _RUNTIME["hydra_store"] = HydraStore(hydra)
-        if "live_index" not in _RUNTIME:
-            dim = _RUNTIME["embed_model"].get_sentence_embedding_dimension()
-            _RUNTIME["live_index"] = LiveIndex(DATA_DIR / "index" / "joel.npz", dim=dim)
+            _RUNTIME["live_indexes"] = {}
+            _RUNTIME["hydra_stores"] = {}
         return _RUNTIME
+
+
+def _live_index_for(org_id: int) -> LiveIndex:
+    """Per-org vector index at `index/org-{org_id}.npz`.
+
+    On first use for org 1, copies legacy `joel.npz` if present so existing
+    installs keep their vectors without a rebuild.
+    """
+    rt = _runtime()
+    with _RUNTIME_LOCK:
+        indexes: dict[int, LiveIndex] = rt["live_indexes"]
+        if org_id not in indexes:
+            index_dir = DATA_DIR / "index"
+            index_dir.mkdir(parents=True, exist_ok=True)
+            path = index_dir / f"org-{org_id}.npz"
+            legacy = index_dir / "joel.npz"
+            if org_id == 1 and not path.exists() and legacy.exists():
+                shutil.copy2(legacy, path)
+            dim = rt["embed_model"].get_sentence_embedding_dimension()
+            indexes[org_id] = LiveIndex(path, dim=dim)
+        return indexes[org_id]
+
+
+def _hydra_store_for(org_id: int) -> HydraStore:
+    """Per-org HydraStore with `X-Graph-Namespace: joel-org-{org_id}`."""
+    rt = _runtime()
+    with _RUNTIME_LOCK:
+        stores: dict[int, HydraStore] = rt["hydra_stores"]
+        if org_id not in stores:
+            settings = rt["settings"].for_org(org_id)
+            assert settings.hydra_namespace == hydra_namespace_for(org_id)
+            hydra = Hydra(settings)
+            stores[org_id] = HydraStore(hydra)
+        return stores[org_id]
 
 
 # `run_lanes` (retrieve/lanes.py) deliberately runs its lanes concurrently
@@ -184,7 +219,87 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "composio_api_key": "",
     "embed_model": "BAAI/bge-small-en-v1.5",
     "slack_signing_secret": "",
+    # Outbound email — optional. none | smtp | resend
+    "mail_provider": "none",
+    "mail_from": "",
+    "mail_from_name": "joel",
+    "mail_app_url": "",
+    "mail_smtp_host": "",
+    "mail_smtp_port": "587",
+    "mail_smtp_user": "",
+    "mail_smtp_password": "",
+    "mail_smtp_tls": "true",
+    "mail_resend_api_key": "",
 }
+
+
+def _is_secret_setting(key: str) -> bool:
+    return key.endswith(("key", "secret", "password"))
+
+
+def _public_app_url(request: Request, settings: dict[str, str]) -> str:
+    """Join-link origin for invite emails.
+
+    Prefer the explicit mail_app_url setting, then the browser Origin/Referer
+    on the invite request, then JOEL_WEB_ORIGIN (same fallback as OAuth).
+    """
+    configured = (settings.get("mail_app_url") or "").strip()
+    if configured:
+        return configured.rstrip("/")
+    for header in ("origin", "referer"):
+        raw = (request.headers.get(header) or "").strip()
+        if not raw:
+            continue
+        parts = urlsplit(raw)
+        if parts.scheme and parts.netloc:
+            return f"{parts.scheme}://{parts.netloc}"
+    return os.getenv("JOEL_WEB_ORIGIN", "http://localhost:3000").rstrip("/")
+
+
+def _cors_origins() -> list[str]:
+    primary = os.getenv("JOEL_WEB_ORIGIN", "http://localhost:3000").rstrip("/")
+    origins = [primary, "http://localhost:3000", "http://127.0.0.1:3000"]
+    # Preserve order, drop dupes.
+    seen: set[str] = set()
+    out: list[str] = []
+    for origin in origins:
+        if origin and origin not in seen:
+            seen.add(origin)
+            out.append(origin)
+    return out
+
+
+def _cookie_secure() -> bool:
+    return os.getenv("JOEL_HTTPS", "").strip().lower() in {"1", "true", "yes"}
+
+
+def _send_invite_email(
+    settings: dict[str, str],
+    *,
+    email: str,
+    role: str,
+    token: str,
+    workspace_name: str,
+    app_url: str,
+) -> tuple[bool, str | None]:
+    """Attempt invite email. Returns (sent, error_message)."""
+    if not joel_mail.is_configured(settings):
+        return False, None
+    join_url = f"{app_url.rstrip('/')}/join?token={token}"
+    try:
+        joel_mail.try_send(
+            settings,
+            joel_mail.invite_email(
+                to=email,
+                workspace_name=workspace_name,
+                role=role,
+                join_url=join_url,
+                expires_days=identity.INVITE_DAYS,
+            ),
+        )
+    except joel_mail.MailError as exc:
+        return False, str(exc)
+    return True, None
 
 
 def _now() -> str:
@@ -246,23 +361,40 @@ def run_migrations(conn: sqlite3.Connection) -> None:
         current = version
 
 
+def seed_org_defaults(conn: sqlite3.Connection, org_id: int) -> None:
+    """Seed default settings and spend rows for an org."""
+    for k, v in DEFAULT_SETTINGS.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(org_id, key, value) VALUES (?, ?, ?)",
+            (org_id, k, v),
+        )
+    for stage in ("distill", "extract", "answer", "resolve", "rerank"):
+        conn.execute(
+            "INSERT OR IGNORE INTO spend(org_id, stage, calls) VALUES (?, ?, 0)",
+            (org_id, stage),
+        )
+
+
 def init_db() -> None:
     with db() as conn:
         run_migrations(conn)
-        for k, v in DEFAULT_SETTINGS.items():
-            conn.execute(
-                "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)",
-                (k, v),
-            )
-        for stage in ("distill", "extract", "answer", "resolve", "rerank"):
-            conn.execute(
-                "INSERT OR IGNORE INTO spend(stage, calls) VALUES (?, 0)",
-                (stage,),
-            )
+        # Seed defaults for existing orgs (backward compat)
+        # Don't seed if no orgs exist yet (fresh install, setup will create org 1)
+        org_ids = [r["id"] for r in conn.execute("SELECT id FROM orgs")]
+        for org_id in org_ids:
+            seed_org_defaults(conn, org_id)
 
 
-def _settings_map(conn: sqlite3.Connection) -> dict[str, str]:
-    return {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings")}
+def _settings_map(conn: sqlite3.Connection, org_id: int | None = None) -> dict[str, str]:
+    """Get settings for org. Falls back to org_id=1 for backward compat."""
+    if org_id is None:
+        org_id = 1
+    return {
+        r["key"]: r["value"]
+        for r in conn.execute(
+            "SELECT key, value FROM settings WHERE org_id=?", (org_id,)
+        )
+    }
 
 
 def _checklist_default() -> dict[str, bool]:
@@ -284,14 +416,14 @@ def _parse_checklist(raw: str) -> dict[str, bool]:
 
 
 def _persist_canonical_docs(
-    conn: sqlite3.Connection, docs: list[CanonicalDoc]
+    conn: sqlite3.Connection, docs: list[CanonicalDoc], *, org_id: int
 ) -> tuple[dict[str, int], list[CanonicalDoc]]:
     """Append new/changed canonical lines and update the disposable docs
     index. Returns (counts, dirty_docs) — dirty_docs (new+changed) is what
     the store pipeline (pipeline.py) needs to know what to upsert/re-distill;
     unchanged docs need no further work downstream."""
     rows = conn.execute(
-        "SELECT id, content_hash, forgotten FROM docs"
+        "SELECT id, content_hash, forgotten FROM docs WHERE org_id=?", (org_id,)
     ).fetchall()
     forgotten_ids = {r["id"] for r in rows if r["forgotten"]}
     known = {
@@ -304,7 +436,10 @@ def _persist_canonical_docs(
     report = triage_batch(docs, known)
     seen_at = _now()
     for doc in report.unchanged:
-        conn.execute("UPDATE docs SET last_seen=? WHERE id=?", (seen_at, doc.doc_id))
+        conn.execute(
+            "UPDATE docs SET last_seen=? WHERE id=? AND org_id=?",
+            (seen_at, doc.doc_id, org_id),
+        )
 
     canonical_dir = DATA_DIR / "canonical"
     canonical_dir.mkdir(parents=True, exist_ok=True)
@@ -316,8 +451,8 @@ def _persist_canonical_docs(
             """INSERT INTO docs(
                  id, source_type, external_id, title, body, content_hash, url,
                  timestamp, thread_id, parent_id, author_raw, container,
-                 extra_json, first_seen, last_seen, forgotten, visibility)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)
+                 extra_json, first_seen, last_seen, forgotten, visibility, org_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  title=excluded.title, body=excluded.body,
                  content_hash=excluded.content_hash, url=excluded.url,
@@ -325,7 +460,7 @@ def _persist_canonical_docs(
                  parent_id=excluded.parent_id, author_raw=excluded.author_raw,
                  container=excluded.container, extra_json=excluded.extra_json,
                  last_seen=excluded.last_seen, forgotten=0,
-                 visibility=excluded.visibility""",
+                 visibility=excluded.visibility, org_id=excluded.org_id""",
             (
                 doc.doc_id,
                 doc.source_type,
@@ -343,6 +478,7 @@ def _persist_canonical_docs(
                 first_seen,
                 seen_at,
                 doc.visibility,
+                org_id,
             ),
         )
     for source_type, source_docs in by_source.items():
@@ -501,6 +637,11 @@ class ProfileIn(BaseModel):
     display_name: str | None = None
 
 
+class PasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class SettingsIn(BaseModel):
     values: dict[str, str] = Field(default_factory=dict)
 
@@ -514,6 +655,7 @@ class SetupIn(BaseModel):
     password: str
     display_name: str = ""
     domain: str | None = None
+    name: str | None = None
 
 
 class LoginIn(BaseModel):
@@ -526,8 +668,12 @@ class InviteIn(BaseModel):
     role: str = "member"
 
 
+class TestEmailIn(BaseModel):
+    to: str = ""
+
+
 class AcceptInviteIn(BaseModel):
-    password: str
+    password: str | None = None
     display_name: str = ""
 
 
@@ -544,33 +690,7 @@ class WorkspacePatch(BaseModel):
 
 app = FastAPI(title="joel-api", version="0.1.0")
 
-SESSION_COOKIE = "joel_session"
-
-_PUBLIC_EXACT = {
-    ("GET", "/api/healthz"),
-    ("GET", "/api/auth/status"),
-    ("POST", "/api/auth/setup"),
-    ("POST", "/api/auth/login"),
-    ("POST", "/api/auth/logout"),
-    ("GET", "/api/composio/callback"),
-    # Slack calls this directly -- it authenticates itself via its own
-    # request signature (verify_signature), never the joel_session cookie.
-    ("POST", "/api/slack/events"),
-}
-
-
-def _is_public_path(method: str, path: str) -> bool:
-    if method == "OPTIONS":
-        return True
-    if (method, path) in _PUBLIC_EXACT:
-        return True
-    if path.startswith("/mcp"):
-        # §13's MCP surface authenticates its own requests by API key
-        # (mcp_server.py's _BearerAuthASGI), never the joel_session cookie
-        # -- it must bypass this cookie-session gate entirely rather than
-        # 401ing before its own auth even runs.
-        return True
-    return path.startswith("/api/auth/invite/")
+SESSION_COOKIE = joel_auth.SESSION_COOKIE
 
 
 def _set_session_cookie(response: Response, session_id: str) -> None:
@@ -579,6 +699,7 @@ def _set_session_cookie(response: Response, session_id: str) -> None:
         session_id,
         httponly=True,
         samesite="lax",
+        secure=_cookie_secure(),
         max_age=identity.SESSION_DAYS * 86400,
         path="/",
     )
@@ -592,11 +713,26 @@ def _identity_error(exc: identity.IdentityError) -> HTTPException:
     return HTTPException(exc.status, str(exc))
 
 
+def _request_identity(request: Request) -> joel_auth.RequestIdentity:
+    who = getattr(request.state, "identity", None)
+    if isinstance(who, joel_auth.RequestIdentity):
+        return who
+    return joel_auth.RequestIdentity(session_id=None, user_id=None, actor=None)
+
+
 def _require_actor(request: Request) -> identity.Actor:
     actor = getattr(request.state, "actor", None)
     if not isinstance(actor, identity.Actor):
         raise HTTPException(401, "Not signed in")
     return actor
+
+
+def _require_session_user(request: Request) -> tuple[str, str]:
+    """Signed-in person, even with no active workspace. Returns (session_id, user_id)."""
+    who = _request_identity(request)
+    if not who.session_id or not who.user_id:
+        raise HTTPException(401, "Not signed in")
+    return who.session_id, who.user_id
 
 
 def _require_admin(request: Request) -> identity.Actor:
@@ -606,41 +742,75 @@ def _require_admin(request: Request) -> identity.Actor:
     return actor
 
 
+def _require_connection_mutate(
+    request: Request, row: sqlite3.Row
+) -> identity.Actor:
+    """Org connectors: admin only. Personal: owner or admin. Always same org."""
+    actor = _require_actor(request)
+    row_org = int(row["org_id"]) if "org_id" in row.keys() and row["org_id"] is not None else 1
+    if row_org != actor.org_id:
+        raise HTTPException(404, "Not found")
+    owned_by = row["owned_by"] if "owned_by" in row.keys() else None
+    if owned_by is None:
+        if not actor.is_admin:
+            raise HTTPException(403, "Only an admin can manage org connectors")
+    elif owned_by != actor.user_id and not actor.is_admin:
+        raise HTTPException(403, "Not your connector")
+    return actor
+
+
 def _auth_payload(
-    conn: sqlite3.Connection, actor: identity.Actor | None
+    conn: sqlite3.Connection,
+    actor: identity.Actor | None,
+    *,
+    workspaces: list[dict[str, Any]] | None = None,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
-    workspace = identity.workspace_public(conn)
+    """Build auth status payload.
+    
+    States:
+    - setup: no users exist
+    - login: no session or expired
+    - pick_workspace: session valid but active_org_id is null (multi-org user)
+    - ok: authenticated with active workspace
+    """
     if identity.setup_needed(conn):
         state = "setup"
+        workspace = None
+    elif actor is None and workspaces:
+        # Session valid but no active_org_id (pick_workspace state)
+        state = "pick_workspace"
+        workspace = None
     elif actor is None:
         state = "login"
+        workspace = None
     else:
         state = "ok"
+        workspace = identity.workspace_public(conn, actor.org_id)
     return {
         "state": state,
         "me": None if actor is None else identity.actor_dict(actor),
         "workspace": workspace,
+        "workspaces": workspaces,
     }
 
 
 class SessionMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        if _is_public_path(request.method, request.url.path):
-            return await call_next(request)
+        needed = joel_auth.classify(request.method, request.url.path)
         with db() as conn:
-            actor = identity.actor_from_session(
-                conn, request.cookies.get(SESSION_COOKIE)
-            )
-        if actor is None:
+            who = joel_auth.resolve(conn, request.cookies.get(SESSION_COOKIE))
+        request.state.identity = who
+        request.state.actor = who.actor
+        if joel_auth.unauthorized(who, needed):
             return JSONResponse({"detail": "Not signed in"}, status_code=401)
-        request.state.actor = actor
         return await call_next(request)
 
 
 app.add_middleware(SessionMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -657,19 +827,6 @@ _scheduler_stop: threading.Event | None = None
 
 def _scheduler_tick() -> None:
     with db() as conn:
-        settings = _settings_map(conn)
-        if settings.get("sync_enabled", "true").lower() in {"0", "false", "no"}:
-            return
-        try:
-            max_concurrent = max(1, int(settings.get("sync_max_concurrent_jobs", "2")))
-        except ValueError:
-            max_concurrent = 2
-        running = conn.execute(
-            "SELECT COUNT(*) AS n FROM jobs WHERE status='running'"
-        ).fetchone()["n"]
-        capacity = max_concurrent - running
-        if capacity <= 0:
-            return
         now = _now()
         # status IN ('ready','error'): an errored connector must come back
         # for retry once its backoff window (§11.2) elapses via
@@ -677,15 +834,31 @@ def _scheduler_tick() -> None:
         # needs_reauth is deliberately excluded — only a reconnect flips
         # that back to 'ready'.
         rows = conn.execute(
-            """SELECT id, provider, channel_ids_json FROM connections
+            """SELECT id, provider, channel_ids_json, org_id FROM connections
                WHERE paused=0 AND status IN ('ready','error')
                  AND next_sync_at IS NOT NULL AND next_sync_at<=?
                  AND id NOT IN (SELECT connection_id FROM jobs WHERE status='running')
                ORDER BY next_sync_at
-               LIMIT ?""",
-            (now, capacity),
+               LIMIT 32""",
+            (now,),
         ).fetchall()
+        running = conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE status='running'"
+        ).fetchone()["n"]
+
+    started = 0
     for row in rows:
+        org_id = int(row["org_id"] or 1)
+        with db() as conn:
+            settings = _settings_map(conn, org_id)
+        if settings.get("sync_enabled", "true").lower() in {"0", "false", "no"}:
+            continue
+        try:
+            max_concurrent = max(1, int(settings.get("sync_max_concurrent_jobs", "2")))
+        except ValueError:
+            max_concurrent = 2
+        if running + started >= max_concurrent:
+            break
         provider = str(row["provider"])
         if provider not in INGEST_PROVIDERS:
             continue
@@ -693,6 +866,7 @@ def _scheduler_tick() -> None:
             continue
         try:
             _start_ingest(row["id"], first_sync=False, provider=provider)
+            started += 1
         except Exception:
             continue
 
@@ -701,16 +875,14 @@ def _scheduler_tick() -> None:
     # when [an incremental sync] becomes due" is enforced structurally by
     # ordering (incremental first, this second) plus jobs' own
     # one-running-job-per-connection guard, not by preempting a page
-    # mid-flight. `len(rows)` over-counts slightly when a start above
-    # failed/was skipped; that just leaves a little capacity unused for
-    # one tick, self-correcting on the next one.
-    deep_capacity = capacity - len(rows)
+    # mid-flight.
+    deep_capacity = max(0, 2 - running - started)
     if deep_capacity <= 0:
         return
     with db() as conn:
         placeholders = ",".join("?" * len(DEEP_BACKFILL_PROVIDERS))
         deep_rows = conn.execute(
-            f"""SELECT id, provider FROM connections
+            f"""SELECT id, provider, org_id FROM connections
                 WHERE paused=0 AND status='ready' AND backfill_done=0
                   AND backfill_cursor IS NOT NULL AND provider IN ({placeholders})
                   AND id NOT IN (SELECT connection_id FROM jobs WHERE status='running')
@@ -718,6 +890,11 @@ def _scheduler_tick() -> None:
             (*DEEP_BACKFILL_PROVIDERS, deep_capacity),
         ).fetchall()
     for row in deep_rows:
+        org_id = int(row["org_id"] or 1)
+        with db() as conn:
+            settings = _settings_map(conn, org_id)
+        if settings.get("sync_enabled", "true").lower() in {"0", "false", "no"}:
+            continue
         try:
             _start_deep_backfill(row["id"], provider=str(row["provider"]))
         except Exception:
@@ -926,11 +1103,12 @@ def _run_ingest(
     try:
         with db() as conn:
             credentials = _credential(conn, connection_id)
-            settings = _settings_map(conn)
             row = conn.execute(
-                "SELECT lookback_days, channel_ids_json FROM connections WHERE id=?",
+                "SELECT lookback_days, channel_ids_json, org_id FROM connections WHERE id=?",
                 (connection_id,),
             ).fetchone()
+            org_id = int(row["org_id"] or 1) if row is not None else 1
+            settings = _settings_map(conn, org_id)
         lookback_days = int(row["lookback_days"] or 30) if row is not None else 30
         docs = _fetch_provider_docs(provider, credentials, settings, row)
         if provider == "slack":
@@ -942,6 +1120,7 @@ def _run_ingest(
                         token=_slack_token(credentials),
                         caller=_slack_caller(credentials, settings),
                         now=_now(),
+                        org_id=org_id,
                     )
             except Exception:
                 # Membership is a read-widening convenience (§1.4), never
@@ -953,7 +1132,7 @@ def _run_ingest(
         if not _job_running(job_id):
             return
         with db() as conn:
-            counts, dirty_docs = _persist_canonical_docs(conn, docs)
+            counts, dirty_docs = _persist_canonical_docs(conn, docs, org_id=org_id)
             row = conn.execute(
                 "SELECT checklist_json FROM connections WHERE id=?", (connection_id,)
             ).fetchone()
@@ -968,8 +1147,9 @@ def _run_ingest(
                     json.dumps(checklist),
                     0.35 if first_sync else None,
                     conn.execute(
-                        "SELECT COUNT(*) AS n FROM docs WHERE source_type=? AND forgotten=0",
-                        (provider,),
+                        """SELECT COUNT(*) AS n FROM docs
+                           WHERE source_type=? AND forgotten=0 AND org_id=?""",
+                        (provider, org_id),
                     ).fetchone()["n"],
                     connection_id,
                 ),
@@ -986,14 +1166,19 @@ def _run_ingest(
         pipeline_error: str | None = None
         try:
             if dirty_docs:
-                rt = _runtime()
                 llm_call = (
                     make_openrouter_caller(settings) if settings.get("llm_api_key") else None
                 )
                 with db() as conn:
                     pipeline_report = run_store_pipeline(
-                        conn, rt["live_index"], rt["hydra_store"], _embed_fn, llm_call, dirty_docs,
+                        conn,
+                        _live_index_for(org_id),
+                        _hydra_store_for(org_id),
+                        _embed_fn,
+                        llm_call,
+                        dirty_docs,
                         data_dir=DATA_DIR,
+                        org_id=org_id,
                     )
                 errors = [*pipeline_report.distill_errors, *pipeline_report.ontology.extract_errors]
                 if errors:
@@ -1179,11 +1364,12 @@ def _run_deep_backfill_page(connection_id: str, job_id: str, *, provider: str) -
     try:
         with db() as conn:
             credentials = _credential(conn, connection_id)
-            settings = _settings_map(conn)
             row = conn.execute(
-                "SELECT backfill_cursor, channel_ids_json FROM connections WHERE id=?",
+                "SELECT backfill_cursor, channel_ids_json, org_id FROM connections WHERE id=?",
                 (connection_id,),
             ).fetchone()
+            org_id = int(row["org_id"] or 1) if row is not None else 1
+            settings = _settings_map(conn, org_id)
         if row is None or not row["backfill_cursor"]:
             with db() as conn:
                 conn.execute(
@@ -1198,19 +1384,24 @@ def _run_deep_backfill_page(connection_id: str, job_id: str, *, provider: str) -
         if not _job_running(job_id):
             return
         with db() as conn:
-            counts, dirty_docs = _persist_canonical_docs(conn, docs)
+            counts, dirty_docs = _persist_canonical_docs(conn, docs, org_id=org_id)
 
         pipeline_error: str | None = None
         try:
             if dirty_docs:
-                rt = _runtime()
                 llm_call = (
                     make_openrouter_caller(settings) if settings.get("llm_api_key") else None
                 )
                 with db() as conn:
                     pipeline_report = run_store_pipeline(
-                        conn, rt["live_index"], rt["hydra_store"], _embed_fn, llm_call, dirty_docs,
+                        conn,
+                        _live_index_for(org_id),
+                        _hydra_store_for(org_id),
+                        _embed_fn,
+                        llm_call,
+                        dirty_docs,
                         data_dir=DATA_DIR,
+                        org_id=org_id,
                     )
                 errors = [*pipeline_report.distill_errors, *pipeline_report.ontology.extract_errors]
                 if errors:
@@ -1225,9 +1416,16 @@ def _run_deep_backfill_page(connection_id: str, job_id: str, *, provider: str) -
         with db() as conn:
             conn.execute(
                 """UPDATE connections SET backfill_done=?, backfill_cursor=?,
-                   doc_count=(SELECT COUNT(*) FROM docs WHERE source_type=? AND forgotten=0)
+                   doc_count=(SELECT COUNT(*) FROM docs
+                              WHERE source_type=? AND forgotten=0 AND org_id=?)
                    WHERE id=?""",
-                (1 if done else 0, None if done else since.isoformat(), provider, connection_id),
+                (
+                    1 if done else 0,
+                    None if done else since.isoformat(),
+                    provider,
+                    org_id,
+                    connection_id,
+                ),
             )
             conn.execute(
                 """UPDATE jobs SET finished_at=?, status='ok', new_count=?,
@@ -1285,6 +1483,7 @@ def _upsert_connection(
     mode: str,
     credentials: dict[str, Any],
     *,
+    org_id: int,
     lookback_days: int = 30,
     status: str = "backfilling",
     reset_progress: bool = True,
@@ -1294,13 +1493,14 @@ def _upsert_connection(
     connection every provider has always had (unchanged default, backward
     compatible); a real user id makes this THAT PERSON's own connection,
     coexisting with the org one and any other person's, per provider
-    (`UNIQUE(provider, owned_by)`, migration 008)."""
+    (`UNIQUE(org_id, provider, owned_by)`, migration 011)."""
     spec = INTEGRATION_BY_ID[provider]
     with db() as conn:
-        if conn.execute("SELECT id FROM orgs WHERE id=1").fetchone() is None:
+        if conn.execute("SELECT id FROM orgs WHERE id=?", (org_id,)).fetchone() is None:
             raise HTTPException(400, "Create an org first")
         existing = conn.execute(
-            "SELECT id FROM connections WHERE provider=? AND owned_by IS ?", (provider, owned_by)
+            "SELECT id FROM connections WHERE org_id=? AND provider=? AND owned_by IS ?",
+            (org_id, provider, owned_by),
         ).fetchone()
         created = existing is None
         connection_id = (
@@ -1311,11 +1511,12 @@ def _upsert_connection(
         if created:
             conn.execute(
                 """INSERT INTO connections(
-                     id, provider, mode, status, interval_min, checklist_json,
+                     id, org_id, provider, mode, status, interval_min, checklist_json,
                      created_at, backfill_progress, lookback_days, owned_by, kind)
-                   VALUES (?,?,?,?,?,?,?,0.05,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,0.05,?,?,?)""",
                 (
                     connection_id,
+                    org_id,
                     provider,
                     mode,
                     status,
@@ -1394,19 +1595,20 @@ def _app_redirect(origin: str, return_to: str, **params: str) -> RedirectRespons
     return _oauth_redirect(target, **params)
 
 
-def _pending_lookback(toolkit: str) -> tuple[int, str, str, str | None]:
+def _pending_lookback(toolkit: str) -> tuple[int, str, str, str | None, int]:
     with db() as conn:
         row = conn.execute(
-            "SELECT lookback_days, return_to, origin, owned_by FROM pending_connects WHERE toolkit=?",
+            "SELECT lookback_days, return_to, origin, owned_by, org_id FROM pending_connects WHERE toolkit=?",
             (toolkit,),
         ).fetchone()
     if row is None:
-        return 30, "connectors", "", None
+        return 30, "connectors", "", None, 1
     days = int(row["lookback_days"] or 30)
     if days not in LOOKBACK_DAYS:
         days = 30
     owned_by = row["owned_by"] if "owned_by" in row.keys() else None
-    return days, str(row["return_to"] or "connectors"), str(row["origin"] or ""), owned_by
+    org_id = int(row["org_id"] or 1) if "org_id" in row.keys() else 1
+    return days, str(row["return_to"] or "connectors"), str(row["origin"] or ""), owned_by, org_id
 
 
 def _activate_composio_toolkit(
@@ -1414,6 +1616,7 @@ def _activate_composio_toolkit(
     *,
     lookback_days: int,
     start_sync: bool,
+    org_id: int,
     account_id: str | None = None,
     owned_by: str | None = None,
 ) -> str | None:
@@ -1421,7 +1624,7 @@ def _activate_composio_toolkit(
     if spec is None or not spec.connectable:
         return None
     with db() as conn:
-        settings = _settings_map(conn)
+        settings = _settings_map(conn, org_id)
     composio = get_composio(settings)
     account = None
     if account_id:
@@ -1442,6 +1645,7 @@ def _activate_composio_toolkit(
         spec.id,
         "composio",
         credentials,
+        org_id=org_id,
         lookback_days=lookback_days,
         status=status,
         reset_progress=start_sync,
@@ -1480,11 +1684,12 @@ def _session_response(
 
 @app.get("/api/auth/status")
 def auth_status(request: Request) -> dict[str, Any]:
+    who = _request_identity(request)
     with db() as conn:
-        actor = identity.actor_from_session(
-            conn, request.cookies.get(SESSION_COOKIE)
-        )
-        return _auth_payload(conn, actor)
+        if who.actor is None and who.user_id:
+            workspaces = identity.list_workspaces_for_user(conn, who.user_id)
+            return _auth_payload(conn, None, workspaces=workspaces, user_id=who.user_id)
+        return _auth_payload(conn, who.actor)
 
 
 @app.post("/api/auth/setup")
@@ -1497,7 +1702,9 @@ def auth_setup(body: SetupIn) -> JSONResponse:
                 password=body.password,
                 display_name=body.display_name,
                 domain=body.domain,
+                company_name=body.name,
             )
+            seed_org_defaults(conn, actor.org_id)
             payload = _auth_payload(conn, actor)
     except identity.IdentityError as exc:
         raise _identity_error(exc) from exc
@@ -1508,8 +1715,8 @@ def auth_setup(body: SetupIn) -> JSONResponse:
 def auth_login(body: LoginIn) -> JSONResponse:
     try:
         with db() as conn:
-            actor, session_id = identity.login(conn, body.email, body.password)
-            payload = _auth_payload(conn, actor)
+            actor, session_id, workspaces = identity.login(conn, body.email, body.password)
+            payload = _auth_payload(conn, actor, workspaces=workspaces)
     except identity.IdentityError as extra:
         raise _identity_error(extra) from extra
     return _session_response(payload, session_id)
@@ -1522,17 +1729,74 @@ def auth_logout(request: Request) -> JSONResponse:
     return _session_response({"status": "ok"}, None, clear=True)
 
 
-@app.get("/api/auth/invite/{token}")
-def auth_peek_invite(token: str) -> dict[str, str]:
+class SwitchWorkspaceIn(BaseModel):
+    org_id: int
+
+
+@app.post("/api/auth/workspace")
+def auth_switch_workspace(body: SwitchWorkspaceIn, request: Request) -> JSONResponse:
+    """Switch active workspace. Session must exist (may be in pick_workspace state)."""
+    session_id, _user_id = _require_session_user(request)
     try:
         with db() as conn:
-            return identity.peek_invite(conn, token)
+            actor = identity.switch_workspace(conn, session_id, body.org_id)
+            payload = _auth_payload(conn, actor)
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+    return _session_response(payload, session_id)
+
+
+@app.get("/api/workspaces")
+def list_workspaces(request: Request) -> dict[str, Any]:
+    """List workspaces for current user. Works in pick_workspace state."""
+    _session_id, user_id = _require_session_user(request)
+    with db() as conn:
+        workspaces = identity.list_workspaces_for_user(conn, user_id)
+    return {"workspaces": workspaces}
+
+
+class CreateWorkspaceIn(BaseModel):
+    name: str | None = None
+    domain: str | None = None
+    slug: str | None = None
+
+
+@app.post("/api/workspaces")
+def create_workspace(body: CreateWorkspaceIn, request: Request) -> JSONResponse:
+    """Create a new workspace. Any signed-in user becomes its owner."""
+    session_id, user_id = _require_session_user(request)
+    with db() as conn:
+        try:
+            org_id, new_actor = identity.create_workspace(
+                conn,
+                user_id,
+                name=body.name,
+                domain=body.domain,
+                slug=body.slug,
+                session_id=session_id,
+            )
+            seed_org_defaults(conn, org_id)
+            payload = _auth_payload(conn, new_actor)
+        except identity.IdentityError as exc:
+            raise _identity_error(exc) from exc
+    return _session_response(payload, session_id)
+
+
+@app.get("/api/auth/invite/{token}")
+def auth_peek_invite(token: str, request: Request) -> dict[str, Any]:
+    who = _request_identity(request)
+    try:
+        with db() as conn:
+            return identity.peek_invite(conn, token, viewer_user_id=who.user_id)
     except identity.IdentityError as exc:
         raise _identity_error(exc) from exc
 
 
 @app.post("/api/auth/invite/{token}/accept")
-def auth_accept_invite(token: str, body: AcceptInviteIn) -> JSONResponse:
+def auth_accept_invite(
+    token: str, body: AcceptInviteIn, request: Request
+) -> JSONResponse:
+    who = _request_identity(request)
     try:
         with db() as conn:
             actor, session_id = identity.accept_invite(
@@ -1540,6 +1804,7 @@ def auth_accept_invite(token: str, body: AcceptInviteIn) -> JSONResponse:
                 token,
                 password=body.password,
                 display_name=body.display_name,
+                session_id=who.session_id,
             )
             payload = _auth_payload(conn, actor)
     except identity.IdentityError as extra:
@@ -1551,11 +1816,11 @@ def auth_accept_invite(token: str, body: AcceptInviteIn) -> JSONResponse:
 def get_workspace(request: Request) -> dict[str, Any]:
     actor = _require_actor(request)
     with db() as conn:
-        workspace = identity.workspace_public(conn)
+        workspace = identity.workspace_public(conn, actor.org_id)
         if workspace is None:
             raise HTTPException(404, "Workspace not created yet")
-        members = identity.list_members(conn)
-        invites = identity.list_invites(conn) if actor.is_admin else []
+        members = identity.list_members(conn, actor.org_id)
+        invites = identity.list_invites(conn, actor.org_id) if actor.is_admin else []
     return {
         "workspace": workspace,
         "me": identity.actor_dict(actor),
@@ -1572,7 +1837,7 @@ def patch_workspace(body: WorkspacePatch, request: Request) -> dict[str, Any]:
             identity.update_workspace(
                 conn, actor, domain=body.domain, name=body.name
             )
-            workspace = identity.workspace_public(conn)
+            workspace = identity.workspace_public(conn, actor.org_id)
     except identity.IdentityError as extra:
         raise _identity_error(extra) from extra
     return {"workspace": workspace}
@@ -1586,10 +1851,35 @@ def create_workspace_invite(body: InviteIn, request: Request) -> dict[str, Any]:
             invite_id, raw = identity.create_invite(
                 conn, actor, email=body.email, role=body.role
             )
-            invites = identity.list_invites(conn)
+            invites = identity.list_invites(conn, actor.org_id)
+            settings = _settings_map(conn, actor.org_id)
+            workspace = identity.workspace_public(conn, actor.org_id) or {}
     except identity.IdentityError as extra:
         raise _identity_error(extra) from extra
-    return {"invite_id": invite_id, "token": raw, "invites": invites}
+
+    email_sent, email_error = _send_invite_email(
+        settings,
+        email=body.email.strip().lower(),
+        role=body.role,
+        token=raw,
+        workspace_name=str(workspace.get("name") or "joel"),
+        app_url=_public_app_url(request, settings),
+    )
+    # Prefer the normalized address stored on the invite row when present.
+    invited_email = body.email.strip().lower()
+    for row in invites:
+        if row.get("id") == invite_id and row.get("email"):
+            invited_email = str(row["email"])
+            break
+    return {
+        "invite_id": invite_id,
+        "token": raw,
+        "email": invited_email,
+        "invites": invites,
+        "email_sent": email_sent,
+        "email_error": email_error,
+        "mail_configured": joel_mail.is_configured(settings),
+    }
 
 
 @app.delete("/api/workspace/invites/{invite_id}")
@@ -1601,6 +1891,39 @@ def delete_workspace_invite(invite_id: str, request: Request) -> dict[str, str]:
     except identity.IdentityError as extra:
         raise _identity_error(extra) from extra
     return {"status": "revoked"}
+
+
+@app.post("/api/workspace/invites/{invite_id}/resend")
+def resend_workspace_invite(invite_id: str, request: Request) -> dict[str, Any]:
+    actor = _require_admin(request)
+    try:
+        with db() as conn:
+            invite_id, raw, email, role = identity.resend_invite(
+                conn, actor, invite_id
+            )
+            invites = identity.list_invites(conn, actor.org_id)
+            settings = _settings_map(conn, actor.org_id)
+            workspace = identity.workspace_public(conn, actor.org_id) or {}
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+
+    email_sent, email_error = _send_invite_email(
+        settings,
+        email=email,
+        role=role,
+        token=raw,
+        workspace_name=str(workspace.get("name") or "joel"),
+        app_url=_public_app_url(request, settings),
+    )
+    return {
+        "invite_id": invite_id,
+        "token": raw,
+        "email": email,
+        "invites": invites,
+        "email_sent": email_sent,
+        "email_error": email_error,
+        "mail_configured": joel_mail.is_configured(settings),
+    }
 
 
 @app.patch("/api/workspace/members/{user_id}")
@@ -1631,16 +1954,19 @@ def delete_workspace_member(user_id: str, request: Request) -> dict[str, str]:
 
 
 @app.get("/api/org")
-def get_org() -> dict[str, Any]:
+def get_org(request: Request) -> dict[str, Any]:
+    actor = _require_actor(request)
     with db() as conn:
-        org = conn.execute("SELECT * FROM orgs WHERE id=1").fetchone()
+        org = conn.execute(
+            "SELECT * FROM orgs WHERE id=?", (actor.org_id,)
+        ).fetchone()
         providers = tuple(sorted(INGEST_PROVIDERS))
         placeholders = ",".join("?" * len(providers))
         first = conn.execute(
             f"""SELECT * FROM connections
-               WHERE provider IN ({placeholders})
+               WHERE org_id=? AND provider IN ({placeholders})
                ORDER BY backfill_done DESC, created_at ASC LIMIT 1""",
-            providers,
+            (actor.org_id, *providers),
         ).fetchone()
         checklist = (
             _parse_checklist(first["checklist_json"]) if first else _checklist_default()
@@ -1661,26 +1987,55 @@ def get_org() -> dict[str, Any]:
 
 @app.post("/api/org/wipe")
 def wipe_org(body: WipeIn, request: Request) -> dict[str, str]:
-    _require_admin(request)
+    actor = _require_admin(request)
+    org_id = actor.org_id
     with db() as conn:
-        org = conn.execute("SELECT domain FROM orgs WHERE id=1").fetchone()
+        org = conn.execute(
+            "SELECT domain FROM orgs WHERE id=?", (org_id,)
+        ).fetchone()
         if org is None or org["domain"] != body.domain.strip().lower():
             raise HTTPException(400, "Domain confirmation does not match")
-        for table in (
-            "messages",
-            "conversations",
-            "jobs",
-            "connector_credentials",
-            "connections",
-            "oauth_states",
-            "pending_connects",
-            "docs_fts",
-            "docs",
-            "graph_written",
-            "thread_state",
+        # FTS contentless delete needs old title/body before removing docs.
+        for row in conn.execute(
+            "SELECT rowid, title, body FROM docs WHERE org_id=?", (org_id,)
         ):
-            conn.execute(f"DELETE FROM {table}")
-        conn.execute("UPDATE spend SET calls=0")
+            conn.execute(
+                "INSERT INTO docs_fts(docs_fts, rowid, title, body) VALUES('delete', ?, ?, ?)",
+                (row["rowid"], row["title"], row["body"]),
+            )
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id IN "
+            "(SELECT id FROM conversations WHERE org_id=?)",
+            (org_id,),
+        )
+        conn.execute("DELETE FROM conversations WHERE org_id=?", (org_id,))
+        conn.execute(
+            "DELETE FROM jobs WHERE connection_id IN "
+            "(SELECT id FROM connections WHERE org_id=?)",
+            (org_id,),
+        )
+        conn.execute(
+            "DELETE FROM connector_credentials WHERE connection_id IN "
+            "(SELECT id FROM connections WHERE org_id=?)",
+            (org_id,),
+        )
+        conn.execute("DELETE FROM connections WHERE org_id=?", (org_id,))
+        conn.execute("DELETE FROM oauth_states WHERE org_id=?", (org_id,))
+        conn.execute("DELETE FROM pending_connects WHERE org_id=?", (org_id,))
+        conn.execute("DELETE FROM docs WHERE org_id=?", (org_id,))
+        conn.execute("DELETE FROM graph_written WHERE org_id=?", (org_id,))
+        conn.execute("DELETE FROM thread_state WHERE org_id=?", (org_id,))
+        conn.execute("UPDATE spend SET calls=0 WHERE org_id=?", (org_id,))
+    index_path = DATA_DIR / "index" / f"org-{org_id}.npz"
+    if index_path.exists():
+        index_path.unlink()
+    with _RUNTIME_LOCK:
+        indexes = _RUNTIME.get("live_indexes")
+        if isinstance(indexes, dict):
+            indexes.pop(org_id, None)
+        stores = _RUNTIME.get("hydra_stores")
+        if isinstance(stores, dict):
+            stores.pop(org_id, None)
     return {"status": "wiped"}
 
 
@@ -1715,12 +2070,17 @@ def _connectors_for_actor(all_rows: Sequence[sqlite3.Row], actor_id: str) -> dic
 def list_connectors(request: Request) -> list[dict[str, Any]]:
     actor = _require_actor(request)
     with db() as conn:
-        all_rows = conn.execute("SELECT * FROM connections").fetchall()
+        all_rows = conn.execute(
+            "SELECT * FROM connections WHERE org_id=?", (actor.org_id,)
+        ).fetchall()
         rows = _connectors_for_actor(all_rows, actor.user_id)
         started = {
             r["connection_id"]: r["started_at"]
             for r in conn.execute(
-                "SELECT connection_id, started_at FROM jobs WHERE status='running'"
+                """SELECT j.connection_id, j.started_at FROM jobs j
+                   JOIN connections c ON c.id = j.connection_id
+                   WHERE j.status='running' AND c.org_id=?""",
+                (actor.org_id,),
             )
         }
     out: list[dict[str, Any]] = []
@@ -1755,18 +2115,19 @@ def create_connector(_body: ConnectorIn) -> dict[str, Any]:
 
 
 @app.delete("/api/connectors/{connection_id}")
-def delete_connector(connection_id: str) -> dict[str, str]:
+def delete_connector(connection_id: str, request: Request) -> dict[str, str]:
     with db() as conn:
         row = conn.execute(
             "SELECT * FROM connections WHERE id=?", (connection_id,)
         ).fetchone()
         if row is None:
             raise HTTPException(404, "Not found")
+        actor = _require_connection_mutate(request, row)
         cred_row = conn.execute(
             "SELECT encrypted_json FROM connector_credentials WHERE connection_id=?",
             (connection_id,),
         ).fetchone()
-        settings = _settings_map(conn)
+        settings = _settings_map(conn, actor.org_id)
     account_id = None
     if cred_row is not None:
         try:
@@ -1786,13 +2147,14 @@ def delete_connector(connection_id: str) -> dict[str, str]:
 
 
 @app.post("/api/connectors/{connection_id}/sync")
-def sync_now(connection_id: str) -> dict[str, str]:
+def sync_now(connection_id: str, request: Request) -> dict[str, str]:
     with db() as conn:
         row = conn.execute(
             "SELECT * FROM connections WHERE id=?", (connection_id,)
         ).fetchone()
         if row is None:
             raise HTTPException(404, "Not found")
+        _require_connection_mutate(request, row)
         running = conn.execute(
             "SELECT id FROM jobs WHERE connection_id=? AND status='running'",
             (connection_id,),
@@ -1814,13 +2176,14 @@ def sync_now(connection_id: str) -> dict[str, str]:
 
 
 @app.post("/api/connectors/{connection_id}/cancel")
-def cancel_sync(connection_id: str) -> dict[str, str]:
+def cancel_sync(connection_id: str, request: Request) -> dict[str, str]:
     with db() as conn:
         row = conn.execute(
-            "SELECT 1 FROM connections WHERE id=?", (connection_id,)
+            "SELECT * FROM connections WHERE id=?", (connection_id,)
         ).fetchone()
         if row is None:
             raise HTTPException(404, "Not found")
+        _require_connection_mutate(request, row)
         released = release_running_jobs(conn, now=_now(), connection_id=connection_id)
         if released == 0:
             raise HTTPException(409, "Nothing to cancel")
@@ -1828,13 +2191,16 @@ def cancel_sync(connection_id: str) -> dict[str, str]:
 
 
 @app.patch("/api/connectors/{connection_id}")
-def patch_connector(connection_id: str, body: ConnectorPatch) -> dict[str, Any]:
+def patch_connector(
+    connection_id: str, body: ConnectorPatch, request: Request
+) -> dict[str, Any]:
     with db() as conn:
         row = conn.execute(
             "SELECT * FROM connections WHERE id=?", (connection_id,)
         ).fetchone()
         if row is None:
             raise HTTPException(404, "Not found")
+        _require_connection_mutate(request, row)
         if body.interval_min is not None:
             conn.execute(
                 "UPDATE connections SET interval_min=? WHERE id=?",
@@ -1893,17 +2259,19 @@ def list_jobs(connection_id: str) -> list[dict[str, Any]]:
 
 
 @app.get("/api/connectors/{connection_id}/channels")
-def list_connector_channels(connection_id: str) -> dict[str, Any]:
+def list_connector_channels(connection_id: str, request: Request) -> dict[str, Any]:
+    actor = _require_actor(request)
     with db() as conn:
         row = conn.execute(
-            "SELECT * FROM connections WHERE id=?", (connection_id,)
+            "SELECT * FROM connections WHERE id=? AND org_id=?",
+            (connection_id, actor.org_id),
         ).fetchone()
         if row is None:
             raise HTTPException(404, "Not found")
         if row["provider"] != "slack":
             raise HTTPException(400, "Channel picker is only for Slack")
         credentials = _credential(conn, connection_id)
-        settings = _settings_map(conn)
+        settings = _settings_map(conn, actor.org_id)
     try:
         client = SlackClient(
             _slack_token(credentials),
@@ -1929,9 +2297,10 @@ def list_connector_channels(connection_id: str) -> dict[str, Any]:
 
 
 @app.get("/api/composio")
-def composio_status() -> dict[str, Any]:
+def composio_status(request: Request) -> dict[str, Any]:
+    actor = _require_actor(request)
     with db() as conn:
-        settings = _settings_map(conn)
+        settings = _settings_map(conn, actor.org_id)
     api_key, source = resolve_composio_key(settings)
     if not api_key:
         return {
@@ -1950,18 +2319,23 @@ def composio_status() -> dict[str, Any]:
         with db() as conn:
             known = {
                 r["provider"]
-                for r in conn.execute("SELECT provider FROM connections").fetchall()
+                for r in conn.execute(
+                    "SELECT provider FROM connections WHERE org_id=?", (actor.org_id,)
+                ).fetchall()
             }
         for account in accounts:
             spec = INTEGRATION_BY_TOOLKIT.get(account["toolkit"])
             if spec is None or spec.id in known:
                 continue
-            lookback, _return_to, _origin, _owned_by = _pending_lookback(account["toolkit"])
+            lookback, _return_to, _origin, _owned_by, org_id = _pending_lookback(
+                account["toolkit"]
+            )
             try:
                 _activate_composio_toolkit(
                     account["toolkit"],
                     lookback_days=lookback,
                     start_sync=False,
+                    org_id=org_id if org_id else actor.org_id,
                 )
             except (HTTPException, ComposioError):
                 pass
@@ -1989,14 +2363,15 @@ def composio_status() -> dict[str, Any]:
 
 
 @app.put("/api/composio/key")
-def set_composio_key(body: ComposioKeyIn) -> dict[str, Any]:
+def set_composio_key(body: ComposioKeyIn, request: Request) -> dict[str, Any]:
+    actor = _require_admin(request)
     with db() as conn:
         conn.execute(
-            "INSERT INTO settings(key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            ("composio_api_key", (body.api_key or "").strip()),
+            "INSERT INTO settings(org_id, key, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(org_id, key) DO UPDATE SET value=excluded.value",
+            (actor.org_id, "composio_api_key", (body.api_key or "").strip()),
         )
-        settings = _settings_map(conn)
+        settings = _settings_map(conn, actor.org_id)
     api_key, source = resolve_composio_key(settings)
     return {
         "configured": bool(api_key),
@@ -2008,6 +2383,9 @@ def set_composio_key(body: ComposioKeyIn) -> dict[str, Any]:
 @app.post("/api/composio/connect")
 def composio_connect(request: Request, body: ComposioConnectIn) -> dict[str, str]:
     actor = _require_actor(request)
+    if not body.personal:
+        if not actor.is_admin:
+            raise HTTPException(403, "Only an admin can connect org tools")
     try:
         spec = require_connectable(body.toolkit)
     except ValueError as exc:
@@ -2024,19 +2402,28 @@ def composio_connect(request: Request, body: ComposioConnectIn) -> dict[str, str
         raise HTTPException(400, str(exc)) from exc
     owned_by = actor.user_id if body.personal else None
     with db() as conn:
-        if conn.execute("SELECT id FROM orgs WHERE id=1").fetchone() is None:
+        if conn.execute("SELECT id FROM orgs WHERE id=?", (actor.org_id,)).fetchone() is None:
             raise HTTPException(400, "Create an org first")
-        settings = _settings_map(conn)
+        settings = _settings_map(conn, actor.org_id)
         conn.execute(
-            """INSERT INTO pending_connects(toolkit, lookback_days, return_to, origin, created_at, owned_by)
-               VALUES (?,?,?,?,?,?)
+            """INSERT INTO pending_connects(toolkit, lookback_days, return_to, origin, created_at, owned_by, org_id)
+               VALUES (?,?,?,?,?,?,?)
                ON CONFLICT(toolkit) DO UPDATE SET
                  lookback_days=excluded.lookback_days,
                  return_to=excluded.return_to,
                  origin=excluded.origin,
                  created_at=excluded.created_at,
-                 owned_by=excluded.owned_by""",
-            (spec.toolkit, body.lookback_days, body.return_to, origin, _now(), owned_by),
+                 owned_by=excluded.owned_by,
+                 org_id=excluded.org_id""",
+            (
+                spec.toolkit,
+                body.lookback_days,
+                body.return_to,
+                origin,
+                _now(),
+                owned_by,
+                actor.org_id,
+            ),
         )
     callback_url = (
         f"{origin.rstrip('/')}/api/composio/callback"
@@ -2080,7 +2467,7 @@ def composio_callback(
     connected_account_id: str | None = None,
 ) -> RedirectResponse:
     slug = (toolkit or app or "connected").strip().lower()
-    lookback, stored_return, origin, owned_by = _pending_lookback(slug)
+    lookback, stored_return, origin, owned_by, org_id = _pending_lookback(slug)
     return_to = returnTo or stored_return or "connectors"
     if not origin:
         origin = os.getenv("JOEL_WEB_ORIGIN", "http://localhost:3001")
@@ -2092,6 +2479,7 @@ def composio_callback(
             slug,
             lookback_days=lookback,
             start_sync=True,
+            org_id=org_id,
             account_id=connected_account_id,
             owned_by=owned_by,
         )
@@ -2104,10 +2492,14 @@ def composio_callback(
 
 
 @app.get("/api/conversations")
-def list_conversations() -> list[dict[str, Any]]:
+def list_conversations(request: Request) -> list[dict[str, Any]]:
+    actor = _require_actor(request)
     with db() as conn:
         rows = conn.execute(
-            "SELECT * FROM conversations ORDER BY created_at DESC"
+            """SELECT * FROM conversations
+               WHERE org_id=? AND user_id=?
+               ORDER BY created_at DESC""",
+            (actor.org_id, actor.user_id),
         ).fetchall()
     return [
         {"id": r["id"], "title": r["title"], "created_at": r["created_at"]}
@@ -2116,23 +2508,26 @@ def list_conversations() -> list[dict[str, Any]]:
 
 
 @app.post("/api/conversations")
-def create_conversation(body: ConversationIn) -> dict[str, Any]:
+def create_conversation(body: ConversationIn, request: Request) -> dict[str, Any]:
+    actor = _require_actor(request)
     cid = f"c_{uuid.uuid4().hex[:12]}"
     title = (body.title or "New conversation").strip() or "New conversation"
     created = _now()
     with db() as conn:
         conn.execute(
-            "INSERT INTO conversations(id, title, created_at) VALUES (?,?,?)",
-            (cid, title, created),
+            "INSERT INTO conversations(id, title, created_at, org_id, user_id) VALUES (?,?,?,?,?)",
+            (cid, title, created, actor.org_id, actor.user_id),
         )
     return {"id": cid, "title": title, "created_at": created}
 
 
 @app.get("/api/conversations/{conversation_id}")
-def get_conversation(conversation_id: str) -> dict[str, Any]:
+def get_conversation(conversation_id: str, request: Request) -> dict[str, Any]:
+    actor = _require_actor(request)
     with db() as conn:
         c = conn.execute(
-            "SELECT * FROM conversations WHERE id=?", (conversation_id,)
+            "SELECT * FROM conversations WHERE id=? AND org_id=? AND user_id=?",
+            (conversation_id, actor.org_id, actor.user_id),
         ).fetchone()
         if c is None:
             raise HTTPException(404, "Not found")
@@ -2201,13 +2596,13 @@ def _save_assistant_message(conn: sqlite3.Connection, conversation_id: str, assi
 
 def _run_live_lookup(
     conn: sqlite3.Connection,
-    rt: dict[str, Any],
     settings_map: dict[str, str],
     llm_call: Any,
     question: str,
     plan: QueryPlan,
     *,
     actor_id: str,
+    org_id: int,
 ) -> tuple[list[str], list[str]]:
     """§13.2: at most `live.MAX_LOOKUPS` whitelisted point-lookups, each
     under `live.TIMEOUT_SECONDS`, only against providers this workspace has
@@ -2225,7 +2620,10 @@ def _run_live_lookup(
 
     ready_providers = {
         r["provider"]
-        for r in conn.execute("SELECT provider FROM connections WHERE status='ready'")
+        for r in conn.execute(
+            "SELECT provider FROM connections WHERE status='ready' AND org_id=?",
+            (org_id,),
+        )
     }
     checked: list[str] = []
     fetched_docs: list[CanonicalDoc] = []
@@ -2243,9 +2641,9 @@ def _run_live_lookup(
         # PROVIDERS), so this is a no-op for github today.
         conn_row = conn.execute(
             """SELECT id FROM connections WHERE provider=? AND status='ready'
-               AND (owned_by=? OR owned_by IS NULL)
+               AND org_id=? AND (owned_by=? OR owned_by IS NULL)
                ORDER BY (owned_by IS NULL) LIMIT 1""",
-            (provider, actor_id),
+            (provider, org_id, actor_id),
         ).fetchone()
         if conn_row is None:
             continue
@@ -2277,10 +2675,17 @@ def _run_live_lookup(
         return [], checked
 
     live_docs = [d.model_copy(update={"ingested_via": "live"}) for d in fetched_docs]
-    _, dirty_docs = _persist_canonical_docs(conn, live_docs)
+    _, dirty_docs = _persist_canonical_docs(conn, live_docs, org_id=org_id)
     if dirty_docs and llm_call is not None:
         run_store_pipeline(
-            conn, rt["live_index"], rt["hydra_store"], _embed_fn, llm_call, dirty_docs, data_dir=DATA_DIR
+            conn,
+            _live_index_for(org_id),
+            _hydra_store_for(org_id),
+            _embed_fn,
+            llm_call,
+            dirty_docs,
+            data_dir=DATA_DIR,
+            org_id=org_id,
         )
     # Every fetched doc is now indexed (freshly, via dirty_docs above, or
     # already from an earlier live/sync pass) and citable — not just the
@@ -2299,18 +2704,23 @@ def _mcp_ask_sync(actor: identity.Actor, question: str) -> dict[str, Any]:
     if not question:
         return {"answer": "Ask a question.", "status": "absent", "citations": []}
     with db() as conn:
-        settings_map = _settings_map(conn)
+        settings_map = _settings_map(conn, actor.org_id)
         ask_ctx = AskContext.web(
             actor.user_id,
             aliases={Visibility.user("gmail", actor.email).stamp},
-            channels=member_channel_stamps(conn, actor.user_id),
+            channels=member_channel_stamps(conn, actor.user_id, org_id=actor.org_id),
+            org_id=actor.org_id,
         )
     llm_call = make_openrouter_caller(settings_map) if settings_map.get("llm_api_key") else None
-    rt = _runtime()
     with db() as conn:
         trace = answer_question(
-            conn, rt["live_index"], _embed_fn, llm_call, question,
-            ask=ask_ctx, hydra_store=rt["hydra_store"],
+            conn,
+            _live_index_for(actor.org_id),
+            _embed_fn,
+            llm_call,
+            question,
+            ask=ask_ctx,
+            hydra_store=_hydra_store_for(actor.org_id),
         )
     doc_lookup = {r.doc.id: r.doc for r in trace.reranked} or {d.id: d for d in trace.fused}
     citations = [
@@ -2337,13 +2747,15 @@ def _resolve_slack_actor(conn: sqlite3.Connection, slack_user_id: str) -> identi
     member's. No match -> no Actor -> the mention is silently declined,
     never answered with an org-wide AskContext for someone unrecognized."""
     row = conn.execute(
-        "SELECT id FROM connections WHERE provider='slack' AND status='ready'"
+        """SELECT id, org_id FROM connections
+           WHERE provider='slack' AND status='ready' LIMIT 1"""
     ).fetchone()
     if row is None:
         return None
+    org_id = int(row["org_id"] or 1)
     try:
         credentials = _credential(conn, row["id"])
-        settings_map = _settings_map(conn)
+        settings_map = _settings_map(conn, org_id)
         client = SlackClient(_slack_token(credentials), caller=_slack_caller(credentials, settings_map))
         emails = client.user_emails()
     except Exception:
@@ -2354,7 +2766,7 @@ def _resolve_slack_actor(conn: sqlite3.Connection, slack_user_id: str) -> identi
     user_row = conn.execute("SELECT id FROM users WHERE email=?", (email.lower(),)).fetchone()
     if user_row is None:
         return None
-    return identity.actor_for_user(conn, user_row["id"])
+    return identity.actor_for_user(conn, user_row["id"], org_id)
 
 
 def _handle_slack_mention(event_id: str, channel: str, slack_user_id: str, text: str, thread_ts: str, bot_user_id: str) -> None:
@@ -2367,12 +2779,14 @@ def _handle_slack_mention(event_id: str, channel: str, slack_user_id: str, text:
             if actor is None:
                 return
             row = conn.execute(
-                "SELECT id FROM connections WHERE provider='slack' AND status='ready'"
+                """SELECT id FROM connections
+                   WHERE provider='slack' AND status='ready' AND org_id=?""",
+                (actor.org_id,),
             ).fetchone()
             if row is None:
                 return
             credentials = _credential(conn, row["id"])
-            settings_map = _settings_map(conn)
+            settings_map = _settings_map(conn, actor.org_id)
             caller = _slack_caller(credentials, settings_map)
         question = strip_mention(text, bot_user_id)
         if not question:
@@ -2392,12 +2806,31 @@ async def slack_events(request: Request) -> dict[str, Any]:
     body = await request.body()
     timestamp = request.headers.get("x-slack-request-timestamp", "")
     signature = request.headers.get("x-slack-signature", "")
+    # Slack signing secret is per-org; try each org that has a ready slack
+    # connection until one verifies (Mode B: multiple workspaces may share
+    # one Events URL on a single install).
+    verified = False
     with db() as conn:
-        settings_map = _settings_map(conn)
-    signing_secret = settings_map.get("slack_signing_secret", "")
-    if not verify_signature(
-        signing_secret=signing_secret, timestamp=timestamp, body=body, signature=signature
-    ):
+        org_ids = [
+            int(r["org_id"] or 1)
+            for r in conn.execute(
+                "SELECT DISTINCT org_id FROM connections WHERE provider='slack'"
+            ).fetchall()
+        ]
+        if not org_ids:
+            org_ids = [1]
+        for org_id in org_ids:
+            settings_map = _settings_map(conn, org_id)
+            signing_secret = settings_map.get("slack_signing_secret", "")
+            if verify_signature(
+                signing_secret=signing_secret,
+                timestamp=timestamp,
+                body=body,
+                signature=signature,
+            ):
+                verified = True
+                break
+    if not verified:
         raise HTTPException(401, "Invalid Slack signature")
 
     payload = await request.json()
@@ -2414,13 +2847,13 @@ async def slack_events(request: Request) -> dict[str, Any]:
 
     with db() as conn:
         row = conn.execute(
-            "SELECT id FROM connections WHERE provider='slack' AND status='ready'"
+            "SELECT id, org_id FROM connections WHERE provider='slack' AND status='ready' LIMIT 1"
         ).fetchone()
         bot_user_id = ""
         if row is not None:
             try:
                 credentials = _credential(conn, row["id"])
-                settings_map = _settings_map(conn)
+                settings_map = _settings_map(conn, int(row["org_id"] or 1))
                 client = SlackClient(_slack_token(credentials), caller=_slack_caller(credentials, settings_map))
                 bot_user_id = str(client.call("auth.test").get("user_id") or "")
             except Exception:
@@ -2475,28 +2908,15 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
         ask_ctx = AskContext.web(
             actor.user_id,
             aliases={Visibility.user("gmail", actor.email).stamp},
-            channels=member_channel_stamps(conn, actor.user_id),
+            channels=member_channel_stamps(conn, actor.user_id, org_id=actor.org_id),
+            org_id=actor.org_id,
         )
         c = conn.execute(
-            "SELECT * FROM conversations WHERE id=?", (body.conversation_id,)
+            "SELECT * FROM conversations WHERE id=? AND org_id=? AND user_id=?",
+            (body.conversation_id, actor.org_id, actor.user_id),
         ).fetchone()
         if c is None:
             raise HTTPException(404, "Conversation not found")
-        ready = conn.execute(
-            """SELECT id FROM connections WHERE json_extract(checklist_json, '$.ready') = 1
-               OR status='ready' LIMIT 1"""
-        ).fetchone()
-        # sqlite json_extract may not work on all; fallback:
-        if ready is None:
-            for r in conn.execute("SELECT id, checklist_json, status FROM connections"):
-                cl = _parse_checklist(r["checklist_json"])
-                if cl.get("ready") or r["status"] == "ready":
-                    ready = r
-                    break
-        if ready is None:
-            raise HTTPException(
-                409, "Chat locked until the first connector is ready"
-            )
 
         if c["title"] == "New conversation":
             title = question[:72] + ("…" if len(question) > 72 else "")
@@ -2539,7 +2959,7 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             return
 
         with db() as conn:
-            settings_map = _settings_map(conn)
+            settings_map = _settings_map(conn, actor.org_id)
             turns = load_recent_turns(conn, body.conversation_id)
         llm_call = make_openrouter_caller(settings_map) if settings_map.get("llm_api_key") else None
         call_counts: dict[str, int] = {}
@@ -2574,7 +2994,10 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             with db() as conn:
                 _save_assistant_message(conn, body.conversation_id, assistant)
                 for stage, n in call_counts.items():
-                    conn.execute("UPDATE spend SET calls = calls + ? WHERE stage=?", (n, stage))
+                    conn.execute(
+                        "UPDATE spend SET calls = calls + ? WHERE org_id=? AND stage=?",
+                        (n, actor.org_id, stage),
+                    )
             return
 
         if kind == "meta":
@@ -2591,22 +3014,24 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             with db() as conn:
                 _save_assistant_message(conn, body.conversation_id, assistant)
                 for stage, n in call_counts.items():
-                    conn.execute("UPDATE spend SET calls = calls + ? WHERE stage=?", (n, stage))
+                    conn.execute(
+                        "UPDATE spend SET calls = calls + ? WHERE org_id=? AND stage=?",
+                        (n, actor.org_id, stage),
+                    )
             return
 
         yield _sse("status", {"stage": "planning"})
 
         try:
-            rt = _runtime()
             with db() as conn:
                 trace = answer_question(
                     conn,
-                    rt["live_index"],
+                    _live_index_for(actor.org_id),
                     _embed_fn,
                     tracked_llm if llm_call else None,
                     rewritten_question,
                     ask=ask_ctx,
-                    hydra_store=rt["hydra_store"],
+                    hydra_store=_hydra_store_for(actor.org_id),
                 )
         except Exception:
             # Retrieval must never crash the stream — an unexpected failure
@@ -2633,8 +3058,13 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             try:
                 with db() as conn:
                     live_doc_ids, live_checked = _run_live_lookup(
-                        conn, rt, settings_map, tracked_llm, rewritten_question, trace.plan,
+                        conn,
+                        settings_map,
+                        tracked_llm,
+                        rewritten_question,
+                        trace.plan,
                         actor_id=actor.user_id,
+                        org_id=actor.org_id,
                     )
             except Exception:
                 logging.getLogger(__name__).exception("live lookup failed for %r", rewritten_question)
@@ -2648,12 +3078,12 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
                     with db() as conn:
                         trace = answer_question(
                             conn,
-                            rt["live_index"],
+                            _live_index_for(actor.org_id),
                             _embed_fn,
                             tracked_llm,
                             rewritten_question,
                             ask=ask_ctx,
-                            hydra_store=rt["hydra_store"],
+                            hydra_store=_hydra_store_for(actor.org_id),
                             extra_doc_ids=tuple(live_doc_ids),
                         )
                 except Exception:
@@ -2731,7 +3161,10 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
         with db() as conn:
             _save_assistant_message(conn, body.conversation_id, assistant)
             for stage, n in call_counts.items():
-                conn.execute("UPDATE spend SET calls = calls + ? WHERE stage=?", (n, stage))
+                conn.execute(
+                    "UPDATE spend SET calls = calls + ? WHERE org_id=? AND stage=?",
+                    (n, actor.org_id, stage),
+                )
         try:
             log_trace(
                 DATA_DIR / "state" / "traces.jsonl",
@@ -2745,23 +3178,30 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
 
 
 @app.post("/api/docs/{doc_id}/forget")
-def forget_doc(doc_id: str) -> dict[str, str]:
+def forget_doc(doc_id: str, request: Request) -> dict[str, str]:
+    actor = _require_actor(request)
     forgotten_at = _now()
-    rt = _runtime()
     with db() as conn:
         row = conn.execute(
-            "SELECT source_type FROM docs WHERE id=?", (doc_id,)
+            "SELECT source_type, org_id FROM docs WHERE id=?", (doc_id,)
         ).fetchone()
-        if row is None:
+        if row is None or int(row["org_id"] or 1) != actor.org_id:
             raise HTTPException(404, "Document not found")
         source_type = row["source_type"]
+        org_id = int(row["org_id"] or 1)
         # Purge FTS/vectors/graph BEFORE blanking the row below — the FTS5
         # 'delete' command needs the title/body that's actually indexed,
         # not the blanked-out text this function is about to write. The
         # docs row itself is kept (keep_row=True): forgotten=1 is the
         # tombstone `_persist_canonical_docs` checks so a later re-sync
         # can't resurrect this doc (§5.7/CP11.4).
-        remove_docs(conn, rt["live_index"], rt["hydra_store"], [doc_id], keep_row=True)
+        remove_docs(
+            conn,
+            _live_index_for(org_id),
+            _hydra_store_for(org_id),
+            [doc_id],
+            keep_row=True,
+        )
         conn.execute(
             """UPDATE docs SET title='[forgotten]', body='', content_hash='',
                url=NULL, timestamp=NULL, thread_id=NULL, parent_id=NULL,
@@ -2772,9 +3212,10 @@ def forget_doc(doc_id: str) -> dict[str, str]:
         conn.execute(
             """UPDATE connections SET doc_count=(
                  SELECT COUNT(*) FROM docs
-                 WHERE source_type=connections.provider AND forgotten=0)
-               WHERE provider=?""",
-            (source_type,),
+                 WHERE source_type=connections.provider AND forgotten=0
+                   AND org_id=connections.org_id)
+               WHERE provider=? AND org_id=?""",
+            (source_type, org_id),
         )
 
     # Forget is the one operation allowed to rewrite canonical history: remove
@@ -2811,9 +3252,11 @@ def forget_doc(doc_id: str) -> dict[str, str]:
 
 
 @app.get("/api/settings")
-def get_settings() -> dict[str, Any]:
+def get_settings(request: Request) -> dict[str, Any]:
+    actor = _require_actor(request)
     with db() as conn:
-        s = _settings_map(conn)
+        s = _settings_map(conn, actor.org_id)
+    mail_provider = joel_mail.provider_name(s)
     return {
         "llm_base_url": s.get("llm_base_url", ""),
         "llm_api_key_set": bool(s.get("llm_api_key")),
@@ -2828,8 +3271,19 @@ def get_settings() -> dict[str, Any]:
         "composio_api_key_set": bool(s.get("composio_api_key")),
         "embed_model": s.get("embed_model", ""),
         "slack_signing_secret_set": bool(s.get("slack_signing_secret")),
+        "mail_provider": mail_provider,
+        "mail_configured": joel_mail.is_configured(s),
+        "mail_from": s.get("mail_from", ""),
+        "mail_from_name": s.get("mail_from_name", "joel"),
+        "mail_app_url": s.get("mail_app_url", ""),
+        "mail_smtp_host": s.get("mail_smtp_host", ""),
+        "mail_smtp_port": s.get("mail_smtp_port", "587"),
+        "mail_smtp_user": s.get("mail_smtp_user", ""),
+        "mail_smtp_password_set": bool(s.get("mail_smtp_password")),
+        "mail_smtp_tls": s.get("mail_smtp_tls", "true"),
+        "mail_resend_api_key_set": bool(s.get("mail_resend_api_key")),
         "raw": {
-            k: ("" if k.endswith("key") or k.endswith("secret") else v)
+            k: ("" if _is_secret_setting(k) else v)
             for k, v in s.items()
             if k
             in {
@@ -2842,37 +3296,73 @@ def get_settings() -> dict[str, Any]:
                 "llm_model_rerank",
                 "sync_enabled",
                 "embed_model",
+                "mail_provider",
+                "mail_from",
+                "mail_from_name",
+                "mail_app_url",
+                "mail_smtp_host",
+                "mail_smtp_port",
+                "mail_smtp_user",
+                "mail_smtp_password",
+                "mail_smtp_tls",
+                "mail_resend_api_key",
             }
         },
     }
 
 
 @app.put("/api/settings")
-def put_settings(body: SettingsIn) -> dict[str, str]:
+def put_settings(body: SettingsIn, request: Request) -> dict[str, str]:
+    actor = _require_admin(request)
     with db() as conn:
         for k, v in body.values.items():
             if k not in DEFAULT_SETTINGS:
                 continue
             # don't wipe secrets on empty submit
-            if (k.endswith("key") or k.endswith("secret")) and v == "":
+            if _is_secret_setting(k) and v == "":
                 continue
+            if k == "mail_provider":
+                provider = str(v).strip().lower()
+                if provider not in joel_mail.PROVIDERS:
+                    raise HTTPException(status_code=400, detail="Invalid mail provider")
+                v = provider
             conn.execute(
-                "INSERT INTO settings(key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (k, str(v)),
+                "INSERT INTO settings(org_id, key, value) VALUES (?, ?, ?) "
+                "ON CONFLICT(org_id, key) DO UPDATE SET value=excluded.value",
+                (actor.org_id, k, str(v)),
             )
     return {"status": "ok"}
+
+
+@app.post("/api/settings/email/test")
+def test_outbound_email(body: TestEmailIn, request: Request) -> dict[str, str]:
+    actor = _require_admin(request)
+    with db() as conn:
+        settings = _settings_map(conn, actor.org_id)
+    to = (body.to or actor.email).strip()
+    if not to:
+        raise HTTPException(status_code=400, detail="Enter a recipient email")
+    try:
+        result = joel_mail.try_send(settings, joel_mail.test_email(to=to))
+    except joel_mail.MailError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(
+            status_code=400, detail="Configure an email provider first"
+        )
+    return {"status": "sent", "provider": result.provider}
 
 
 @app.get("/api/profile")
 def get_profile(request: Request) -> dict[str, Any] | None:
     actor = _require_actor(request)
     with db() as conn:
-        org = conn.execute("SELECT * FROM orgs WHERE id=1").fetchone()
+        org = conn.execute("SELECT * FROM orgs WHERE id=?", (actor.org_id,)).fetchone()
         if org is None:
             return None
         spend = {
-            r["stage"]: r["calls"] for r in conn.execute("SELECT * FROM spend")
+            r["stage"]: r["calls"]
+            for r in conn.execute("SELECT * FROM spend WHERE org_id=?", (actor.org_id,))
         }
     return {
         "display_name": actor.display_name,
@@ -2907,6 +3397,22 @@ def put_profile(body: ProfileIn, request: Request) -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.put("/api/profile/password")
+def put_profile_password(body: PasswordIn, request: Request) -> dict[str, str]:
+    actor = _require_actor(request)
+    try:
+        with db() as conn:
+            identity.change_password(
+                conn,
+                actor,
+                current_password=body.current_password,
+                new_password=body.new_password,
+            )
+    except identity.IdentityError as extra:
+        raise _identity_error(extra) from extra
+    return {"status": "ok"}
+
+
 # ── API keys (§13's MCP surface identity) ───────────────────────────────────
 
 
@@ -2915,10 +3421,10 @@ class ApiKeyIn(BaseModel):
 
 
 @app.get("/api/api-keys")
-def list_api_keys(request: Request) -> list[dict[str, Any]]:
+def list_api_keys_route(request: Request) -> list[dict[str, Any]]:
     actor = _require_actor(request)
     with db() as conn:
-        rows = identity.list_api_keys(conn, actor.user_id)
+        rows = identity.list_api_keys(conn, actor)
     return [
         {
             "id": r["id"],
@@ -2932,31 +3438,32 @@ def list_api_keys(request: Request) -> list[dict[str, Any]]:
 
 
 @app.post("/api/api-keys")
-def create_api_key(body: ApiKeyIn, request: Request) -> dict[str, str]:
+def create_api_key_route(body: ApiKeyIn, request: Request) -> dict[str, str]:
     """The raw key is returned exactly once, here -- only its hash is ever
     stored (identity.py's create_api_key), same as an invite token."""
     actor = _require_actor(request)
     with db() as conn:
-        key_id, raw = identity.create_api_key(conn, actor.user_id, body.label)
+        key_id, raw = identity.create_api_key(conn, actor, body.label)
     return {"id": key_id, "key": raw}
 
 
 @app.delete("/api/api-keys/{key_id}")
-def delete_api_key(key_id: str, request: Request) -> dict[str, str]:
+def delete_api_key_route(key_id: str, request: Request) -> dict[str, str]:
     actor = _require_actor(request)
     with db() as conn:
-        removed = identity.revoke_api_key(conn, actor.user_id, key_id)
+        removed = identity.revoke_api_key(conn, actor, key_id)
     if not removed:
         raise HTTPException(404, "Key not found")
     return {"status": "ok"}
 
 
 @app.get("/api/health")
-def health() -> dict[str, Any]:
+def health(request: Request) -> dict[str, Any]:
+    actor = _require_actor(request)
     with db() as conn:
-        s = _settings_map(conn)
+        s = _settings_map(conn, actor.org_id)
         connectors = []
-        for r in conn.execute("SELECT * FROM connections"):
+        for r in conn.execute("SELECT * FROM connections WHERE org_id=?", (actor.org_id,)):
             connectors.append(
                 {
                     "provider": r["provider"],
@@ -2966,22 +3473,31 @@ def health() -> dict[str, Any]:
                 }
             )
         spend = {
-            r["stage"]: r["calls"] for r in conn.execute("SELECT * FROM spend")
+            r["stage"]: r["calls"]
+            for r in conn.execute("SELECT * FROM spend WHERE org_id=?", (actor.org_id,))
         }
         schema_version_row = conn.execute(
             "SELECT version FROM schema_version"
         ).fetchone()
         queue_depth = conn.execute(
-            "SELECT COUNT(*) AS n FROM jobs WHERE status='running'"
+            """SELECT COUNT(*) AS n FROM jobs j
+               JOIN connections c ON c.id = j.connection_id
+               WHERE j.status='running' AND c.org_id=?""",
+            (actor.org_id,),
         ).fetchone()["n"]
         sqlite_count = conn.execute(
-            "SELECT COUNT(*) AS n FROM docs WHERE forgotten=0"
+            "SELECT COUNT(*) AS n FROM docs WHERE forgotten=0 AND org_id=?",
+            (actor.org_id,),
         ).fetchone()["n"]
         oldest_doc = conn.execute(
-            "SELECT MIN(timestamp) AS t FROM docs WHERE forgotten=0 AND timestamp IS NOT NULL"
+            """SELECT MIN(timestamp) AS t FROM docs
+               WHERE forgotten=0 AND timestamp IS NOT NULL AND org_id=?""",
+            (actor.org_id,),
         ).fetchone()["t"]
         artifact_count = conn.execute(
-            "SELECT COUNT(*) AS n FROM docs WHERE forgotten=0 AND granularity='artifact'"
+            """SELECT COUNT(*) AS n FROM docs
+               WHERE forgotten=0 AND granularity='artifact' AND org_id=?""",
+            (actor.org_id,),
         ).fetchone()["n"]
 
     # §14.1: the index triple is the drift detector — a real live count on
@@ -2995,11 +3511,10 @@ def health() -> dict[str, Any]:
     entity_count: int | None = None
     hydra_status = "ok"
     try:
-        rt = _runtime()
-        snap = rt["live_index"].snapshot()
+        snap = _live_index_for(actor.org_id).snapshot()
         vectors_count = int((~snap.forgotten).sum())
-        graph_count = rt["hydra_store"].count_nodes("Doc")
-        entity_count = rt["hydra_store"].count_nodes("Entity")
+        graph_count = _hydra_store_for(actor.org_id).count_nodes("Doc")
+        entity_count = _hydra_store_for(actor.org_id).count_nodes("Entity")
     except Exception as exc:
         hydra_status = f"error: {exc}"
 

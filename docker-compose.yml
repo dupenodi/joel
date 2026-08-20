@@ -7,6 +7,10 @@ services:
       - joel-data:/app/data
     environment:
       JOEL_DATA: /app/data
+      JOEL_WEB_ORIGIN: http://localhost:3000
+      JOEL_HTTPS: "0"
+      # JOEL_SECRET: set in a real deploy — encrypts connector credentials
+      # HYDRA_HTTP / HYDRA_BOLT / HYDRA_TOKEN: required for graph features
   joel-web:
     build:
       context: ./web

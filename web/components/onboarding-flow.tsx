@@ -209,7 +209,7 @@ export function OnboardingFlow({ requested }: { requested: string }) {
           <p className="text-[13px] leading-relaxed text-ink-2">
             {llmSet
               ? "A key is already saved. Continue, or paste a new one."
-              : "Paste a key to continue."}
+              : "Paste a key, or skip and add one later from Settings → Models."}
           </p>
           <form
             className="space-y-3"
@@ -234,14 +234,23 @@ export function OnboardingFlow({ requested }: { requested: string }) {
               />
             </Field>
             {error && <p className="text-[12.5px] text-red">{error}</p>}
-            <Button
-              type="submit"
-              variant="accent"
-              loading={busy}
-              disabled={!llmKey.trim() && !llmSet}
-            >
-              Continue
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="submit"
+                variant="accent"
+                loading={busy}
+                disabled={!llmKey.trim() && !llmSet}
+              >
+                Continue
+              </Button>
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => router.push("/")}
+              >
+                Skip for now
+              </Button>
+            </div>
           </form>
         </section>
       )}

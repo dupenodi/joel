@@ -18,6 +18,7 @@ import {
   integrationLogoUrl,
 } from "@/lib/integrations";
 import type { ConnectorCard, JobRow } from "@/lib/types";
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
 export function IntegrationModal({
@@ -246,6 +247,20 @@ export function IntegrationModal({
         )}
 
         {!connected && permissions}
+
+        {isSlack && (
+          <p className="rounded-control bg-field px-3 py-2.5 text-[12.5px] leading-relaxed text-ink-2">
+            Want joel to answer @mentions in Slack? Configure the{" "}
+            <Link
+              href="/settings/slack"
+              className="font-medium text-ink underline-offset-2 hover:underline"
+              onClick={onClose}
+            >
+              Slack bot
+            </Link>{" "}
+            in Settings — separate from channel sync.
+          </p>
+        )}
 
         {!connected && canBePersonal && (
           <label className="flex cursor-pointer items-start gap-2 text-[13px] text-ink">

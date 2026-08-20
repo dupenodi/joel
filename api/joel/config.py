@@ -1,14 +1,23 @@
 """Environment-backed application configuration."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import os
+
+
+def hydra_namespace_for(org_id: int) -> str:
+    """Per-org Hydra graph namespace (Mode B tenant isolation)."""
+    return f"joel-org-{org_id}"
 
 
 @dataclass(frozen=True)
 class Settings:
     """One universe: a single install, a single store dir, a single graph
     (§2.1). No dataset switch — that was a hackathon-era two-universe
-    design the compose file never actually supported."""
+    design the compose file never actually supported.
+
+    Mode B: each org gets its own Hydra namespace via `for_org` / 
+    `hydra_namespace_for`; the env default remains the install baseline.
+    """
 
     hydra_http: str
     hydra_bolt: str
@@ -27,3 +36,7 @@ class Settings:
             hydra_cell=os.getenv("HYDRA_CELL", "cell-0"),
             embed_model=os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5"),
         )
+
+    def for_org(self, org_id: int) -> "Settings":
+        """Settings with X-Graph-Namespace scoped to this org."""
+        return replace(self, hydra_namespace=hydra_namespace_for(org_id))

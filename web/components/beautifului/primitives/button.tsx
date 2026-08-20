@@ -9,7 +9,7 @@ const buiButton = cva(
       variant: {
         primary: "bg-field text-ink shadow-btn hover:bg-hover",
         secondary: "bg-transparent text-ink-2 hover:bg-hover hover:text-ink",
-        accent: "bg-ink text-canvas shadow-hairline hover:opacity-90",
+        accent: "bg-ink text-page shadow-hairline hover:opacity-90",
         success: "bg-green text-white hover:opacity-90",
         danger: "bg-red-tint text-red hover:bg-red hover:text-white",
       },

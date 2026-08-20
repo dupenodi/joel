@@ -5,6 +5,7 @@ import { Button } from "@/components/beautifului/primitives/button";
 import { Field } from "@/components/field";
 import { Input } from "@/components/ui/input";
 import { getAuthStatus, login } from "@/lib/api";
+import { authDestination } from "@/lib/auth";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { OnboardingSkeleton } from "@/components/skeletons";
@@ -23,12 +24,9 @@ function LoginForm() {
   useEffect(() => {
     void getAuthStatus()
       .then((status) => {
-        if (status.state === "setup") {
-          router.replace("/setup");
-          return;
-        }
-        if (status.state === "ok") {
-          router.replace(next.startsWith("/") ? next : "/");
+        const dest = authDestination(status, "/login", next);
+        if (dest) {
+          router.replace(dest);
           return;
         }
         setWorkspaceName(status.workspace?.name ?? null);
@@ -51,7 +49,10 @@ function LoginForm() {
           setError(null);
           setBusy(true);
           void login(email, password)
-            .then(() => router.replace(next.startsWith("/") ? next : "/"))
+            .then((status) => {
+              const dest = authDestination(status, "/login", next);
+              router.replace(dest ?? (next.startsWith("/") ? next : "/"));
+            })
             .catch((err: unknown) => {
               setError(err instanceof Error ? err.message : "Could not sign in");
             })
