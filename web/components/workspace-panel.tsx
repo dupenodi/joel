@@ -16,6 +16,9 @@ import type { Me, Workspace, WorkspaceInvite, WorkspaceMember } from "@/lib/type
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+const SELECT_CLASS =
+  "h-9 rounded-control bg-field px-2.5 text-[14px] text-ink shadow-hairline outline-none transition-colors duration-150 hover:bg-hover focus:bg-surface focus:shadow-btn";
+
 function inviteUrl(token: string): string {
   return `${window.location.origin}/join?token=${encodeURIComponent(token)}`;
 }
@@ -52,17 +55,19 @@ export function WorkspacePanel() {
   const admin = me.role === "admin";
 
   return (
-    <section className="space-y-3">
-      <h2 className="text-[11px] font-medium tracking-[0.04em] text-ink-3 uppercase">
-        Workspace
-      </h2>
-      <p className="text-[13px] leading-relaxed text-ink-2">
-        {workspace.domain} · {members.length}{" "}
-        {members.length === 1 ? "person" : "people"}.
-      </p>
+    <section className="rounded-card bg-surface p-5 shadow-card">
+      <div className="mb-4">
+        <h2 className="text-[11px] font-medium tracking-[0.04em] text-ink-3 uppercase">
+          Workspace
+        </h2>
+        <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
+          {workspace.domain} · {members.length}{" "}
+          {members.length === 1 ? "person" : "people"}.
+        </p>
+      </div>
 
       {admin && (
-        <div className="flex flex-wrap items-end gap-2">
+        <div className="mb-4 flex flex-wrap items-end gap-2">
           <Field label="Name" className="min-w-48 flex-1">
             <Input
               value={name}
@@ -75,7 +80,7 @@ export function WorkspacePanel() {
           <Button
             type="button"
             size="sm"
-            variant="secondary"
+            variant="primary"
             loading={busy}
             onClick={() => {
               setBusy(true);
@@ -93,18 +98,20 @@ export function WorkspacePanel() {
         </div>
       )}
 
-      <ul className="divide-y divide-line rounded-card bg-surface shadow-card">
+      <ul className="-mx-5 divide-y divide-line border-t border-line">
         {members.map((member) => (
           <li
             key={member.id}
-            className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5"
+            className="flex flex-wrap items-center justify-between gap-2 px-5 py-2.5"
           >
             <div className="min-w-0">
-              <p className="truncate text-[13px] font-medium text-ink">
-                {member.display_name}
-                {member.id === me.id ? (
-                  <span className="ml-1.5 font-normal text-ink-3">you</span>
-                ) : null}
+              <p className="flex items-center gap-1.5 truncate text-[13px] font-medium text-ink">
+                <span className="truncate">{member.display_name}</span>
+                {member.id === me.id && (
+                  <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-accent-tint px-1.5 text-[10.5px] font-medium text-accent-ink">
+                    you
+                  </span>
+                )}
               </p>
               <p className="truncate text-[12px] text-ink-3">{member.email}</p>
             </div>
@@ -112,7 +119,7 @@ export function WorkspacePanel() {
               <div className="flex items-center gap-2">
                 <select
                   aria-label={`Role for ${member.display_name}`}
-                  className="h-8 rounded-control bg-field px-2 text-[13px] text-ink shadow-hairline"
+                  className={SELECT_CLASS}
                   value={member.role}
                   onChange={(e) => {
                     const next = e.target.value as "admin" | "member";
@@ -129,7 +136,7 @@ export function WorkspacePanel() {
                 <Button
                   type="button"
                   size="sm"
-                  variant="secondary"
+                  variant="danger"
                   onClick={() => {
                     void removeMember(member.id)
                       .then(() => reload())
@@ -142,7 +149,9 @@ export function WorkspacePanel() {
                 </Button>
               </div>
             ) : (
-              <p className="text-[12px] capitalize text-ink-3">{member.role}</p>
+              <span className="inline-flex h-5.5 shrink-0 items-center rounded-full bg-field px-2 text-[11.5px] font-medium capitalize text-ink-2">
+                {member.role}
+              </span>
             )}
           </li>
         ))}
@@ -150,7 +159,7 @@ export function WorkspacePanel() {
 
       {admin && (
         <form
-          className="space-y-2"
+          className="mt-4 space-y-2"
           onSubmit={(e) => {
             e.preventDefault();
             setBusy(true);
@@ -182,7 +191,7 @@ export function WorkspacePanel() {
             </Field>
             <select
               aria-label="Invite role"
-              className="h-9 rounded-control bg-field px-2 text-[13px] text-ink shadow-hairline"
+              className={SELECT_CLASS}
               value={role}
               onChange={(e) => setRole(e.target.value as "admin" | "member")}
             >
@@ -203,14 +212,14 @@ export function WorkspacePanel() {
       )}
 
       {freshLink && (
-        <div className="rounded-card bg-field p-3">
+        <div className="mt-4 rounded-card bg-field p-3">
           <p className="text-[12px] text-ink-3">Give them this link once.</p>
           <p className="mt-1 break-all text-[12.5px] text-ink">{freshLink}</p>
           <Button
             className="mt-2"
             type="button"
             size="sm"
-            variant="secondary"
+            variant="primary"
             onClick={() => {
               void navigator.clipboard.writeText(freshLink).then(() => setCopied(true));
             }}
@@ -221,7 +230,7 @@ export function WorkspacePanel() {
       )}
 
       {admin && invites.length > 0 && (
-        <ul className="space-y-1.5">
+        <ul className="mt-4 space-y-1.5">
           {invites.map((invite) => (
             <li
               key={invite.id}
@@ -233,7 +242,7 @@ export function WorkspacePanel() {
               <Button
                 type="button"
                 size="sm"
-                variant="secondary"
+                variant="danger"
                 onClick={() => {
                   void revokeInvite(invite.id)
                     .then(() => reload())
@@ -249,9 +258,10 @@ export function WorkspacePanel() {
         </ul>
       )}
 
-      {error && <p className="text-[13px] text-red">{error}</p>}
+      {error && <p className="mt-3 text-[13px] text-red">{error}</p>}
 
       <Button
+        className="mt-4"
         type="button"
         size="sm"
         variant="secondary"

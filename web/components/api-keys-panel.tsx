@@ -49,18 +49,20 @@ export function ApiKeysPanel() {
   if (keys === null) return null;
 
   return (
-    <section className="space-y-3">
-      <h2 className="text-[11px] font-medium tracking-[0.04em] text-ink-3 uppercase">
-        API keys
-      </h2>
-      <p className="text-[13px] leading-relaxed text-ink-2">
-        For MCP clients (Claude Desktop, Claude Code, ...) — connect to{" "}
-        <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">/mcp/</code>{" "}
-        with a key below. A key answers with your own permissions, nothing more.
-      </p>
+    <section className="rounded-card bg-surface p-5 shadow-card">
+      <div className="mb-4">
+        <h2 className="text-[11px] font-medium tracking-[0.04em] text-ink-3 uppercase">
+          API keys
+        </h2>
+        <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
+          For MCP clients (Claude Desktop, Claude Code, ...) — connect to{" "}
+          <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">/mcp/</code>{" "}
+          with a key below. A key answers with your own permissions, nothing more.
+        </p>
+      </div>
 
       {revealed && (
-        <div className="rounded-card bg-field p-3">
+        <div className="mb-4 rounded-card bg-field p-3">
           <p className="text-[13px] font-medium text-ink">
             Copy this now — it won&apos;t be shown again.
           </p>
@@ -70,7 +72,7 @@ export function ApiKeysPanel() {
           <Button
             type="button"
             size="sm"
-            variant="secondary"
+            variant="primary"
             className="mt-2"
             onClick={() => setRevealed(null)}
           >
@@ -90,21 +92,21 @@ export function ApiKeysPanel() {
         <Button
           type="button"
           size="sm"
-          variant="secondary"
+          variant="primary"
           loading={creating}
           onClick={() => void onCreate()}
         >
           Create key
         </Button>
       </div>
-      {error && <p className="text-[13px] text-red">{error}</p>}
+      {error && <p className="mt-3 text-[13px] text-red">{error}</p>}
 
       {keys.length > 0 && (
-        <ul className="divide-y divide-line rounded-card bg-surface shadow-card">
+        <ul className="-mx-5 mt-4 divide-y divide-line border-t border-line">
           {keys.map((k) => (
             <li
               key={k.id}
-              className="flex items-center justify-between gap-3 px-3 py-2.5"
+              className="flex items-center justify-between gap-3 px-5 py-2.5"
             >
               <div className="min-w-0">
                 <p className="truncate text-[13.5px] text-ink">{k.label}</p>
@@ -113,13 +115,15 @@ export function ApiKeysPanel() {
                   {k.last4} · {k.last_used_at ? `used ${formatRelative(k.last_used_at)}` : "never used"}
                 </p>
               </div>
-              <button
+              <Button
                 type="button"
+                size="sm"
+                variant="danger"
+                className="shrink-0"
                 onClick={() => void onRevoke(k.id)}
-                className="shrink-0 text-[13px] text-ink-3 hover:text-red"
               >
                 Revoke
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
