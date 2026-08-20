@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/beautifului/primitives/button";
+import { CopyButton } from "@/components/beautifului/primitives/copy-button";
 import { Field } from "@/components/field";
 import {
   PersonAvatar,
@@ -59,11 +60,10 @@ export function MembersPanel() {
 
   const [inviteOpen, setInviteOpen] = useState(false);
   const [emails, setEmails] = useState("");
-  const [role, setRole] = useState<"member" | "admin" | "owner">("member");
+  const [role, setRole] = useState<"member" | "admin">("member");
   const [busy, setBusy] = useState(false);
   const [freshInvites, setFreshInvites] = useState<FreshInvite[]>([]);
   const [mailConfigured, setMailConfigured] = useState(false);
-  const [copied, setCopied] = useState<"one" | "all" | null>(null);
   const [linkOpen, setLinkOpen] = useState(false);
 
   const reload = useCallback(async () => {
@@ -80,6 +80,7 @@ export function MembersPanel() {
   if (!me) return null;
 
   const admin = me.is_admin || me.role === "admin" || me.role === "owner";
+  const canAssignOwner = Boolean(me.is_owner || me.role === "owner");
   const parsedEmails = parseInviteEmails(emails);
 
   function closeInvite() {
@@ -131,7 +132,7 @@ export function MembersPanel() {
                   <p className="truncate text-[12px] text-ink-3">{member.email}</p>
                 </div>
               </div>
-              {admin && member.id !== me.id ? (
+              {admin && member.id !== me.id && !(member.role === "owner" && !canAssignOwner) ? (
                 <div className="flex items-center gap-2">
                   <select
                     aria-label={`Role for ${member.display_name}`}
@@ -152,7 +153,9 @@ export function MembersPanel() {
                   >
                     <option value="member">Member</option>
                     <option value="admin">Admin</option>
-                    <option value="owner">Owner</option>
+                    {canAssignOwner ? (
+                      <option value="owner">Owner</option>
+                    ) : null}
                   </select>
                   <Button
                     type="button"
@@ -225,7 +228,6 @@ export function MembersPanel() {
                                 emailError: res.email_error,
                               },
                             ]);
-                            setCopied(null);
                             setLinkOpen(true);
                           })
                           .catch((err: unknown) => {
@@ -285,7 +287,6 @@ export function MembersPanel() {
             if (list.length === 0) return;
             setBusy(true);
             setError(null);
-            setCopied(null);
             void (async () => {
               const created: FreshInvite[] = [];
               const failures: string[] = [];
@@ -351,14 +352,11 @@ export function MembersPanel() {
               className={`${SELECT_CLASS} w-full`}
               value={role}
               onChange={(e) =>
-                setRole(e.target.value as "owner" | "admin" | "member")
+                setRole(e.target.value as "admin" | "member")
               }
             >
               <option value="member">Member</option>
               <option value="admin">Admin</option>
-              {me.is_owner || me.role === "owner" ? (
-                <option value="owner">Owner</option>
-              ) : null}
             </select>
           </Field>
           {error && <p className="text-[13px] text-red">{error}</p>}
@@ -386,7 +384,6 @@ export function MembersPanel() {
         onClose={() => {
           setLinkOpen(false);
           setFreshInvites([]);
-          setCopied(null);
           setError(null);
         }}
         title="Invite links"
@@ -430,39 +427,23 @@ export function MembersPanel() {
                   {item.url}
                 </code>
                 <div className="mt-2 flex justify-end">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(item.url).then(() => {
-                        setCopied("one");
-                      });
-                    }}
-                  >
-                    {copied === "one" ? "Copied" : "Copy"}
-                  </Button>
+                  <CopyButton text={item.url} />
                 </div>
               </li>
             ))}
           </ul>
           <div className="flex justify-end gap-2">
             {freshInvites.length > 1 && (
-              <Button
-                type="button"
-                size="sm"
+              <CopyButton
                 variant="primary"
-                onClick={() => {
-                  const blob = freshInvites
+                label="Copy all"
+                copiedLabel="Copied all"
+                text={() =>
+                  freshInvites
                     .map((item) => `${item.email}\n${item.url}`)
-                    .join("\n\n");
-                  void navigator.clipboard.writeText(blob).then(() => {
-                    setCopied("all");
-                  });
-                }}
-              >
-                {copied === "all" ? "Copied all" : "Copy all"}
-              </Button>
+                    .join("\n\n")
+                }
+              />
             )}
             <Button
               type="button"
@@ -471,7 +452,6 @@ export function MembersPanel() {
               onClick={() => {
                 setLinkOpen(false);
                 setFreshInvites([]);
-                setCopied(null);
                 setError(null);
               }}
             >

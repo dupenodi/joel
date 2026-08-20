@@ -33,6 +33,9 @@ def check_schema_allows_org_and_personal_rows_to_coexist(tmp_dir: Path) -> None:
 
     with app.db() as conn:
         conn.execute(
+            "INSERT INTO orgs(id,domain,name,logo_url,created_at) VALUES (1,'x.co','X','','2026-08-20T00:00:00+00:00')"
+        )
+        conn.execute(
             "INSERT INTO connections(id,provider,mode,status,checklist_json,created_at,owned_by,kind) "
             "VALUES ('c_org','slack','composio','ready','{}','2026-08-20T00:00:00+00:00',NULL,'org')"
         )
@@ -62,11 +65,11 @@ def check_upsert_connection_creates_separate_rows_per_owner(tmp_dir: Path) -> No
         conn.execute("INSERT INTO orgs(id,domain,name,logo_url,created_at) VALUES (1,'x.co','X','','2026-08-20T00:00:00+00:00')")
 
     org_id, org_created = app._upsert_connection(
-        "slack", "composio", {"composio_account_id": "acct_org"}, status="ready",
+        "slack", "composio", {"composio_account_id": "acct_org"}, org_id=1, status="ready",
     )
     assert org_created
     personal_id, personal_created = app._upsert_connection(
-        "slack", "composio", {"composio_account_id": "acct_personal"}, status="ready", owned_by="user_a",
+        "slack", "composio", {"composio_account_id": "acct_personal"}, org_id=1, status="ready", owned_by="user_a",
     )
     assert personal_created
     assert org_id != personal_id, "org and personal upserts for the same provider must land on different rows"
@@ -75,12 +78,12 @@ def check_upsert_connection_creates_separate_rows_per_owner(tmp_dir: Path) -> No
     # create a second one (idempotent upsert, the pre-existing behavior
     # this must not regress).
     org_id_again, org_created_again = app._upsert_connection(
-        "slack", "composio", {"composio_account_id": "acct_org_v2"}, status="ready",
+        "slack", "composio", {"composio_account_id": "acct_org_v2"}, org_id=1, status="ready",
     )
     assert not org_created_again
     assert org_id_again == org_id
     personal_id_again, personal_created_again = app._upsert_connection(
-        "slack", "composio", {"composio_account_id": "acct_personal_v2"}, status="ready", owned_by="user_a",
+        "slack", "composio", {"composio_account_id": "acct_personal_v2"}, org_id=1, status="ready", owned_by="user_a",
     )
     assert not personal_created_again
     assert personal_id_again == personal_id
@@ -123,6 +126,9 @@ def check_live_lookup_prefers_actors_own_personal_connection(tmp_dir: Path) -> N
 
     with app.db() as conn:
         conn.execute(
+            "INSERT INTO orgs(id,domain,name,logo_url,created_at) VALUES (1,'x.co','X','','2026-08-20T00:00:00+00:00')"
+        )
+        conn.execute(
             "INSERT INTO connections(id,provider,mode,status,checklist_json,created_at,owned_by) "
             "VALUES ('c_org_slack','slack','composio','ready','{}','2026-08-20T00:00:00+00:00',NULL)"
         )
@@ -160,9 +166,10 @@ def check_live_lookup_prefers_actors_own_personal_connection(tmp_dir: Path) -> N
         with app.db() as conn:
             plan = QueryPlan(intent="live", entities=[], exact_tokens=["#eng-oncall"])
             app._run_live_lookup(
-                conn, {"live_index": None, "hydra_store": None}, {}, None,
+                conn, {}, None,
                 "what's the latest message in #eng-oncall", plan,
                 actor_id="user_a",
+                org_id=1,
             )
     finally:
         app.fetch_live_target = original
@@ -191,6 +198,47 @@ def check_live_lookup_prefers_actors_own_personal_connection(tmp_dir: Path) -> N
     print("ok  pc.4: live-lookup credential resolution prefers the asking actor's own personal connection")
 
 
+def check_pending_connects_are_scoped_per_org_toolkit_owner(tmp_dir: Path) -> None:
+    app.DATA_DIR = tmp_dir
+    app.DB_PATH = tmp_dir / "index" / "joel.db"
+    app.init_db()
+    now = "2026-08-20T00:00:00+00:00"
+    with app.db() as conn:
+        conn.execute(
+            "INSERT INTO orgs(id,domain,name,logo_url,created_at) VALUES (1,'x.co','X','',?)",
+            (now,),
+        )
+        conn.execute(
+            """INSERT INTO pending_connects(
+                 id, toolkit, lookback_days, return_to, origin, created_at,
+                 owned_by, org_id, owner_key)
+               VALUES ('pc_org','gmail',30,'connectors','http://localhost',?,NULL,1,'')""",
+            (now,),
+        )
+        conn.execute(
+            """INSERT INTO pending_connects(
+                 id, toolkit, lookback_days, return_to, origin, created_at,
+                 owned_by, org_id, owner_key)
+               VALUES ('pc_a','gmail',30,'connectors','http://localhost',?,'user_a',1,'user_a')""",
+            (now,),
+        )
+        n = conn.execute("SELECT COUNT(*) AS n FROM pending_connects WHERE toolkit='gmail'").fetchone()["n"]
+        assert n == 2, "org and personal Gmail pendings must coexist"
+        try:
+            conn.execute(
+                """INSERT INTO pending_connects(
+                     id, toolkit, lookback_days, return_to, origin, created_at,
+                     owned_by, org_id, owner_key)
+                   VALUES ('pc_dup','gmail',7,'connectors','http://localhost',?,'user_a',1,'user_a')""",
+                (now,),
+            )
+            raised = False
+        except sqlite3.IntegrityError:
+            raised = True
+        assert raised, "two personal Gmail pendings for the same user in one org must collide"
+    print("ok  pc.6: pending_connects unique on (org_id, toolkit, owner_key)")
+
+
 def check_personal_provider_allowlist() -> None:
     assert {"gmail", "slack"} <= app.PERSONAL_CONNECTOR_PROVIDERS
     assert "notion" not in app.PERSONAL_CONNECTOR_PROVIDERS
@@ -206,6 +254,8 @@ def main() -> None:
     check_connectors_for_actor_view()
     with tempfile.TemporaryDirectory() as td:
         check_live_lookup_prefers_actors_own_personal_connection(Path(td))
+    with tempfile.TemporaryDirectory() as td:
+        check_pending_connects_are_scoped_per_org_toolkit_owner(Path(td))
     check_personal_provider_allowlist()
     print("\nPersonal connectors (§0.3/§1.4): all automated checks passed.")
 

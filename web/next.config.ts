@@ -21,6 +21,14 @@ const nextConfig: NextConfig = {
         source: "/api/:path*",
         destination: `${apiOrigin.replace(/\/$/, "")}/api/:path*`,
       },
+      {
+        source: "/mcp",
+        destination: `${apiOrigin.replace(/\/$/, "")}/mcp`,
+      },
+      {
+        source: "/mcp/:path*",
+        destination: `${apiOrigin.replace(/\/$/, "")}/mcp/:path*`,
+      },
     ];
   },
 };

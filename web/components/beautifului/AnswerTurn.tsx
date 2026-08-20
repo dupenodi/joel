@@ -22,24 +22,12 @@ export function UserTurn({ children }: { children: string }) {
 }
 
 /** Settled answer for live chat — body + sources. No honesty badges. */
-export function SimpleAnswer({
-  message,
-  onForget,
-}: {
-  message: Message;
-  onForget?: (docId: string) => void;
-}) {
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
+export function SimpleAnswer({ message }: { message: Message }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
-  const citations = (message.citations ?? []).filter((c) => !hidden.has(c.doc_id));
+  const citations = message.citations ?? [];
   const absent =
     message.status === "absent" ||
     (!message.content && citations.length === 0);
-
-  function forget(docId: string) {
-    setHidden((s) => new Set(s).add(docId));
-    onForget?.(docId);
-  }
 
   return (
     <div className="flex w-full flex-col gap-2">
@@ -85,11 +73,7 @@ export function SimpleAnswer({
           {sourcesOpen && (
             <div className="flex flex-col rounded-[10px] bg-inset p-1 shadow-hairline">
               {citations.map((c) => (
-                <SourceRow
-                  key={c.doc_id}
-                  citation={c}
-                  onForget={onForget ? () => forget(c.doc_id) : undefined}
-                />
+                <SourceRow key={c.doc_id} citation={c} />
               ))}
             </div>
           )}
@@ -99,13 +83,7 @@ export function SimpleAnswer({
   );
 }
 
-function SourceRow({
-  citation,
-  onForget,
-}: {
-  citation: Citation;
-  onForget?: () => void;
-}) {
+function SourceRow({ citation }: { citation: Citation }) {
   const provider = citation.provider ?? citation.source_type ?? undefined;
   return (
     <div className="flex items-center gap-2 rounded-[6px] px-1.5 py-1 text-[12px] text-ink-2 hover:bg-hover hover:text-ink">
@@ -128,36 +106,13 @@ function SourceRow({
           </span>
         )}
       </a>
-      {onForget && (
-        <button
-          type="button"
-          onClick={onForget}
-          className="shrink-0 text-[11px] text-ink-3 underline-offset-2 hover:text-ink hover:underline"
-        >
-          forget
-        </button>
-      )}
     </div>
   );
 }
 
 /** Gallery / rich honesty stack. Live chat uses SimpleAnswer. */
-export function AnswerTurn({
-  message,
-  onForget,
-}: {
-  message: Message;
-  onForget?: (docId: string) => void;
-}) {
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
-  const citations = (message.citations ?? []).filter(
-    (c) => !hidden.has(c.doc_id),
-  );
-
-  function forget(docId: string) {
-    setHidden((s) => new Set(s).add(docId));
-    onForget?.(docId);
-  }
+export function AnswerTurn({ message }: { message: Message }) {
+  const citations = message.citations ?? [];
 
   return (
     <div className="flex w-full flex-col gap-2.5">
@@ -182,11 +137,7 @@ export function AnswerTurn({
       {citations.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {citations.map((c) => (
-            <CitationChip
-              key={c.doc_id}
-              citation={c}
-              onForget={forget}
-            />
+            <CitationChip key={c.doc_id} citation={c} />
           ))}
         </div>
       )}

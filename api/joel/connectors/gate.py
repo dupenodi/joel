@@ -16,6 +16,7 @@ class IntegrationDef:
     scope: str
     default_lookback_days: int = 30
     default_interval_min: int = 15
+    job: str = "indexed"  # indexed = sync into memory; live = now-questions
 
 
 INTEGRATIONS: tuple[IntegrationDef, ...] = (
@@ -38,6 +39,7 @@ INTEGRATIONS: tuple[IntegrationDef, ...] = (
         ingest=True,
         scope="Issues, PRs, review comments, and language-aware code chunks.",
         default_interval_min=30,
+        job="live",
     ),
     IntegrationDef(
         id="gmail",
@@ -58,6 +60,7 @@ INTEGRATIONS: tuple[IntegrationDef, ...] = (
         ingest=True,
         scope="Issues and comments.",
         default_interval_min=30,
+        job="live",
     ),
     IntegrationDef(
         id="jira",
@@ -125,6 +128,7 @@ INTEGRATION_BY_ID = {item.id: item for item in INTEGRATIONS}
 INTEGRATION_BY_TOOLKIT = {item.toolkit: item for item in INTEGRATIONS}
 CONNECTABLE_TOOLKITS = {item.toolkit for item in INTEGRATIONS if item.connectable}
 INGEST_PROVIDERS = {item.id for item in INTEGRATIONS if item.ingest}
+LIVE_PROVIDERS = {item.id for item in INTEGRATIONS if item.job == "live"}
 
 GROUP_LABELS = {
     "chat": "Chat",

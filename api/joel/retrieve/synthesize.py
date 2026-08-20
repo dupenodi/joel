@@ -137,12 +137,27 @@ def _parse_answer(raw: Any) -> AnswerResult:
     )
 
 
+def _voice_block(*, voice: str = "", workspace_about: str = "") -> str:
+    parts: list[str] = []
+    about = workspace_about.strip()
+    how = voice.strip()
+    if about:
+        parts.append(f"## About this company\n{about}")
+    if how:
+        parts.append(f"## How you talk\n{how}")
+    if not parts:
+        return ""
+    return "\n\n" + "\n\n".join(parts) + "\n"
+
+
 def synthesize_answer(
     llm_call: LLMCallFn | None,
     question: str,
     reranked: list[RerankedDoc],
     *,
     graph_paths: list[str] | None = None,
+    voice: str = "",
+    workspace_about: str = "",
 ) -> AnswerResult:
     """The full §10.5 flow: pre-gate → LLM synthesis → post-gate. Returns
     "absent" (never raises) on a weak context, a missing LLM key, or an
@@ -159,6 +174,7 @@ def synthesize_answer(
         template.replace("{context}", _build_context(reranked))
         .replace("{paths}", paths_block)
         .replace("{question}", question)
+        .replace("{voice_block}", _voice_block(voice=voice, workspace_about=workspace_about))
     )
     try:
         raw = call_json(llm_call, _STAGE, _SYSTEM_PROMPT, user_prompt)

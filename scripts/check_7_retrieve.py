@@ -66,6 +66,13 @@ def _doc(i: int, title: str, body: str, *, granularity: str = "document", source
     )
 
 
+def _ensure_org(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO orgs(id, domain, name, logo_url, created_at) "
+        "VALUES (1, 'check7.dev', 'Check7', '', '2026-01-01T00:00:00+00:00')"
+    )
+
+
 def _store(conn, index, docs: list[CanonicalDoc]) -> None:
     from joel.store import HydraStore
 
@@ -239,6 +246,38 @@ def check_abstention_no_citations_and_fabricated() -> None:
     print("ok  7.4d: a citation outside the reranked set triggers the abstention gate")
 
 
+def check_voice_and_about_injected_into_answer_prompt() -> None:
+    strong = RerankedDoc(doc=_rd("strong_doc"), score=9.0, reason="on point")
+    payload = {
+        "status": "answered",
+        "answer": "x",
+        "citations": ["strong_doc"],
+        "reasoning_path": [],
+        "conflict": None,
+        "confidence": 0.9,
+    }
+    llm = _stage_llm(answer=payload)
+    synthesize_answer(
+        llm,
+        "a real question",
+        [strong],
+        voice="Short, no preamble.",
+        workspace_about="Acme makes widgets in Austin.",
+    )
+    prompt = llm.calls[0][1]
+    assert "Short, no preamble." in prompt
+    assert "Acme makes widgets in Austin." in prompt
+    assert "How you talk" in prompt
+    assert "About this company" in prompt
+
+    llm_plain = _stage_llm(answer=payload)
+    synthesize_answer(llm_plain, "a real question", [strong])
+    plain = llm_plain.calls[0][1]
+    assert "How you talk" not in plain
+    assert "About this company" not in plain
+    print("ok  7.4e: voice and workspace about land in the answer prompt only when set")
+
+
 def check_five_unanswerable_questions_abstain(conn: sqlite3.Connection, index: LiveIndex) -> None:
     _store(conn, index, [_doc(10, "Company snacks policy", "We restock snacks every Monday.")])
     questions = [
@@ -256,7 +295,7 @@ def check_five_unanswerable_questions_abstain(conn: sqlite3.Connection, index: L
     for q in questions:
         trace = answer_question(conn, index, _fake_embed, llm, q)
         assert trace.answer.status == "absent", f"expected absent for {q!r}, got {trace.answer.status}"
-    print("ok  7.4e: five invented-unanswerable questions all return absent")
+    print("ok  7.4f: five invented-unanswerable questions all return absent")
 
 
 def check_happy_path_answered(conn: sqlite3.Connection, index: LiveIndex) -> None:
@@ -325,6 +364,7 @@ def check_real_llm_smoke(tmp_dir: Path) -> None:
     app.DB_PATH = tmp_dir / "index" / "joel.db"
     app.init_db()
     with app.db() as conn:
+        _ensure_org(conn)
         index = LiveIndex(tmp_dir / f"vectors_smoke_{RUN_ID}.npz", dim=_FAKE_EMBED_DIM)
         docs = [_doc(99, "Vacation policy", "Employees get 20 days of paid vacation per year.", granularity="artifact")]
         _store(conn, index, docs)
@@ -347,6 +387,7 @@ def main() -> None:
         app.init_db()
 
         with app.db() as conn:
+            _ensure_org(conn)
             index = LiveIndex(tmp_dir / f"vectors_{RUN_ID}.npz", dim=_FAKE_EMBED_DIM)
 
             check_lanes_individually(conn, index)
@@ -354,6 +395,7 @@ def main() -> None:
             check_rerank_scale_and_clamping()
             check_abstention_empty_and_low_score()
             check_abstention_no_citations_and_fabricated()
+            check_voice_and_about_injected_into_answer_prompt()
             check_five_unanswerable_questions_abstain(conn, index)
             check_happy_path_answered(conn, index)
             check_traces_log(tmp_dir, conn, index)

@@ -1,11 +1,13 @@
 "use client";
 
 import { Button } from "@/components/beautifului/primitives/button";
+import { CopyButton } from "@/components/beautifului/primitives/copy-button";
 import { Field } from "@/components/field";
 import { SettingsEmpty } from "@/components/settings/settings-section";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { createApiKey, listApiKeys, revokeApiKey } from "@/lib/api";
+import { mcpSnippet, mcpUrl } from "@/lib/mcp-snippet";
 import type { ApiKey } from "@/lib/types";
 import { formatRelative } from "@/lib/utils";
 import { useEffect, useState } from "react";
@@ -16,8 +18,10 @@ export function ApiKeysPanel() {
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [revealed, setRevealed] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const url = mcpUrl(origin);
 
   function reload() {
     listApiKeys()
@@ -35,7 +39,6 @@ export function ApiKeysPanel() {
       setRevealed(key);
       setCreateOpen(false);
       setLabel("");
-      setCopied(false);
       reload();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not create key");
@@ -59,11 +62,8 @@ export function ApiKeysPanel() {
                 MCP API keys
               </h2>
               <p className="mt-1 max-w-md text-[13px] leading-relaxed text-ink-2">
-                Connect Claude Desktop, Claude Code, or any MCP client to{" "}
-                <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">
-                  /mcp/
-                </code>
-                . A key answers with your own permissions — nothing more.
+                One tool, <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">ask</code>.
+                Point Cursor or Claude at this origin — no hosted MCP hostname.
               </p>
             </div>
           </div>
@@ -119,6 +119,24 @@ export function ApiKeysPanel() {
             ))}
           </ul>
         )}
+
+        <div className="mt-5 border-t border-line pt-4">
+          <p className="text-[12px] font-medium tracking-[0.04em] text-ink-3 uppercase">
+            Cursor / Claude snippet
+          </p>
+          <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
+            Paste into MCP settings. Replace the key after you mint one.
+          </p>
+          <pre className="mt-2 overflow-x-auto rounded-control bg-field px-3 py-2.5 text-[12px] leading-relaxed text-ink">
+            {mcpSnippet(url)}
+          </pre>
+          <CopyButton
+            className="mt-2"
+            text={() => mcpSnippet(url)}
+            label="Copy snippet"
+            copiedLabel="Copied"
+          />
+        </div>
       </div>
 
       <Dialog
@@ -166,10 +184,7 @@ export function ApiKeysPanel() {
 
       <Dialog
         open={Boolean(revealed)}
-        onClose={() => {
-          setRevealed(null);
-          setCopied(false);
-        }}
+        onClose={() => setRevealed(null)}
         title="API key created"
         locked
       >
@@ -185,28 +200,25 @@ export function ApiKeysPanel() {
           <code className="block break-all rounded-control bg-field px-3 py-2.5 text-[12.5px] text-ink">
             {revealed}
           </code>
+          {revealed && (
+            <pre className="overflow-x-auto rounded-control bg-field px-3 py-2.5 text-[12px] leading-relaxed text-ink">
+              {mcpSnippet(url, revealed)}
+            </pre>
+          )}
           <div className="flex justify-end gap-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="primary"
-              onClick={() => {
-                if (!revealed) return;
-                void navigator.clipboard.writeText(revealed).then(() => {
-                  setCopied(true);
-                });
-              }}
-            >
-              {copied ? "Copied" : "Copy"}
-            </Button>
+            {revealed && (
+              <CopyButton
+                variant="primary"
+                text={() => mcpSnippet(url, revealed)}
+                label="Copy snippet"
+                copiedLabel="Copied snippet"
+              />
+            )}
             <Button
               type="button"
               size="sm"
               variant="accent"
-              onClick={() => {
-                setRevealed(null);
-                setCopied(false);
-              }}
+              onClick={() => setRevealed(null)}
             >
               Done
             </Button>

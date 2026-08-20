@@ -13,10 +13,10 @@ corrupted, that version had nothing to rebuild FROM. Fixed here.
 Canonical is append-only (one line per new/changed doc, across every
 sync); this replays every line in file order and keeps only the LAST
 state per `doc_id`, which is either a real `CanonicalDoc` or a forget
-tombstone (`{"doc_id":..., "forgotten": true, ...}`, written by
-`POST /api/docs/{id}/forget`) — a tombstone is excluded from the rebuild
-entirely, which is what makes §14.5's "a forgotten doc does not come back
-after a rebuild" true.
+tombstone (`{"doc_id":..., "forgotten": true, ...}` from historical
+canonical lines) — a tombstone is excluded from the rebuild
+entirely, which is what makes “a forgotten doc does not come back
+after a rebuild” true.
 
 Scope, same as the version this replaces: RAW ingested docs only (one row
 per canonical line) — this does not re-run distillation or ontology

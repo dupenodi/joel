@@ -101,8 +101,9 @@ debugging.
 **Frontend** (`web/`) — Next.js app router: `/setup`, `/login`, `/join`, `/(product)/chat`,
 `/integrations`, `/settings`, `/graph` (still a stats/health stub, not a real graph visualizer),
 `/onboarding`. `web/components/integrations/*` handles connect/disconnect, personal-vs-org
-checkbox, backfill-progress copy, reauth. `web/components/api-keys-panel.tsx` and the Slack
-signing-secret field in `install-panel.tsx` are the MCP/Slack-bot settings UI.
+checkbox, backfill-progress copy, reauth, Indexed vs Live grouping. Settings → API keys
+(MCP snippet) and Settings → Slack bot (manifest, signing secret, bot token) are the
+MCP/Slack-bot settings UI.
 
 ## What's explicitly cut (not gaps — deliberate, documented in `PLAN.md` §17)
 

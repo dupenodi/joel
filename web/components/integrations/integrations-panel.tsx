@@ -9,6 +9,7 @@ import {
   connectComposioToolkit,
   disconnectConnector,
   getComposio,
+  getWorkspace,
   listConnectors,
   listJobs,
   patchConnector,
@@ -98,6 +99,7 @@ export function IntegrationsPanel({
   const [error, setError] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
   const openIdRef = useRef(openId);
   openIdRef.current = openId;
   const busyRef = useRef(busy);
@@ -106,9 +108,20 @@ export function IntegrationsPanel({
   cardsRef.current = cards;
 
   const refresh = useCallback(async () => {
-    const [status, list] = await Promise.all([getComposio(), listConnectors()]);
+    const [status, list, workspace] = await Promise.all([
+      getComposio(),
+      listConnectors(),
+      getWorkspace(),
+    ]);
     setComposio(status);
     setCards(list);
+    setIsAdmin(
+      Boolean(
+        workspace.me.is_admin ||
+          workspace.me.role === "admin" ||
+          workspace.me.role === "owner",
+      ),
+    );
     const provider = openIdRef.current;
     const openCard = provider
       ? list.find((card) => card.provider === provider)
@@ -161,7 +174,7 @@ export function IntegrationsPanel({
 
   const configured = Boolean(composio?.configured);
   const keyRejected = isAuthError(composio?.error);
-  const showKey = !configured || keyRejected;
+  const showKey = isAdmin;
   const openDef = INTEGRATIONS.find((item) => item.id === openId) ?? null;
   const openCard = cards.find((card) => card.provider === openId) ?? null;
 
@@ -256,6 +269,8 @@ export function IntegrationsPanel({
     if (!def.connectable) return 4;
     return 3;
   });
+  const indexedTiles = tiles.filter((def) => def.job === "indexed");
+  const liveTiles = tiles.filter((def) => def.job === "live");
 
   const closeModal = useCallback(() => {
     const open = openIdRef.current;
@@ -275,15 +290,24 @@ export function IntegrationsPanel({
           <div className="min-w-0 flex-1 space-y-1.5">
             <p className="text-[14px] font-medium text-ink">Composio API key</p>
             <p className="text-[13px] leading-relaxed text-ink-2">
-              Required to connect tools.{" "}
+              Create a key at{" "}
               <a
                 href="https://dashboard.composio.dev"
                 target="_blank"
                 rel="noreferrer"
                 className="text-accent-ink underline-offset-2 hover:underline"
               >
-                Get a key
+                dashboard.composio.dev
               </a>
+              , then paste it here. You can also set{" "}
+              <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">
+                COMPOSIO_API_KEY
+              </code>{" "}
+              in <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">.env</code>.
+              joel does not ship a shared key — Connect needs this.
+              {configured && !keyRejected
+                ? " A key is saved. Paste a new one to replace it."
+                : null}
             </p>
             {keyRejected && (
               <p className="text-[13px] text-red">
@@ -330,6 +354,13 @@ export function IntegrationsPanel({
         </div>
       )}
 
+      {!loading && !isAdmin && !configured && (
+        <p className="text-[13px] text-ink-2">
+          Ask an admin to add a Composio API key before you can connect tools.
+          They paste it here or set COMPOSIO_API_KEY in .env.
+        </p>
+      )}
+
       {error && !openId && !showKey && (
         <p className="text-[13px] text-red">{error}</p>
       )}
@@ -337,31 +368,23 @@ export function IntegrationsPanel({
       {loading ? (
         <IntegrationGridSkeleton />
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {tiles.map((def) => {
-            const card = cards.find((item) => item.provider === def.id);
-            const account = accountByToolkit.get(def.toolkit);
-            const connected = Boolean(card?.id || account);
-            return (
-              <IntegrationTile
-                key={def.id}
-                name={def.name}
-                logoUrl={integrationLogoUrl(def.toolkit)}
-                status={
-                  card?.status ?? (connected ? "ready" : "pending_auth")
-                }
-                identity={account?.label ?? null}
-                comingSoon={!def.connectable}
-                attention={card?.error ?? null}
-                docCount={card?.doc_count}
-                lastSyncAt={card?.last_sync_at}
-                syncStartedAt={card?.sync_started_at}
-                backfillDone={DEEP_BACKFILL_PROVIDERS.has(def.id) ? (card?.backfill_done ?? false) : false}
-                backfillCursor={DEEP_BACKFILL_PROVIDERS.has(def.id) ? (card?.backfill_cursor ?? null) : null}
-                onClick={() => setOpenId(def.id)}
-              />
-            );
-          })}
+        <div className="space-y-8">
+          <IntegrationJobGrid
+            title="Indexed"
+            description="Copied into memory on a sync interval. Lookback and channel pickers work as before."
+            defs={indexedTiles}
+            cards={cards}
+            accountByToolkit={accountByToolkit}
+            onOpen={setOpenId}
+          />
+          <IntegrationJobGrid
+            title="Live"
+            description="Used when someone asks a now-question (open PRs, current issues). Connect only — we still index history in this version."
+            defs={liveTiles}
+            cards={cards}
+            accountByToolkit={accountByToolkit}
+            onOpen={setOpenId}
+          />
         </div>
       )}
 
@@ -377,6 +400,7 @@ export function IntegrationsPanel({
           connected={Boolean(openCard?.id || accountByToolkit.get(openDef.toolkit))}
           identity={accountByToolkit.get(openDef.toolkit)?.label ?? null}
           configured={configured}
+          isAdmin={isAdmin}
           busy={openBusy}
           error={error}
           onConnect={(personal) => void onConnect(openDef, personal)}
@@ -423,5 +447,63 @@ export function IntegrationsPanel({
         />
       )}
     </div>
+  );
+}
+
+function IntegrationJobGrid({
+  title,
+  description,
+  defs,
+  cards,
+  accountByToolkit,
+  onOpen,
+}: {
+  title: string;
+  description: string;
+  defs: IntegrationDef[];
+  cards: ConnectorCard[];
+  accountByToolkit: Map<string, NonNullable<ComposioStatus["accounts"]>[number]>;
+  onOpen: (id: string) => void;
+}) {
+  if (defs.length === 0) return null;
+  return (
+    <section className="space-y-3">
+      <div>
+        <h2 className="text-[15px] font-semibold tracking-tight text-ink">{title}</h2>
+        <p className="mt-1 text-[13px] leading-relaxed text-ink-2">{description}</p>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {defs.map((def) => {
+          const card = cards.find((item) => item.provider === def.id);
+          const account = accountByToolkit.get(def.toolkit);
+          const connected = Boolean(card?.id || account);
+          return (
+            <IntegrationTile
+              key={def.id}
+              name={def.name}
+              logoUrl={integrationLogoUrl(def.toolkit)}
+              status={card?.status ?? (connected ? "ready" : "pending_auth")}
+              identity={account?.label ?? null}
+              comingSoon={!def.connectable}
+              attention={card?.error ?? null}
+              docCount={card?.doc_count}
+              lastSyncAt={card?.last_sync_at}
+              syncStartedAt={card?.sync_started_at}
+              backfillDone={
+                DEEP_BACKFILL_PROVIDERS.has(def.id)
+                  ? (card?.backfill_done ?? false)
+                  : false
+              }
+              backfillCursor={
+                DEEP_BACKFILL_PROVIDERS.has(def.id)
+                  ? (card?.backfill_cursor ?? null)
+                  : null
+              }
+              onClick={() => onOpen(def.id)}
+            />
+          );
+        })}
+      </div>
+    </section>
   );
 }

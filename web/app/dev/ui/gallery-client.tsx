@@ -666,7 +666,7 @@ function Components() {
         id="answer-turn"
         kicker="01"
         title="Answer turn"
-        description="The honesty contract: badge, body, conflict or gap, citations with forget, reasoning path, lanes."
+        description="The honesty contract: badge, body, conflict or gap, citations, reasoning path, lanes."
       >
         <div className="flex w-full max-w-lg flex-col gap-4">
           <UserTurn>Who owns billing after the Q3 reversal?</UserTurn>
@@ -695,7 +695,7 @@ function Components() {
       <Stage
         id="citation"
         title="Citation"
-        description="Deep-link, LIVE mark for lookups, forget on the chip that just cited you."
+        description="Deep-link, LIVE mark for lookups."
       >
         <div className="flex flex-wrap gap-2">
           <CitationChip
@@ -706,7 +706,6 @@ function Components() {
               live: false,
               provider: "slack",
             }}
-            onForget={() => undefined}
           />
           <CitationChip
             citation={{
@@ -716,7 +715,6 @@ function Components() {
               live: true,
               provider: "gmail",
             }}
-            onForget={() => undefined}
           />
         </div>
       </Stage>

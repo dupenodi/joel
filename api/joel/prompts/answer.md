@@ -40,7 +40,7 @@ evidence for a current-state question → say it's stale.
 ## Style
 Answer first, no preamble. Be specific (names, dates, ticket ids). <=150 words
 unless a list is required.
-
+{voice_block}
 ---
 RETRIEVED CONTEXT:
 {context}

@@ -157,7 +157,7 @@ export async function patchWorkspace(body: {
 
 export async function createInvite(input: {
   email: string;
-  role: "owner" | "admin" | "member";
+  role: "admin" | "member";
 }): Promise<{
   invite_id: string;
   token: string;
@@ -366,10 +366,6 @@ export async function changePassword(
 
 export async function getHealth(): Promise<Health> {
   return api("/api/health");
-}
-
-export async function forgetDoc(docId: string): Promise<void> {
-  await api(`/api/docs/${docId}/forget`, { method: "POST" });
 }
 
 export type AskHandlers = {

@@ -57,6 +57,8 @@ def answer_question(
     ask: AskContext | None = None,
     hydra_store: HydraStore | None = None,
     extra_doc_ids: tuple[str, ...] = (),
+    voice: str = "",
+    workspace_about: str = "",
 ) -> RetrievalTrace:
     question = question.strip()
     plan = plan_query(llm_call, question) if llm_call is not None else QueryPlan(intent="lookup")
@@ -78,7 +80,13 @@ def answer_question(
         ]
         fused = extra + fused
     reranked = rerank_candidates(llm_call, question, fused) if llm_call is not None else []
-    answer = synthesize_answer(llm_call, question, reranked)
+    answer = synthesize_answer(
+        llm_call,
+        question,
+        reranked,
+        voice=voice,
+        workspace_about=workspace_about,
+    )
     return RetrievalTrace(
         question=question,
         plan=plan,

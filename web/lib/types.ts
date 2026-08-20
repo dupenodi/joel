@@ -124,6 +124,8 @@ export interface ConnectorCard {
   ingest?: boolean;
   checklist?: ReadinessChecklist;
   sync_started_at?: string | null;
+  personal?: boolean;
+  owned_by?: string | null;
 }
 
 export interface JobRow {
@@ -170,6 +172,9 @@ export interface Settings {
   composio_api_key_set?: boolean;
   embed_model: string;
   slack_signing_secret_set?: boolean;
+  slack_bot_token_set?: boolean;
+  workspace_about?: string;
+  voice?: string;
   mail_provider?: "none" | "smtp" | "resend" | string;
   mail_configured?: boolean;
   mail_from?: string;

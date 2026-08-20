@@ -3,9 +3,11 @@
 import { Button } from "@/components/beautifului/primitives/button";
 import { Field } from "@/components/field";
 import { SettingsSection } from "@/components/settings/settings-section";
+import { VoiceFields } from "@/components/settings/voice-fields";
 import { WorkspaceAvatar } from "@/components/settings/workspace-avatar";
 import { Input } from "@/components/ui/input";
-import { getWorkspace, patchWorkspace } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
+import { getSettings, getWorkspace, patchWorkspace, putSettings } from "@/lib/api";
 import type { Me, Workspace } from "@/lib/types";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
@@ -16,17 +18,21 @@ export function GeneralPanel() {
   const [memberCount, setMemberCount] = useState(0);
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
+  const [about, setAbout] = useState("");
+  const [voice, setVoice] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
-    const data = await getWorkspace();
+    const [data, settings] = await Promise.all([getWorkspace(), getSettings()]);
     setWorkspace(data.workspace);
     setMe(data.me);
     setMemberCount(data.members.length);
     setName(data.workspace.name);
     setDomain(data.workspace.domain);
+    setAbout(settings.workspace_about ?? "");
+    setVoice(settings.voice ?? "");
   }, []);
 
   useEffect(() => {
@@ -40,7 +46,7 @@ export function GeneralPanel() {
   return (
     <SettingsSection
       title="General"
-      description="This company's name and domain."
+      description="This company's name, a short about, and how joel talks."
     >
       <div className="mb-5 flex items-center gap-3 rounded-card bg-field p-3">
         <WorkspaceAvatar
@@ -73,8 +79,11 @@ export function GeneralPanel() {
             setBusy(true);
             setError(null);
             setSaved(false);
-            void patchWorkspace({ name, domain })
-              .then((res) => {
+            void Promise.all([
+              patchWorkspace({ name, domain }),
+              putSettings({ workspace_about: about, voice }),
+            ])
+              .then(([res]) => {
                 setWorkspace(res.workspace);
                 setName(res.workspace.name);
                 setDomain(res.workspace.domain);
@@ -109,6 +118,28 @@ export function GeneralPanel() {
               }}
             />
           </Field>
+          <Field
+            label="About"
+            hint="Optional. What this company is, in the owner's words — not a website scrape."
+          >
+            <Textarea
+              value={about}
+              placeholder="We build …"
+              onChange={(e) => {
+                setAbout(e.target.value);
+                setSaved(false);
+                setError(null);
+              }}
+            />
+          </Field>
+          <VoiceFields
+            value={voice}
+            onChange={(next) => {
+              setVoice(next);
+              setSaved(false);
+              setError(null);
+            }}
+          />
           {error && <p className="text-[13px] text-red">{error}</p>}
           <Button type="submit" size="sm" variant="accent" loading={busy}>
             {saved ? "Saved" : "Save"}

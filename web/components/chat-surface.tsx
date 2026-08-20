@@ -13,7 +13,6 @@ import { SourceIcon } from "@/components/source-icon";
 import {
   askStream,
   createConversation,
-  forgetDoc,
   getConversation,
   getOrg,
   getProfile,
@@ -290,12 +289,20 @@ export function ChatSurface() {
         <MemoryBanner
           kind="ingesting"
           action={
-            <a
-              href="/integrations"
-              className="shrink-0 font-medium underline-offset-2 hover:underline"
-            >
-              Connect a tool
-            </a>
+            <span className="flex shrink-0 gap-3">
+              <a
+                href="/onboarding"
+                className="font-medium underline-offset-2 hover:underline"
+              >
+                Finish setup
+              </a>
+              <a
+                href="/integrations"
+                className="font-medium underline-offset-2 hover:underline"
+              >
+                Connect a tool
+              </a>
+            </span>
           }
         >
           Nothing in memory yet. You can still ask — answers will be honest about
@@ -325,7 +332,6 @@ export function ChatSurface() {
                 <SimpleAnswer
                   key={m.id ?? `a-${i}`}
                   message={m}
-                  onForget={(docId) => void forgetDoc(docId)}
                 />
               ),
             )}

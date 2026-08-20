@@ -1,5 +1,9 @@
 "use client";
 
+import {
+  CheckIcon,
+  ClipboardIcon,
+} from "@/components/beautifului/primitives/copy-button";
 import { useCallback, useEffect, useState } from "react";
 
 /* ─────────────────────────────────────────────────────────
@@ -68,11 +72,7 @@ export default function CodeBlock() {
             font-medium transition-colors duration-100 hover:bg-hover
             ${copied ? "text-green" : "text-ink-3 hover:text-ink"}`}
         >
-          {copied ? (
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
-          ) : (
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="12" height="12" rx="2.5" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-          )}
+          {copied ? <CheckIcon size={10} /> : <ClipboardIcon size={10} />}
           {copied ? "Copied" : "Copy"}
         </button>
       </div>

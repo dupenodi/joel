@@ -1,6 +1,6 @@
 /** Route kinds for the session cookie gate.
 
-  public     — marketing, static, component gallery
+  public     — marketing, static assets
   anonymous  — login / setup (bounce away once signed in)
   join       — invite link; cookie optional
   session    — picker; cookie required, org optional
@@ -33,11 +33,7 @@ export function classifyPath(pathname: string): RouteKind {
   if (pathname === "/onboarding" || pathname.startsWith("/onboarding/")) {
     return "onboarding";
   }
-  if (
-    pathname.startsWith("/dev") ||
-    pathname.startsWith("/brand-kit") ||
-    pathname.startsWith("/_next")
-  ) {
+  if (pathname.startsWith("/brand-kit") || pathname.startsWith("/_next")) {
     return "public";
   }
   return "product";

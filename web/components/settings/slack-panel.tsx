@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/beautifului/primitives/button";
+import { CopyButton } from "@/components/beautifului/primitives/copy-button";
 import { Field } from "@/components/field";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { SettingsSkeleton } from "@/components/skeletons";
@@ -12,28 +13,37 @@ import { useEffect, useMemo, useState } from "react";
 
 export function SlackPanel() {
   const [secret, setSecret] = useState("");
+  const [token, setToken] = useState("");
   const [secretSet, setSecretSet] = useState(false);
+  const [tokenSet, setTokenSet] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
 
   const eventsUrl = useMemo(() => {
     if (typeof window === "undefined") return "/api/slack/events";
     return `${window.location.origin}/api/slack/events`;
   }, []);
 
+  const manifestUrl = useMemo(() => {
+    if (typeof window === "undefined") return "/slack-app-manifest.yaml";
+    return `${window.location.origin}/slack-app-manifest.yaml`;
+  }, []);
+
   useEffect(() => {
     getSettings()
       .then((s) => {
         setSecretSet(Boolean(s.slack_signing_secret_set));
+        setTokenSet(Boolean(s.slack_bot_token_set));
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
   }, []);
 
   if (!loaded) return <SettingsSkeleton />;
+
+  const connected = secretSet && tokenSet;
 
   return (
     <div className="space-y-6">
@@ -58,20 +68,24 @@ export function SlackPanel() {
                 Slack bot
               </h2>
               <p className="mt-1 max-w-md text-[13px] leading-relaxed text-ink-2">
-                Mention joel in Slack for an in-thread answer. Point your Slack
-                app&apos;s Event Subscriptions here, then paste the signing
-                secret.
+                Create your own Slack app from the manifest, paste the signing
+                secret and bot token, then{" "}
+                <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">
+                  /invite @joel
+                </code>{" "}
+                in the channels where it should answer @mentions. We don&apos;t
+                create channels or post a launch message.
               </p>
             </div>
           </div>
           <span
             className={
-              secretSet
+              connected
                 ? "inline-flex h-6 items-center rounded-full bg-green-tint px-2.5 text-[11.5px] font-medium text-green"
                 : "inline-flex h-6 items-center rounded-full bg-field px-2.5 text-[11.5px] font-medium text-ink-3"
             }
           >
-            {secretSet ? "Connected" : "Not configured"}
+            {connected ? "Connected" : "Not configured"}
           </span>
         </div>
 
@@ -80,9 +94,32 @@ export function SlackPanel() {
             <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-surface text-[11px] font-semibold text-ink shadow-hairline">
               1
             </span>
-            <span>
-              Create a Slack app (or open an existing one) and enable Event
-              Subscriptions.
+            <span className="min-w-0">
+              Create a Slack app from the manifest (
+              <a
+                href="https://api.slack.com/apps"
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium text-ink underline-offset-2 hover:underline"
+              >
+                api.slack.com/apps
+              </a>
+              {" "}
+              → From a manifest).{" "}
+              <a
+                href={manifestUrl}
+                className="font-medium text-ink underline-offset-2 hover:underline"
+              >
+                Download
+              </a>
+              <CopyButton
+                className="ml-1.5 align-middle"
+                label="Copy manifest"
+                text={async () => {
+                  const res = await fetch(manifestUrl);
+                  return res.text();
+                }}
+              />
             </span>
           </li>
           <li className="flex gap-2.5">
@@ -90,24 +127,14 @@ export function SlackPanel() {
               2
             </span>
             <span className="min-w-0">
-              Set the Request URL to{" "}
+              Set Event Subscriptions Request URL to{" "}
               <code className="break-all rounded-[4px] bg-surface px-1 py-0.5 text-[12px] text-ink">
                 {eventsUrl}
               </code>
-              <Button
-                type="button"
-                size="sm"
-                variant="secondary"
+              <CopyButton
                 className="ml-1.5 align-middle"
-                onClick={() => {
-                  void navigator.clipboard.writeText(eventsUrl).then(() => {
-                    setCopied(true);
-                    window.setTimeout(() => setCopied(false), 1500);
-                  });
-                }}
-              >
-                {copied ? "Copied" : "Copy"}
-              </Button>
+                text={eventsUrl}
+              />
             </span>
           </li>
           <li className="flex gap-2.5">
@@ -115,15 +142,27 @@ export function SlackPanel() {
               3
             </span>
             <span>
-              Paste the app&apos;s Signing Secret below and save.
+              Install the app to your Slack workspace, then paste the Signing
+              Secret and Bot User OAuth Token below.
+            </span>
+          </li>
+          <li className="flex gap-2.5">
+            <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-surface text-[11px] font-semibold text-ink shadow-hairline">
+              4
+            </span>
+            <span>
+              In each channel,{" "}
+              <code className="rounded-[4px] bg-surface px-1 py-0.5 text-[12px] text-ink">
+                /invite @joel
+              </code>
+              . Mentions are the only reply path.
             </span>
           </li>
         </ol>
 
-        <div className="flex flex-wrap items-end gap-2">
+        <div className="space-y-3">
           <Field
             label="Signing secret"
-            className="min-w-48 flex-1"
             hint={
               secretSet
                 ? "A secret is already set. Leave blank to keep it."
@@ -143,6 +182,25 @@ export function SlackPanel() {
               }}
             />
           </Field>
+          <Field
+            label="Bot token"
+            hint={
+              tokenSet
+                ? "A token is already set. Leave blank to keep it."
+                : "Starts with xoxb-"
+            }
+          >
+            <Input
+              type="password"
+              placeholder={tokenSet ? "•••••••••••••" : "xoxb-…"}
+              value={token}
+              onChange={(e) => {
+                setToken(e.target.value);
+                setSaved(false);
+                setError(null);
+              }}
+            />
+          </Field>
           <Button
             type="button"
             size="sm"
@@ -151,10 +209,15 @@ export function SlackPanel() {
             onClick={() => {
               setSaving(true);
               setError(null);
-              void putSettings({ slack_signing_secret: secret })
+              void putSettings({
+                slack_signing_secret: secret,
+                slack_bot_token: token,
+              })
                 .then(() => {
                   if (secret) setSecretSet(true);
+                  if (token) setTokenSet(true);
                   setSecret("");
+                  setToken("");
                   setSaved(true);
                 })
                 .catch((e: unknown) => {
@@ -171,7 +234,7 @@ export function SlackPanel() {
 
       <SettingsSection
         title="Also ingest Slack?"
-        description="Connecting Slack as a connector syncs channels into memory. That’s separate from the bot."
+        description="Connecting Slack as a connector syncs channels into memory. That’s separate from the bot being in the room."
       >
         <Link
           href="/integrations?open=slack"

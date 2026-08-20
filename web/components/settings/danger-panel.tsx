@@ -31,7 +31,7 @@ export function DangerPanel() {
 
   return (
     <SettingsSection
-      title="Wipe this install"
+      title="Wipe this workspace"
       description={
         <>
           Deletes indexed data and conversations. People in this workspace stay.

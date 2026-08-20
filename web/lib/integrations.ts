@@ -9,11 +9,14 @@ export type IntegrationGroup =
   | "crm"
   | "meetings";
 
+export type IntegrationJob = "indexed" | "live";
+
 export type IntegrationDef = {
   id: string;
   toolkit: string;
   name: string;
   group: IntegrationGroup;
+  job: IntegrationJob;
   connectable: boolean;
   ingest: boolean;
   /** OAuth scopes actually requested. */
@@ -31,6 +34,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "slack",
     name: "Slack",
     group: "chat",
+    job: "indexed",
     connectable: true,
     ingest: true,
     permissions: [
@@ -49,6 +53,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "gmail",
     name: "Gmail",
     group: "mail",
+    job: "indexed",
     connectable: true,
     ingest: true,
     permissions: ["gmail.readonly"],
@@ -60,6 +65,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "github",
     name: "GitHub",
     group: "code",
+    job: "live",
     connectable: true,
     ingest: true,
     permissions: ["repo"],
@@ -72,6 +78,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "linear",
     name: "Linear",
     group: "tracker",
+    job: "live",
     connectable: true,
     ingest: true,
     permissions: ["read"],
@@ -84,6 +91,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "notion",
     name: "Notion",
     group: "docs",
+    job: "indexed",
     connectable: true,
     ingest: true,
     permissions: ["read"],
@@ -96,6 +104,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "googledrive",
     name: "Google Drive",
     group: "docs",
+    job: "indexed",
     connectable: true,
     ingest: true,
     permissions: ["drive.readonly"],
@@ -108,6 +117,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "jira",
     name: "Jira",
     group: "tracker",
+    job: "indexed",
     connectable: true,
     ingest: true,
     permissions: ["read:jira-work"],
@@ -120,6 +130,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "confluence",
     name: "Confluence",
     group: "docs",
+    job: "indexed",
     connectable: true,
     ingest: true,
     permissions: ["read:confluence-content.all"],
@@ -132,6 +143,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "hubspot",
     name: "HubSpot",
     group: "crm",
+    job: "indexed",
     connectable: true,
     ingest: true,
     permissions: ["crm.objects.deals.read"],
@@ -143,6 +155,7 @@ export const INTEGRATIONS: IntegrationDef[] = [
     toolkit: "fireflies",
     name: "Fireflies",
     group: "meetings",
+    job: "indexed",
     connectable: true,
     ingest: true,
     permissions: ["read"],
@@ -183,6 +196,14 @@ export function integrationGroupLabel(group: IntegrationGroup): string {
     case "meetings":
       return "Meetings";
   }
+}
+
+export function integrationJobLabel(job: IntegrationJob): string {
+  return job === "live" ? "Live" : "Indexed";
+}
+
+export function integrationsByJob(job: IntegrationJob): IntegrationDef[] {
+  return INTEGRATIONS.filter((item) => item.job === job);
 }
 
 export function integrationLogoUrl(toolkitSlug: string): string {

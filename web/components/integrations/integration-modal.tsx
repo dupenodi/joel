@@ -31,6 +31,7 @@ export function IntegrationModal({
   connected,
   identity,
   configured,
+  isAdmin,
   busy,
   error,
   onConnect,
@@ -49,6 +50,7 @@ export function IntegrationModal({
   connected: boolean;
   identity: string | null;
   configured: boolean;
+  isAdmin: boolean;
   busy: string | null;
   error: string | null;
   onConnect: (personal: boolean) => void;
@@ -76,7 +78,10 @@ export function IntegrationModal({
   // server-side PERSONAL_CONNECTOR_PROVIDERS allowlist it's checked
   // against regardless.
   const canBePersonal = def.id === "gmail" || def.id === "slack";
-  const [personal, setPersonal] = useState(false);
+  const [personal, setPersonal] = useState(!isAdmin && canBePersonal);
+  const connectPersonal = isAdmin ? personal : canBePersonal;
+  const canConnect = isAdmin || canBePersonal;
+  const canManage = Boolean(card?.id) && (Boolean(card?.personal) || isAdmin);
   const pickedRef = useRef(false);
   const selectModeRef = useRef<"all" | "none" | null>(null);
   const isSlack = def.id === "slack";
@@ -95,7 +100,7 @@ export function IntegrationModal({
   const live = connected && Boolean(card) && !needsSetup && !inFlight;
 
   useEffect(() => {
-    if (!open || !isSlack || !card?.id) return;
+    if (!open || !isSlack || !card?.id || !canManage) return;
     setChannelError(null);
     setChannelsLoading(true);
     listSlackChannels(card.id)
@@ -113,7 +118,7 @@ export function IntegrationModal({
         setChannelError(e instanceof Error ? e.message : "Could not list channels"),
       )
       .finally(() => setChannelsLoading(false));
-  }, [open, isSlack, card?.id]);
+  }, [open, isSlack, card?.id, canManage]);
 
   function toggle(id: string) {
     pickedRef.current = true;
@@ -135,15 +140,17 @@ export function IntegrationModal({
   const slackBlocked = isSlack && selected.length === 0;
   const primary = !def.connectable
     ? null
-    : !connected || needsReauth
+    : (!connected || needsReauth) && canConnect
       ? {
           label: needsReauth ? `Reconnect ${def.name}` : `Connect ${def.name}`,
           disabled: !configured || busy != null,
           loading: busy === "connect",
           variant: "accent" as const,
-          onClick: () => onConnect(personal),
+          onClick: () => onConnect(connectPersonal),
         }
-      : inFlight
+      : !canManage
+        ? null
+        : inFlight
         ? {
             label: "Cancel",
             disabled: busy != null && busy !== "ingest" && busy !== "sync",
@@ -243,12 +250,40 @@ export function IntegrationModal({
         )}
 
         {def.connectable && !connected && !configured && (
-          <p className="text-[13px] text-ink-3">Save a Composio API key first.</p>
+          <p className="text-[13px] text-ink-3">
+            {isAdmin
+              ? "Save a Composio API key first."
+              : "Ask an admin to add a Composio API key first."}
+          </p>
+        )}
+
+        {def.connectable && !connected && configured && !canConnect && (
+          <p className="text-[13px] text-ink-3">
+            Ask an admin to connect this.
+          </p>
         )}
 
         {!connected && permissions}
 
-        {isSlack && (
+        {!connected && canBePersonal && isAdmin && (
+          <label className="flex cursor-pointer items-start gap-2 text-[13px] text-ink">
+            <Checkbox checked={personal} onChange={() => setPersonal((p) => !p)} />
+            <span>
+              Just for me
+              <span className="block text-[12.5px] text-ink-2">
+                Only you can ask questions using this connection — it won't be shared with the workspace.
+              </span>
+            </span>
+          </label>
+        )}
+
+        {!connected && canBePersonal && !isAdmin && (
+          <p className="text-[13px] text-ink-2">
+            This connects as yours — only you can ask questions using it.
+          </p>
+        )}
+
+        {isSlack && isAdmin && (
           <p className="rounded-control bg-field px-3 py-2.5 text-[12.5px] leading-relaxed text-ink-2">
             Want joel to answer @mentions in Slack? Configure the{" "}
             <Link
@@ -262,19 +297,14 @@ export function IntegrationModal({
           </p>
         )}
 
-        {!connected && canBePersonal && (
-          <label className="flex cursor-pointer items-start gap-2 text-[13px] text-ink">
-            <Checkbox checked={personal} onChange={() => setPersonal((p) => !p)} />
-            <span>
-              Just for me
-              <span className="block text-[12.5px] text-ink-2">
-                Only you can ask questions using this connection — it won't be shared with the workspace.
-              </span>
-            </span>
-          </label>
+        {def.job === "live" && (
+          <p className="rounded-control bg-field px-3 py-2.5 text-[12.5px] leading-relaxed text-ink-2">
+            Live: used when someone asks a now-question. History is still
+            indexed in this version. No write actions (create issue, etc.).
+          </p>
         )}
 
-        {inFlight && (
+        {inFlight && canManage && (
           <LoadingState
             label={`Syncing ${def.name}`}
             startedAt={card?.sync_started_at ?? jobs[0]?.started_at}
@@ -297,7 +327,13 @@ export function IntegrationModal({
             </p>
           )}
 
-        {connected && card && def.ingest && (
+        {connected && card && !canManage && (
+          <p className="text-[13px] text-ink-2">
+            Ask an admin to manage this connection.
+          </p>
+        )}
+
+        {connected && card && def.ingest && canManage && (
           <>
             {isSlack && (
               <div className="space-y-1.5">
@@ -408,9 +444,9 @@ export function IntegrationModal({
         {connected && permissions}
       </div>
 
-      {(primary || connected) && (
+      {(primary || (connected && canManage)) && (
         <div className="flex shrink-0 items-center justify-between gap-3 border-t border-line px-4 py-3">
-          {connected && card ? (
+          {connected && card && canManage ? (
             <button
               type="button"
               disabled={busy != null}

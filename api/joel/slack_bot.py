@@ -24,7 +24,10 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import requests
+
 SIGNATURE_MAX_AGE_SECONDS = 60 * 5  # Slack's own documented replay window
+SLACK_API = "https://slack.com/api"
 _MENTION_RE = re.compile(r"^\s*<@([A-Z0-9]+)>\s*")
 
 
@@ -122,6 +125,54 @@ class SeenEvents:
 SlackCaller = Callable[[str, dict[str, Any]], dict[str, Any]]
 
 
+def web_api_caller(
+    token: str,
+    *,
+    http_post: Callable[..., Any] | None = None,
+) -> SlackCaller:
+    """Direct Slack Web API caller for the *bot* token in Settings.
+
+    Ingest still goes through Composio. Mentions need `chat.postMessage`,
+    which the token Web API accepts as JSON POST. `http_post` is a test
+    seam (same shape as `requests.post`).
+    """
+    post = http_post or requests.post
+
+    def call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        response = post(
+            f"{SLACK_API}/{method}",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json=params,
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            return {"ok": False, "error": "malformed_response"}
+        return data
+
+    return call
+
+
+def email_for_slack_user(caller: SlackCaller, slack_user_id: str) -> str | None:
+    """Look up one Slack member's email via `users.info` (needs
+    `users:read.email`). Missing/ok=false/no email → None, never a guess."""
+    data = caller("users.info", {"user": slack_user_id})
+    if not isinstance(data, dict) or data.get("ok") is False:
+        return None
+    user = data.get("user")
+    if not isinstance(user, dict):
+        return None
+    profile = user.get("profile")
+    if not isinstance(profile, dict):
+        return None
+    email = str(profile.get("email") or "").strip().lower()
+    return email or None
+
+
 def post_reply(caller: SlackCaller, *, channel: str, thread_ts: str, text: str) -> None:
     caller("chat.postMessage", {"channel": channel, "thread_ts": thread_ts, "text": text})
 
@@ -130,8 +181,10 @@ __all__ = [
     "SIGNATURE_MAX_AGE_SECONDS",
     "MentionEvent",
     "SeenEvents",
+    "email_for_slack_user",
     "parse_app_mention",
     "post_reply",
     "strip_mention",
     "verify_signature",
+    "web_api_caller",
 ]

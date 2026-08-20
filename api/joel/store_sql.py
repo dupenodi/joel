@@ -367,12 +367,11 @@ def remove_docs(
     re-distillation), where `keep_row=False` (the default) also hard-deletes
     the SQLite row since a burst/artifact has no tombstone concept.
 
-    The owner's explicit forget (§14.5/5.7) reuses this with `keep_row=True`
-    instead: forget must leave a `forgotten=1` tombstone row behind in
-    `docs` (checked by `_persist_canonical_docs`'s `forgotten_ids` so a
-    later re-sync can't resurrect it) rather than deleting it outright, and
-    it also rewrites the canonical JSONL line to a tombstone, which this
-    function deliberately does not know about. Call this BEFORE blanking
+    The store reuses this with `keep_row=True` for tombstones: leave a
+    `forgotten=1` row behind in `docs` (checked by `_persist_canonical_docs`'s
+    `forgotten_ids` so a later re-sync can't resurrect it) rather than
+    deleting it outright. Canonical JSONL tombstones are a separate concern
+    this function deliberately does not know about. Call this BEFORE blanking
     the docs row's title/body — the FTS 'delete' command needs the OLD
     text that was actually indexed, not whatever the caller is about to
     overwrite it with."""

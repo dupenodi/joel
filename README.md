@@ -24,11 +24,15 @@ Or: `docker compose up --build`
 
 ## First-run checklist
 
-1. **Setup** — create the first workspace at `/setup` (company name, you, password). You land in Chat; models and tools are skippable.
-2. **Invite** — Settings → Members. Comma-separate emails. Copy links, or configure Email to send them.
-3. **Email (optional)** — Settings → Email: SMTP or Resend. Set App URL / `JOEL_WEB_ORIGIN` so invite links are correct.
-4. **Models & Composio** — Settings → Models (LLM key) and Integrations (Composio) — admin only.
-5. **HTTPS** — set `JOEL_HTTPS=1` and `JOEL_WEB_ORIGIN=https://your.domain` in production.
+1. **Setup** — create the first workspace at `/setup` (company name, you, password). You land in Chat; the rest is skippable (`/onboarding` or Settings).
+2. **Models** — Settings → Models (LLM base URL + key), or the onboarding Models step.
+3. **Composio** — Integrations shows a Composio API key field for admins. Create a key at [dashboard.composio.dev](https://dashboard.composio.dev) and paste it, or set `COMPOSIO_API_KEY` in `.env`. joel does not ship a shared key.
+4. **Sources** — Integrations: **Indexed** (sync into memory) vs **Live** (now-questions; GitHub/Linear). Connect one at a time.
+5. **Slack bot** — Settings → Slack bot. Create an app from [`/slack-app-manifest.yaml`](./web/public/slack-app-manifest.yaml), paste signing secret + bot token, then `/invite @joel` in channels. Ingest (which channels to index) is separate, on Integrations.
+6. **People** — Settings → Members. Comma-separate emails. Copy links, or configure Email to send them.
+7. **MCP** — Settings → API keys. Mint a key and copy the Cursor/Claude snippet (`https://<this-origin>/mcp/` + `joel_sk_…`). One tool: `ask`.
+8. **Voice** — Settings → General. Optional about text and how joel talks.
+9. **HTTPS** — set `JOEL_HTTPS=1` and `JOEL_WEB_ORIGIN=https://your.domain` in production.
 
 ## Important env
 
@@ -41,5 +45,5 @@ Or: `docker compose up --build`
 | `HYDRA_*` | Graph database |
 | `COMPOSIO_API_KEY` | Optional env fallback; UI can store a key too |
 
-Workspace settings (LLM, mail, Slack bot signing secret, sync) are admin-only in the API.
+Workspace settings (LLM, mail, Slack bot signing secret + bot token, voice, about, sync) are admin-only in the API.
 User settings: profile, password, personal API keys, personal Gmail/Slack connectors.

@@ -31,9 +31,11 @@ from dotenv import load_dotenv  # noqa: E402
 
 from joel.slack_bot import (  # noqa: E402
     SeenEvents,
+    email_for_slack_user,
     parse_app_mention,
     strip_mention,
     verify_signature,
+    web_api_caller,
 )
 
 
@@ -114,6 +116,118 @@ def check_seen_events_dedupe() -> None:
     print("ok  sb.6: SeenEvents dedupes retried event_ids and stays bounded")
 
 
+def check_web_api_caller_posts_bearer_json() -> None:
+    captured: dict[str, object] = {}
+
+    class FakeResp:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"ok": True, "ts": "1.0"}
+
+    def fake_post(url: str, **kwargs: object) -> FakeResp:
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers")
+        captured["json"] = kwargs.get("json")
+        return FakeResp()
+
+    caller = web_api_caller("xoxb-test-token", http_post=fake_post)
+    out = caller("chat.postMessage", {"channel": "C1", "text": "hi", "thread_ts": "1.0"})
+    assert out == {"ok": True, "ts": "1.0"}
+    assert captured["url"] == "https://slack.com/api/chat.postMessage"
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["Authorization"] == "Bearer xoxb-test-token"
+    assert captured["json"] == {"channel": "C1", "text": "hi", "thread_ts": "1.0"}
+    print("ok  sb.7: web_api_caller POSTs JSON with the bot token")
+
+
+def check_email_for_slack_user() -> None:
+    def ok_caller(method: str, params: dict) -> dict:
+        assert method == "users.info"
+        assert params == {"user": "U123"}
+        return {"ok": True, "user": {"id": "U123", "profile": {"email": "Ada@Acme.dev"}}}
+
+    assert email_for_slack_user(ok_caller, "U123") == "ada@acme.dev"
+
+    def missing(method: str, params: dict) -> dict:
+        del method, params
+        return {"ok": True, "user": {"id": "U123", "profile": {}}}
+
+    assert email_for_slack_user(missing, "U123") is None
+    assert email_for_slack_user(lambda *_: {"ok": False, "error": "user_not_found"}, "U123") is None
+    print("ok  sb.8: email_for_slack_user reads users.info, never guesses")
+
+
+def check_bot_token_without_ingest_connection() -> None:
+    import tempfile
+
+    import joel.app as app
+    import joel.identity as identity
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        app.DATA_DIR = tmp
+        app.DB_PATH = tmp / "index" / "joel.db"
+        app.init_db()
+        with app.db() as conn:
+            actor, _sid = identity.setup(
+                conn,
+                email="ada@acme.dev",
+                password="secretsecret",
+                display_name="Ada",
+                domain="acme.dev",
+            )
+            app.seed_org_defaults(conn, actor.org_id)
+            conn.execute(
+                "INSERT INTO settings(org_id, key, value) VALUES (?, 'slack_bot_token', ?) "
+                "ON CONFLICT(org_id, key) DO UPDATE SET value=excluded.value",
+                (actor.org_id, "xoxb-from-settings"),
+            )
+            slack_rows = conn.execute(
+                "SELECT id FROM connections WHERE provider='slack'"
+            ).fetchall()
+            assert slack_rows == []
+
+            def fake_caller(method: str, params: dict) -> dict:
+                if method == "users.info" and params.get("user") == "U1":
+                    return {
+                        "ok": True,
+                        "user": {"id": "U1", "profile": {"email": "ada@acme.dev"}},
+                    }
+                if method == "users.info":
+                    return {"ok": True, "user": {"id": params.get("user"), "profile": {}}}
+                return {"ok": True}
+
+            stub = type("BotClient", (), {"caller": staticmethod(fake_caller)})()
+            original = app._slack_bot_client
+            app._slack_bot_client = lambda conn, org_id: stub
+            try:
+                # Settings token is enough to build a client even with no ingest row.
+                real = original(conn, actor.org_id)
+                assert real is not None
+                resolved = app._resolve_slack_actor(conn, "U1", actor.org_id)
+                assert resolved is not None
+                assert resolved.email == "ada@acme.dev"
+                assert resolved.org_id == actor.org_id
+                unknown = app._resolve_slack_actor(conn, "U_STRANGER", actor.org_id)
+                assert unknown is None
+            finally:
+                app._slack_bot_client = original
+    print("ok  sb.9: bot token in Settings is enough — no Slack ingest connection required")
+
+
+def check_secret_setting_covers_bot_token() -> None:
+    import joel.app as app
+
+    assert app._is_secret_setting("slack_bot_token")
+    assert "slack_bot_token" in app.DEFAULT_SETTINGS
+    assert "voice" in app.DEFAULT_SETTINGS
+    assert "workspace_about" in app.DEFAULT_SETTINGS
+    print("ok  sb.10: slack_bot_token is a secret setting and seeded with voice/about")
+
+
 def check_live_signature_enforcement() -> None:
     """Real check #1: the real running server's real route, real settings-
     backed secret, real timestamp math."""
@@ -139,11 +253,13 @@ def check_live_signature_enforcement() -> None:
 
     secret = "check-slack-bot-test-secret"
     with app.db() as conn:
-        original = conn.execute("SELECT value FROM settings WHERE key='slack_signing_secret'").fetchone()
+        original = conn.execute(
+            "SELECT value FROM settings WHERE org_id=1 AND key='slack_signing_secret'"
+        ).fetchone()
         original_value = original["value"] if original else ""
         conn.execute(
-            "INSERT INTO settings(key,value) VALUES ('slack_signing_secret',?) "
-            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            "INSERT INTO settings(org_id, key, value) VALUES (1, 'slack_signing_secret', ?) "
+            "ON CONFLICT(org_id, key) DO UPDATE SET value=excluded.value",
             (secret,),
         )
 
@@ -180,7 +296,10 @@ def check_live_signature_enforcement() -> None:
         print("ok  live.1: the real /api/slack/events route enforces real signatures and handles url_verification")
     finally:
         with app.db() as conn:
-            conn.execute("UPDATE settings SET value=? WHERE key='slack_signing_secret'", (original_value,))
+            conn.execute(
+                "UPDATE settings SET value=? WHERE org_id=1 AND key='slack_signing_secret'",
+                (original_value,),
+            )
 
 
 def check_live_full_mention_round_trip() -> None:
@@ -216,7 +335,22 @@ def check_live_full_mention_round_trip() -> None:
     channel = channel_ids[0]
 
     original_resolve = app._resolve_slack_actor
-    app._resolve_slack_actor = lambda conn, slack_user_id: identity.actor_for_user(conn, admin_row["id"])  # type: ignore[assignment]
+    app._resolve_slack_actor = lambda conn, slack_user_id, org_id=1: identity.actor_for_user(  # type: ignore[assignment]
+        conn, admin_row["id"], org_id
+    )
+    original_token = ""
+    with app.db() as conn:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE org_id=1 AND key='slack_bot_token'"
+        ).fetchone()
+        original_token = row["value"] if row else ""
+        # This check posts through the ingest Slack connection (the channel
+        # we just listed). A Settings bot token, if present, is a different
+        # app and may not be in that channel.
+        conn.execute(
+            "INSERT INTO settings(org_id, key, value) VALUES (1, 'slack_bot_token', '') "
+            "ON CONFLICT(org_id, key) DO UPDATE SET value=excluded.value"
+        )
     try:
         with app.db() as conn:
             before = conn.execute("SELECT id FROM connections WHERE provider='slack'").fetchone()
@@ -231,7 +365,7 @@ def check_live_full_mention_round_trip() -> None:
         app._handle_slack_mention(
             f"ev_{marker}", channel, "U_FAKE_SLACK_USER",
             "<@UBOT> what is joel?",
-            str(time.time()), "UBOT",
+            str(time.time()), "UBOT", 1,
         )
 
         with app.db() as conn:
@@ -249,6 +383,11 @@ def check_live_full_mention_round_trip() -> None:
         )
     finally:
         app._resolve_slack_actor = original_resolve
+        with app.db() as conn:
+            conn.execute(
+                "UPDATE settings SET value=? WHERE org_id=1 AND key='slack_bot_token'",
+                (original_token,),
+            )
 
 
 def main() -> None:
@@ -257,6 +396,10 @@ def main() -> None:
     check_parse_app_mention()
     check_strip_mention()
     check_seen_events_dedupe()
+    check_web_api_caller_posts_bearer_json()
+    check_email_for_slack_user()
+    check_bot_token_without_ingest_connection()
+    check_secret_setting_covers_bot_token()
     check_live_signature_enforcement()
     check_live_full_mention_round_trip()
     print("\nSlack bot (§13): all automated checks passed.")

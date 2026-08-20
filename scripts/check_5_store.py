@@ -334,13 +334,11 @@ def check_consistency(conn: sqlite3.Connection, index: LiveIndex, hydra_store: H
 
 
 def check_forget_keeps_tombstone_row(conn: sqlite3.Connection, index: LiveIndex, hydra_store: HydraStore) -> None:
-    """5.7: the owner's forget must purge FTS/vectors/graph (`keep_row=True`)
-    while LEAVING the SQLite row in place as a tombstone -- unlike the
-    hard-delete `remove_docs` does for dropped bursts/artifacts (§7.5),
-    `_persist_canonical_docs` keys off a row's `forgotten` flag existing to
-    stop a later re-sync from resurrecting a forgotten doc (CP11.4). A real
-    bug this test guards against: `/api/docs/{id}/forget` used to only
-    blank the SQLite row and never touched FTS/vectors/graph at all."""
+    """5.7: keep_row=True purges FTS/vectors/graph while LEAVING the SQLite
+    row in place as a tombstone -- unlike the hard-delete `remove_docs` does
+    for dropped bursts/artifacts (§7.5). `_persist_canonical_docs` keys off
+    a row's `forgotten` flag to stop a later re-sync from resurrecting a
+    doc that was tombstoned. This is a store primitive, not an HTTP API."""
     doc = _doc(6, "Forget me", "this body must not survive in FTS, vectors, or the graph")
     sd = from_canonical_doc(doc)
     upsert_docs(conn, index, hydra_store, [sd], embed_fn=_fake_embed, now="t0")
