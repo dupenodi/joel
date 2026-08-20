@@ -45,7 +45,9 @@ def check_api_key_lifecycle(tmp_dir: Path) -> None:
             "INSERT INTO memberships(user_id,org_id,role,created_at) VALUES ('u_a',1,'admin','2026-08-20T00:00:00+00:00')"
         )
 
-        key_id, raw = identity.create_api_key(conn, "u_a", "my laptop")
+        actor = identity.actor_for_user(conn, "u_a", 1)
+        assert actor is not None
+        key_id, raw = identity.create_api_key(conn, actor, "my laptop")
         assert raw.startswith(identity.API_KEY_PREFIX)
 
         actor = identity.actor_from_api_key(conn, raw)
@@ -57,15 +59,15 @@ def check_api_key_lifecycle(tmp_dir: Path) -> None:
         assert identity.actor_from_api_key(conn, "not even the right prefix") is None
         print("ok  mcp.2: an unknown or malformed key resolves to nothing, never a crash")
 
-        keys = identity.list_api_keys(conn, "u_a")
+        keys = identity.list_api_keys(conn, actor)
         assert len(keys) == 1 and keys[0]["label"] == "my laptop"
         assert keys[0]["last_used_at"] is not None, "resolving the key above must stamp last_used_at"
         print("ok  mcp.3: list_api_keys shows the key with real metadata, never the raw secret")
 
-        removed = identity.revoke_api_key(conn, "u_a", key_id)
+        removed = identity.revoke_api_key(conn, actor, key_id)
         assert removed
         assert identity.actor_from_api_key(conn, raw) is None, "a revoked key must stop resolving immediately"
-        assert not identity.revoke_api_key(conn, "u_a", key_id), "revoking twice must not raise, just report nothing removed"
+        assert not identity.revoke_api_key(conn, actor, key_id), "revoking twice must not raise, just report nothing removed"
         print("ok  mcp.4: revoking a key stops it from resolving; revoking again is a clean no-op")
 
 
@@ -86,8 +88,11 @@ def check_revoke_is_scoped_to_owner(tmp_dir: Path) -> None:
                 "INSERT INTO memberships(user_id,org_id,role,created_at) VALUES (?,1,'member',?)",
                 (uid, "2026-08-20T00:00:00+00:00"),
             )
-        key_id, raw = identity.create_api_key(conn, "u_a", "a's key")
-        stolen = identity.revoke_api_key(conn, "u_b", key_id)
+        actor_a = identity.actor_for_user(conn, "u_a", 1)
+        actor_b = identity.actor_for_user(conn, "u_b", 1)
+        assert actor_a is not None and actor_b is not None
+        key_id, raw = identity.create_api_key(conn, actor_a, "a's key")
+        stolen = identity.revoke_api_key(conn, actor_b, key_id)
         assert not stolen, "one person must never be able to revoke another person's key"
         assert identity.actor_from_api_key(conn, raw) is not None, "the key must survive the failed cross-user revoke"
         print("ok  mcp.5: revoking a key is scoped to its owner -- another user's revoke attempt is a no-op")
@@ -162,7 +167,17 @@ def check_live_mcp_round_trip() -> None:
         if row is None:
             print("skip live: no real user to mint a test API key for")
             return
-        key_id, raw = identity.create_api_key(conn, row["id"], "check_mcp_server.py smoke test")
+        membership = conn.execute(
+            "SELECT org_id FROM memberships WHERE user_id=? LIMIT 1", (row["id"],)
+        ).fetchone()
+        if membership is None:
+            print("skip live: user has no workspace membership")
+            return
+        actor = identity.actor_for_user(conn, row["id"], int(membership["org_id"]))
+        if actor is None:
+            print("skip live: could not resolve Actor for smoke-test key")
+            return
+        key_id, raw = identity.create_api_key(conn, actor, "check_mcp_server.py smoke test")
 
     async def round_trip() -> str:
         client = httpx2.AsyncClient(headers={"Authorization": f"Bearer {raw}"}, timeout=90.0)
@@ -193,7 +208,7 @@ def check_live_mcp_round_trip() -> None:
         print(f"ok  live: real MCP round trip -- init, list_tools, and a real 'ask' call all succeeded ({answer[:70]!r}...)")
     finally:
         with app.db() as conn:
-            identity.revoke_api_key(conn, row["id"], key_id)
+            identity.revoke_api_key(conn, actor, key_id)
 
 
 def main() -> None:

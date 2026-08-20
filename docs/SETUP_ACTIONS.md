@@ -43,7 +43,7 @@ Order:
 4. **Sources** — Integrations grid (Indexed vs Live)
 5. **Slack** — manifest + secrets
 6. **People** — invite emails
-7. **MCP** — mint a key, copy snippet
+7. **MCP** — paste the URL snippet; Cursor signs in. Optional key.
 8. **Voice** — how it talks
 
 Chat stays usable with holes. Empty Chat has “Finish setup”. `checklist.ready` is not a gate. Members who hit `/onboarding` go to Chat. Settings nav stays the long-term home.
@@ -62,9 +62,9 @@ Admin form on Integrations is always visible (not hidden after save). Copy: crea
 
 ---
 
-## 6. MCP for Cursor / Claude — done
+## 6. MCP for Cursor / Claude — done (OAuth, 2026-08-21)
 
-API keys page: copy-paste snippet, `https://<this-origin>/mcp/` + the key they just created. Next rewrites `/mcp` to the API. One tool `ask`. No hosted MCP hostname.
+Cursor/Claude register against **this origin** (joel is the authorization server). Paste the URL; they open `/oauth/consent`. Allow binds an access token to the signed-in Actor — same visibility as Chat. API keys (`joel_sk_…`) stay for clients that cannot do OAuth. One tool `ask`. Next rewrites `/.well-known/oauth-*`, `/authorize`, `/token`, `/register`. Hosted and self-host both do this (unlike Slack).
 
 ---
 
@@ -92,10 +92,11 @@ Don’t build this now.
 - Hydra: keep using it; no Hydra work here.
 - Unprompted Slack replies, sandboxes, calendar, long research.
 - Write tools and schedulers.
-- Billing. A joel-hosted Slack app / MCP / Composio.
+- Billing. A joel-hosted Composio.
 - Replacing `/setup` password for the first owner.
 - Join-on-Slack-mention (item 2).
 - Leasing (item 9).
+- Scheduled posts.
 
 ---
 
@@ -107,3 +108,15 @@ Don’t build this now.
 4. Integrations: Indexed vs Live grouping (4), still read-only live
 
 Stop. Agent / memory pipeline / Hydra / writes later.
+
+---
+
+## 10. Cloud vs self-host Slack install — done (2026-08-21)
+
+**Shipped:** `api/joel/deployment.py` (`cloud` if origin is meetjoel.xyz, or `JOEL_DEPLOYMENT` override). Slack:
+
+- **Self-host:** manifest + paste (unchanged).
+- **Cloud with `SLACK_*` env:** Add to Slack. Events verified with the env signing secret, routed by `orgs.slack_team_id`.
+- **Cloud without those env vars:** Slack UI says unavailable — no DIY manifest.
+
+Not in this pass: channel bootstrap, unprompted replies, join-from-Slack, billing, subdomains.

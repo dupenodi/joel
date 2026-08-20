@@ -12,14 +12,16 @@ import {
   logout,
   switchWorkspace,
 } from "@/lib/api";
-import { authDestination, slugPreview } from "@/lib/auth";
+import { authDestination, safeInternalNext, slugPreview } from "@/lib/auth";
 import type { WorkspaceMembership } from "@/lib/types";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { OnboardingSkeleton } from "@/components/skeletons";
 
-export default function WorkspacesPage() {
+function WorkspacesForm() {
   const router = useRouter();
+  const search = useSearchParams();
+  const next = safeInternalNext(search.get("next"));
   const [checking, setChecking] = useState(true);
   const [workspaces, setWorkspaces] = useState<WorkspaceMembership[]>([]);
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -32,7 +34,7 @@ export default function WorkspacesPage() {
   useEffect(() => {
     void getAuthStatus()
       .then((status) => {
-        const dest = authDestination(status, "/workspaces");
+        const dest = authDestination(status, "/workspaces", next);
         if (dest) {
           router.replace(dest);
           return;
@@ -49,7 +51,7 @@ export default function WorkspacesPage() {
         });
       })
       .catch(() => router.replace("/login"));
-  }, [router]);
+  }, [next, router]);
 
   if (checking) return <OnboardingSkeleton />;
 
@@ -67,7 +69,7 @@ export default function WorkspacesPage() {
                 setError(null);
                 setBusyId(ws.id);
                 void switchWorkspace(ws.id)
-                  .then(() => router.replace("/"))
+                  .then(() => router.replace(next))
                   .catch((err: unknown) => {
                     setError(
                       err instanceof Error
@@ -142,7 +144,7 @@ export default function WorkspacesPage() {
               name: name.trim(),
               domain: domain.trim() || undefined,
             })
-              .then(() => router.replace("/"))
+              .then(() => router.replace(next))
               .catch((err: unknown) => {
                 setError(
                   err instanceof Error
@@ -193,5 +195,13 @@ export default function WorkspacesPage() {
         </form>
       )}
     </AuthScreen>
+  );
+}
+
+export default function WorkspacesPage() {
+  return (
+    <Suspense fallback={<OnboardingSkeleton />}>
+      <WorkspacesForm />
+    </Suspense>
   );
 }

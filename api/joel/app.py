@@ -84,15 +84,40 @@ from joel.syncer import (
 )
 from joel import auth as joel_auth
 from joel import identity
+from joel.deployment import (
+    deployment,
+    slack_client_id,
+    slack_client_secret,
+    slack_install,
+    slack_oauth_configured,
+    slack_signing_secret,
+    web_origin,
+)
+from joel.mcp_oauth import (
+    JoelAuthProvider,
+    actor_from_oauth_access,
+    is_oauth_http_path,
+    oauth_starlette_routes,
+    resource_metadata_url,
+)
 from joel.mcp_server import build_mcp_app
 from joel.slack_bot import (
     SeenEvents,
+    authenticate_slack_request,
     email_for_slack_user,
     parse_app_mention,
     post_reply,
     strip_mention,
-    verify_signature,
     web_api_caller,
+)
+from joel.slack_oauth import (
+    OAUTH_PROVIDER as SLACK_OAUTH_PROVIDER,
+    STATE_TTL_SECONDS as SLACK_OAUTH_TTL,
+    SlackOAuthAccess,
+    SlackOAuthError,
+    authorize_url as slack_authorize_url,
+    exchange_code as slack_exchange_code,
+    safe_return_path as slack_safe_return_path,
 )
 from joel.connectors.catalog import (
     ProviderAPIError,
@@ -864,9 +889,63 @@ app.add_middleware(
 )
 
 
+class _OAuthCorsMiddleware(BaseHTTPMiddleware):
+    """Token/register/metadata are hit by Cursor, not the web app origin.
+
+    FastAPI CORS is credentialed and origin-restricted. OAuth needs `*`
+    without cookies, including `Content-Type` on DCR preflights.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if not is_oauth_http_path(request.url.path):
+            return await call_next(request)
+        if request.method == "OPTIONS":
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                    "Access-Control-Allow-Headers": (
+                        "Authorization, Content-Type, MCP-Protocol-Version"
+                    ),
+                    "Access-Control-Max-Age": "600",
+                },
+            )
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        return response
+
+
+app.add_middleware(_OAuthCorsMiddleware)
+
+
+class _McpNoSlashRedirectMiddleware:
+    """Serve `/mcp` as `/mcp/` without a 307.
+
+    Starlette's slash redirect uses the *API* host (`127.0.0.1:8000`) in
+    `Location`. Next proxies that to the browser, Cursor follows it as a
+    cross-origin hop and drops `Authorization`, then OAuth metadata points
+    at `JOEL_WEB_ORIGIN` which may not be this port.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] == "http" and scope.get("path") == "/mcp":
+            scope = {**scope, "path": "/mcp/", "raw_path": b"/mcp/"}
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_McpNoSlashRedirectMiddleware)
+
+
 def _mcp_actor_resolver(raw_key: str) -> identity.Actor | None:
     with db() as conn:
-        return identity.actor_from_api_key(conn, raw_key)
+        actor = identity.actor_from_api_key(conn, raw_key)
+        if actor is not None:
+            return actor
+        return actor_from_oauth_access(conn, raw_key)
 
 _ready_timers: dict[str, threading.Thread] = {}
 _scheduler_stop: threading.Event | None = None
@@ -2861,13 +2940,150 @@ def _handle_slack_mention(
         logging.getLogger(__name__).exception("slack bot mention handling failed for event %s", event_id)
 
 
-def _orgs_with_slack_signing_secret(conn: sqlite3.Connection) -> list[int]:
+def _org_signing_secrets(conn: sqlite3.Connection) -> list[tuple[int, str]]:
     rows = conn.execute(
-        """SELECT DISTINCT org_id FROM settings
+        """SELECT org_id, value FROM settings
            WHERE key='slack_signing_secret' AND value != ''"""
     ).fetchall()
-    ids = [int(r["org_id"]) for r in rows]
-    return ids or [1]
+    return [(int(r["org_id"]), str(r["value"])) for r in rows]
+
+
+def _org_id_for_slack_team(conn: sqlite3.Connection, team_id: str) -> int | None:
+    if not team_id:
+        return None
+    row = conn.execute(
+        "SELECT id FROM orgs WHERE slack_team_id=?", (team_id,)
+    ).fetchone()
+    return int(row["id"]) if row else None
+
+
+def _bind_slack_workspace(
+    conn: sqlite3.Connection, org_id: int, access: SlackOAuthAccess
+) -> None:
+    taken = conn.execute(
+        "SELECT id FROM orgs WHERE slack_team_id=? AND id != ?",
+        (access.team_id, org_id),
+    ).fetchone()
+    if taken is not None:
+        raise SlackOAuthError("already_linked")
+    conn.execute(
+        "UPDATE orgs SET slack_team_id=? WHERE id=?",
+        (access.team_id, org_id),
+    )
+    conn.execute(
+        "INSERT INTO settings(org_id, key, value) VALUES (?, 'slack_bot_token', ?) "
+        "ON CONFLICT(org_id, key) DO UPDATE SET value=excluded.value",
+        (org_id, access.bot_token),
+    )
+
+
+def _clear_slack_install(conn: sqlite3.Connection, org_id: int) -> None:
+    conn.execute("UPDATE orgs SET slack_team_id=NULL WHERE id=?", (org_id,))
+    for key in ("slack_bot_token", "slack_signing_secret"):
+        conn.execute(
+            "INSERT INTO settings(org_id, key, value) VALUES (?, ?, '') "
+            "ON CONFLICT(org_id, key) DO UPDATE SET value=''",
+            (org_id, key),
+        )
+
+
+def _slack_connected(
+    *, install: str, token_set: bool, secret_set: bool, team_id: str
+) -> bool:
+    if install == "oauth":
+        return token_set and bool(team_id)
+    if install == "manifest":
+        return token_set and secret_set
+    return False
+
+
+def _slack_oauth_redirect_uri() -> str:
+    return f"{web_origin()}/api/slack/oauth/callback"
+
+
+def _slack_return_redirect(path: str, result: str) -> RedirectResponse:
+    return RedirectResponse(f"{path}?slack={result}", status_code=303)
+
+
+@app.get("/api/slack/oauth/start")
+def slack_oauth_start(request: Request, return_to: str | None = None) -> RedirectResponse:
+    actor = _require_admin(request)
+    if not slack_oauth_configured():
+        raise HTTPException(400, "Slack OAuth is not configured on this install")
+    return_path = slack_safe_return_path(return_to)
+    redirect_uri = _slack_oauth_redirect_uri()
+    state = secrets.token_urlsafe(24)
+    with db() as conn:
+        conn.execute(
+            """INSERT INTO oauth_states(
+                   state, provider, redirect_uri, return_to, expires_at, org_id)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                state,
+                SLACK_OAUTH_PROVIDER,
+                redirect_uri,
+                return_path,
+                time.time() + SLACK_OAUTH_TTL,
+                actor.org_id,
+            ),
+        )
+    return RedirectResponse(
+        slack_authorize_url(
+            client_id=slack_client_id(),
+            redirect_uri=redirect_uri,
+            state=state,
+        ),
+        status_code=303,
+    )
+
+
+@app.get("/api/slack/oauth/callback")
+def slack_oauth_callback(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+) -> RedirectResponse:
+    fallback = "/settings/slack"
+    if error:
+        return _slack_return_redirect(fallback, "denied")
+    if not code or not state:
+        return _slack_return_redirect(fallback, "error")
+    with db() as conn:
+        row = conn.execute(
+            """SELECT org_id, redirect_uri, return_to, expires_at FROM oauth_states
+               WHERE state=? AND provider=?""",
+            (state, SLACK_OAUTH_PROVIDER),
+        ).fetchone()
+        if row is None or float(row["expires_at"]) < time.time():
+            if row is not None:
+                conn.execute("DELETE FROM oauth_states WHERE state=?", (state,))
+            return _slack_return_redirect(fallback, "error")
+        org_id = int(row["org_id"])
+        redirect_uri = str(row["redirect_uri"])
+        return_path = slack_safe_return_path(str(row["return_to"]))
+        conn.execute("DELETE FROM oauth_states WHERE state=?", (state,))
+        try:
+            access = slack_exchange_code(
+                client_id=slack_client_id(),
+                client_secret=slack_client_secret(),
+                code=code,
+                redirect_uri=redirect_uri,
+            )
+            _bind_slack_workspace(conn, org_id, access)
+        except SlackOAuthError:
+            return _slack_return_redirect(return_path, "error")
+        except Exception:
+            logging.getLogger(__name__).exception("slack oauth token exchange failed")
+            return _slack_return_redirect(return_path, "error")
+    return _slack_return_redirect(return_path, "ok")
+
+
+@app.post("/api/slack/disconnect")
+def slack_disconnect(request: Request) -> dict[str, str]:
+    actor = _require_admin(request)
+    with db() as conn:
+        _clear_slack_install(conn, actor.org_id)
+    return {"status": "ok"}
 
 
 @app.post("/api/slack/events")
@@ -2875,27 +3091,36 @@ async def slack_events(request: Request) -> dict[str, Any]:
     body = await request.body()
     timestamp = request.headers.get("x-slack-request-timestamp", "")
     signature = request.headers.get("x-slack-signature", "")
-    verified_org_id: int | None = None
     with db() as conn:
-        for org_id in _orgs_with_slack_signing_secret(conn):
-            settings_map = _settings_map(conn, org_id)
-            signing_secret = settings_map.get("slack_signing_secret", "")
-            if verify_signature(
-                signing_secret=signing_secret,
-                timestamp=timestamp,
-                body=body,
-                signature=signature,
-            ):
-                verified_org_id = org_id
-                break
-    if verified_org_id is None:
+        ok, org_from_secret = authenticate_slack_request(
+            timestamp=timestamp,
+            body=body,
+            signature=signature,
+            env_signing_secret=slack_signing_secret(),
+            org_signing_secrets=_org_signing_secrets(conn),
+        )
+    if not ok:
         raise HTTPException(401, "Invalid Slack signature")
 
-    payload = await request.json()
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid JSON")
+
     if payload.get("type") == "url_verification":
-        # The one-time handshake Slack does when you first save the
-        # Events API request URL in the app's settings.
+        # Handshake when the Events URL is first saved on the Slack app.
+        # Hosted: this happens once for meetjoel, before any customer connects.
         return {"challenge": payload.get("challenge", "")}
+
+    verified_org_id = org_from_secret
+    if verified_org_id is None:
+        team_id = str(payload.get("team_id") or "")
+        with db() as conn:
+            verified_org_id = _org_id_for_slack_team(conn, team_id)
+        if verified_org_id is None:
+            return {"ok": True}
 
     mention = parse_app_mention(payload)
     if mention is None:
@@ -2930,7 +3155,22 @@ async def slack_events(request: Request) -> dict[str, Any]:
     return {"ok": True}
 
 
-_mcp_mount = build_mcp_app(ask_fn=_mcp_ask, actor_resolver=_mcp_actor_resolver)
+_oauth_provider = JoelAuthProvider(_connect, web_origin)
+_oauth_origin = web_origin()
+try:
+    for _oauth_route in oauth_starlette_routes(_oauth_provider, _oauth_origin):
+        app.router.routes.append(_oauth_route)
+except ValueError as _oauth_exc:
+    raise RuntimeError(
+        "MCP OAuth needs JOEL_WEB_ORIGIN as HTTPS, or http://localhost / "
+        f"http://127.0.0.1. Got {_oauth_origin!r}."
+    ) from _oauth_exc
+
+_mcp_mount = build_mcp_app(
+    ask_fn=_mcp_ask,
+    actor_resolver=_mcp_actor_resolver,
+    resource_metadata_url=resource_metadata_url(_oauth_origin),
+)
 app.mount("/mcp", _mcp_mount.asgi_app)
 _mcp_session_cm = None
 
@@ -3248,6 +3488,13 @@ def get_settings(request: Request) -> dict[str, Any]:
     actor = _require_actor(request)
     with db() as conn:
         s = _settings_map(conn, actor.org_id)
+        team_row = conn.execute(
+            "SELECT slack_team_id FROM orgs WHERE id=?", (actor.org_id,)
+        ).fetchone()
+    team_id = str((team_row["slack_team_id"] if team_row else None) or "")
+    token_set = bool(s.get("slack_bot_token"))
+    secret_set = bool(s.get("slack_signing_secret"))
+    install = slack_install()
     mail_provider = joel_mail.provider_name(s)
     return {
         "llm_base_url": s.get("llm_base_url", ""),
@@ -3262,8 +3509,16 @@ def get_settings(request: Request) -> dict[str, Any]:
         "history_floor": s.get("history_floor") or None,
         "composio_api_key_set": bool(s.get("composio_api_key")),
         "embed_model": s.get("embed_model", ""),
-        "slack_signing_secret_set": bool(s.get("slack_signing_secret")),
-        "slack_bot_token_set": bool(s.get("slack_bot_token")),
+        "deployment": deployment().mode,
+        "slack_install": install,
+        "slack_signing_secret_set": secret_set,
+        "slack_bot_token_set": token_set,
+        "slack_connected": _slack_connected(
+            install=install,
+            token_set=token_set,
+            secret_set=secret_set,
+            team_id=team_id,
+        ),
         "workspace_about": s.get("workspace_about", ""),
         "voice": s.get("voice", ""),
         "mail_provider": mail_provider,
@@ -3314,6 +3569,9 @@ def put_settings(body: SettingsIn, request: Request) -> dict[str, str]:
     with db() as conn:
         for k, v in body.values.items():
             if k not in DEFAULT_SETTINGS:
+                continue
+            # OAuth installs bind the bot token via Slack; don't accept pasted secrets.
+            if k in {"slack_bot_token", "slack_signing_secret"} and slack_install() != "manifest":
                 continue
             # don't wipe secrets on empty submit
             if _is_secret_setting(k) and v == "":
@@ -3408,6 +3666,34 @@ def put_profile_password(body: PasswordIn, request: Request) -> dict[str, str]:
     except identity.IdentityError as extra:
         raise _identity_error(extra) from extra
     return {"status": "ok"}
+
+
+# ── MCP OAuth consent (browser; Cursor completes /token itself) ─────────────
+
+
+class McpOAuthConsentIn(BaseModel):
+    rid: str
+    allow: bool
+
+
+@app.get("/api/mcp/oauth/pending")
+def mcp_oauth_pending(rid: str) -> dict[str, str]:
+    pending = _oauth_provider.pending_public(rid.strip())
+    if pending is None:
+        raise HTTPException(404, "This sign-in request expired. Start again from Cursor.")
+    return pending
+
+
+@app.post("/api/mcp/oauth/consent")
+def mcp_oauth_consent(body: McpOAuthConsentIn, request: Request) -> dict[str, str]:
+    actor = _require_actor(request)
+    try:
+        redirect = _oauth_provider.complete_consent(
+            body.rid.strip(), actor, allow=body.allow
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"redirect": redirect}
 
 
 # ── API keys (§13's MCP surface identity) ───────────────────────────────────

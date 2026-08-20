@@ -19,7 +19,7 @@ Product language can stay **admin vs member**. The database has a third role, **
 | **Owner** | First person at `/setup`, or creator of a workspace, or promoted | Yes | Yes |
 | **Admin** | Invited/promoted `admin` | Yes | Yes |
 | **Member** | Invited/promoted `member` | Yes | Yes |
-| **MCP client** | Bearer `joel_sk_…` API key | No cookie | Key is scoped to one org |
+| **MCP client** | Bearer `joel_sk_…` API key, or OAuth `joel_at_…` after `/oauth/consent` | No cookie on `/mcp` | Token/key is scoped to one org |
 | **Slack mentioner** | `@joel` in Slack; email matches a member of that org | Slack HMAC, not cookie | Org of the Slack connector |
 | **Removed person** | Soft-removed: `users` row kept, membership gone | Sessions for that org deleted | None in that org |
 | **Multi-org person** | Same `users` row, many `memberships` | One cookie; one `active_org_id` | The bound org only |
@@ -232,6 +232,8 @@ Each path is **who + starting condition → what happens**. Hooked = code does t
 81. **MCP `ask`** — memory only (no follow-up rewrite / live lookup vs web). Documented narrower surface, not a permission hole.
 82. **No cookie on `/mcp`** — bearer only; session middleware treats `/mcp` as public. Hooked.
 83. **Member MCP vs owner MCP** — same retrieval stamps as that person’s web ask. Hooked.
+83a. **OAuth consent** — Allow on `/oauth/consent` mints `joel_at_…` for the current Actor; Deny returns `access_denied`. Hooked.
+83b. **OAuth token ≠ API key** — access token is not a `joel_sk_`; both resolve to the same Actor. Hooked.
 
 ### H. Slack bot
 
@@ -337,5 +339,5 @@ Implement **owner** as a hidden super-admin until you want a transfer-ownership 
 - Settings nav: `web/components/settings/settings-nav.tsx`, `admin-only.tsx`
 - Integrations: `web/components/integrations/*`, `PERSONAL_CONNECTOR_PROVIDERS`, `_connectors_for_actor`
 - Visibility: `api/joel/visibility.py`, `AskContext.web`, `membership.py`
-- MCP: `api/joel/mcp_server.py`, `/api/api-keys`
+- MCP: `api/joel/mcp_server.py`, `api/joel/mcp_oauth.py`, `/api/api-keys`, `/oauth/consent`
 - Slack: `_handle_slack_mention` in `app.py`

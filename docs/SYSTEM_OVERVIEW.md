@@ -86,8 +86,8 @@ exactly like anything else.
   `status/rewritten/plan/lane/live/token/citations/reasoning_path/done`, all consumed
   (fixed 2026-08-20 — `lane`/`live` were previously parsed but silently dropped).
 - MCP server (`api/joel/mcp_server.py`) — real Streamable HTTP at `/mcp/`, one `ask` tool,
-  bearer API-key auth resolving to a normal `Actor`, same `AskContext`/`answer_question` path
-  as web.
+  bearer API-key **or** OAuth access token resolving to a normal `Actor`, same `AskContext`/`answer_question` path
+  as web. OAuth 2.1 (DCR + PKCE) lives in `mcp_oauth.py`; consent is `/oauth/consent`.
 - Slack bot (`api/joel/slack_bot.py`) — `POST /api/slack/events`, real HMAC signature
   verification + replay-window check, `app_mention` → actor resolved by the mentioning Slack
   user's email → real in-thread reply.
@@ -102,8 +102,8 @@ debugging.
 `/integrations`, `/settings`, `/graph` (still a stats/health stub, not a real graph visualizer),
 `/onboarding`. `web/components/integrations/*` handles connect/disconnect, personal-vs-org
 checkbox, backfill-progress copy, reauth, Indexed vs Live grouping. Settings → API keys
-(MCP snippet) and Settings → Slack bot (manifest, signing secret, bot token) are the
-MCP/Slack-bot settings UI.
+(MCP URL snippet; OAuth sign-in; optional key) and Settings → Slack bot (manifest, signing secret, bot token) are the
+MCP/Slack-bot settings UI. Slack install is Add to Slack on cloud (`meetjoel.xyz`) and manifest+paste on self-host (`deployment.py`).
 
 ## What's explicitly cut (not gaps — deliberate, documented in `PLAN.md` §17)
 

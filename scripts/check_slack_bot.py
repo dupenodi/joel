@@ -31,6 +31,7 @@ from dotenv import load_dotenv  # noqa: E402
 
 from joel.slack_bot import (  # noqa: E402
     SeenEvents,
+    authenticate_slack_request,
     email_for_slack_user,
     parse_app_mention,
     strip_mention,
@@ -228,6 +229,23 @@ def check_secret_setting_covers_bot_token() -> None:
     print("ok  sb.10: slack_bot_token is a secret setting and seeded with voice/about")
 
 
+def check_authenticate_slack_request_org_secret() -> None:
+    body = b'{"type":"url_verification","challenge":"x"}'
+    ts = str(int(time.time()))
+    secret = "org-only-secret"
+    base = f"v0:{ts}:".encode() + body
+    good = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
+    ok, org_id = authenticate_slack_request(
+        timestamp=ts,
+        body=body,
+        signature=good,
+        env_signing_secret="",
+        org_signing_secrets=[(3, secret)],
+    )
+    assert ok is True and org_id == 3
+    print("ok  sb.11: self-host org signing secret still authenticates events")
+
+
 def check_live_signature_enforcement() -> None:
     """Real check #1: the real running server's real route, real settings-
     backed secret, real timestamp math."""
@@ -400,6 +418,7 @@ def main() -> None:
     check_email_for_slack_user()
     check_bot_token_without_ingest_connection()
     check_secret_setting_covers_bot_token()
+    check_authenticate_slack_request_org_secret()
     check_live_signature_enforcement()
     check_live_full_mention_round_trip()
     print("\nSlack bot (§13): all automated checks passed.")

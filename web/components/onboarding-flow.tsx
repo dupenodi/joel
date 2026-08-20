@@ -385,8 +385,8 @@ export function OnboardingFlow({ requested }: { requested: string }) {
                 MCP
               </h1>
               <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
-                Mint a key, then paste the snippet into Cursor or Claude. One
-                tool: ask.
+                Paste the URL into Cursor or Claude. They will ask you to sign
+                in. A key is optional. One tool: ask.
               </p>
             </div>
             <StepActions

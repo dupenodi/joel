@@ -7,7 +7,7 @@ import { SettingsEmpty } from "@/components/settings/settings-section";
 import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { createApiKey, listApiKeys, revokeApiKey } from "@/lib/api";
-import { mcpSnippet, mcpUrl } from "@/lib/mcp-snippet";
+import { mcpKeySnippet, mcpSnippet, mcpUrl } from "@/lib/mcp-snippet";
 import type { ApiKey } from "@/lib/types";
 import { formatRelative } from "@/lib/utils";
 import { useEffect, useState } from "react";
@@ -59,11 +59,15 @@ export function ApiKeysPanel() {
             </span>
             <div>
               <h2 className="text-[15px] font-semibold tracking-tight text-ink">
-                MCP API keys
+                MCP
               </h2>
               <p className="mt-1 max-w-md text-[13px] leading-relaxed text-ink-2">
-                One tool, <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">ask</code>.
-                Point Cursor or Claude at this origin — no hosted MCP hostname.
+                Point Cursor or Claude at this origin. They will ask you to
+                sign in. One tool,{" "}
+                <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">
+                  ask
+                </code>
+                . A key is optional, for clients that cannot do OAuth.
               </p>
             </div>
           </div>
@@ -82,7 +86,7 @@ export function ApiKeysPanel() {
 
         {keys.length === 0 ? (
           <SettingsEmpty>
-            No keys yet. Create one to connect an MCP client.
+            No keys yet. Sign-in from Cursor does not need one.
           </SettingsEmpty>
         ) : (
           <ul className="-mx-5 divide-y divide-line border-t border-line">
@@ -125,7 +129,7 @@ export function ApiKeysPanel() {
             Cursor / Claude snippet
           </p>
           <p className="mt-1 text-[13px] leading-relaxed text-ink-2">
-            Paste into MCP settings. Replace the key after you mint one.
+            Paste into MCP settings. Cursor will open this site to sign in.
           </p>
           <pre className="mt-2 overflow-x-auto rounded-control bg-field px-3 py-2.5 text-[12px] leading-relaxed text-ink">
             {mcpSnippet(url)}
@@ -202,14 +206,14 @@ export function ApiKeysPanel() {
           </code>
           {revealed && (
             <pre className="overflow-x-auto rounded-control bg-field px-3 py-2.5 text-[12px] leading-relaxed text-ink">
-              {mcpSnippet(url, revealed)}
+              {mcpKeySnippet(url, revealed)}
             </pre>
           )}
           <div className="flex justify-end gap-2">
             {revealed && (
               <CopyButton
                 variant="primary"
-                text={() => mcpSnippet(url, revealed)}
+                text={() => mcpKeySnippet(url, revealed)}
                 label="Copy snippet"
                 copiedLabel="Copied snippet"
               />

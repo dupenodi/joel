@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { SESSION_COOKIE, classifyPath } from "@/lib/auth/routes";
+import {
+  SESSION_COOKIE,
+  classifyPath,
+  safeInternalNext,
+} from "@/lib/auth/routes";
 
 /** Coarse cookie gate. Fine-grained status still lives in AuthGate.
 
@@ -16,8 +20,9 @@ export function middleware(request: NextRequest) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.search = "";
-    if (pathname !== "/") {
-      url.searchParams.set("next", pathname);
+    const next = safeInternalNext(`${pathname}${request.nextUrl.search}`);
+    if (next !== "/") {
+      url.searchParams.set("next", next);
     }
     return NextResponse.redirect(url);
   }

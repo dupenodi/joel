@@ -22,6 +22,7 @@ import hmac
 import re
 import time
 from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import Any, Callable
 
 import requests
@@ -49,6 +50,33 @@ def verify_signature(
     base = f"v0:{timestamp}:".encode() + body
     computed = "v0=" + hmac.new(signing_secret.encode(), base, hashlib.sha256).hexdigest()
     return hmac.compare_digest(computed, signature)
+
+
+def authenticate_slack_request(
+    *,
+    timestamp: str,
+    body: bytes,
+    signature: str,
+    env_signing_secret: str = "",
+    org_signing_secrets: Sequence[tuple[int, str]] = (),
+) -> tuple[bool, int | None]:
+    """HMAC check for an Events API delivery.
+
+    If the install-wide env secret verifies, `org_id` is None — the caller
+    maps Slack `team_id` to an org. If an org's pasted secret verifies,
+    that org_id is returned (self-host manifest install).
+    """
+    env = (env_signing_secret or "").strip()
+    if env and verify_signature(
+        signing_secret=env, timestamp=timestamp, body=body, signature=signature
+    ):
+        return True, None
+    for org_id, secret in org_signing_secrets:
+        if verify_signature(
+            signing_secret=secret, timestamp=timestamp, body=body, signature=signature
+        ):
+            return True, org_id
+    return False, None
 
 
 @dataclass(frozen=True)
@@ -179,8 +207,10 @@ def post_reply(caller: SlackCaller, *, channel: str, thread_ts: str, text: str) 
 
 __all__ = [
     "SIGNATURE_MAX_AGE_SECONDS",
+    "SLACK_API",
     "MentionEvent",
     "SeenEvents",
+    "authenticate_slack_request",
     "email_for_slack_user",
     "parse_app_mention",
     "post_reply",

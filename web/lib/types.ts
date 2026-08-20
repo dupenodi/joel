@@ -173,6 +173,9 @@ export interface Settings {
   embed_model: string;
   slack_signing_secret_set?: boolean;
   slack_bot_token_set?: boolean;
+  slack_connected?: boolean;
+  deployment?: "cloud" | "selfhost";
+  slack_install?: "oauth" | "manifest" | "unavailable";
   workspace_about?: string;
   voice?: string;
   mail_provider?: "none" | "smtp" | "resend" | string;

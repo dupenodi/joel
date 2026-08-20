@@ -5,7 +5,7 @@ import { Button } from "@/components/beautifului/primitives/button";
 import { Field } from "@/components/field";
 import { Input } from "@/components/ui/input";
 import { getAuthStatus, login } from "@/lib/api";
-import { authDestination } from "@/lib/auth";
+import { authDestination, safeInternalNext } from "@/lib/auth";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 import { OnboardingSkeleton } from "@/components/skeletons";
@@ -13,7 +13,7 @@ import { OnboardingSkeleton } from "@/components/skeletons";
 function LoginForm() {
   const router = useRouter();
   const search = useSearchParams();
-  const next = search.get("next") || "/";
+  const next = safeInternalNext(search.get("next"));
   const [checking, setChecking] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -51,7 +51,7 @@ function LoginForm() {
           void login(email, password)
             .then((status) => {
               const dest = authDestination(status, "/login", next);
-              router.replace(dest ?? (next.startsWith("/") ? next : "/"));
+              router.replace(dest ?? next);
             })
             .catch((err: unknown) => {
               setError(err instanceof Error ? err.message : "Could not sign in");

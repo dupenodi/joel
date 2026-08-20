@@ -23,11 +23,43 @@ const nextConfig: NextConfig = {
       },
       {
         source: "/mcp",
-        destination: `${apiOrigin.replace(/\/$/, "")}/mcp`,
+        destination: `${apiOrigin.replace(/\/$/, "")}/mcp/`,
+      },
+      {
+        source: "/mcp/",
+        destination: `${apiOrigin.replace(/\/$/, "")}/mcp/`,
       },
       {
         source: "/mcp/:path*",
         destination: `${apiOrigin.replace(/\/$/, "")}/mcp/:path*`,
+      },
+      {
+        source: "/.well-known/oauth-authorization-server",
+        destination: `${apiOrigin.replace(/\/$/, "")}/.well-known/oauth-authorization-server`,
+      },
+      {
+        source: "/.well-known/oauth-protected-resource",
+        destination: `${apiOrigin.replace(/\/$/, "")}/.well-known/oauth-protected-resource`,
+      },
+      {
+        source: "/.well-known/oauth-protected-resource/:path*",
+        destination: `${apiOrigin.replace(/\/$/, "")}/.well-known/oauth-protected-resource/:path*`,
+      },
+      {
+        source: "/authorize",
+        destination: `${apiOrigin.replace(/\/$/, "")}/authorize`,
+      },
+      {
+        source: "/token",
+        destination: `${apiOrigin.replace(/\/$/, "")}/token`,
+      },
+      {
+        source: "/register",
+        destination: `${apiOrigin.replace(/\/$/, "")}/register`,
+      },
+      {
+        source: "/revoke",
+        destination: `${apiOrigin.replace(/\/$/, "")}/revoke`,
       },
     ];
   },

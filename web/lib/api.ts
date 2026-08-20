@@ -225,6 +225,22 @@ export async function revokeApiKey(id: string): Promise<void> {
   await api(`/api/api-keys/${id}`, { method: "DELETE" });
 }
 
+export async function getMcpOAuthPending(
+  rid: string,
+): Promise<{ rid: string; client_name: string }> {
+  return api(`/api/mcp/oauth/pending?rid=${encodeURIComponent(rid)}`);
+}
+
+export async function submitMcpOAuthConsent(
+  rid: string,
+  allow: boolean,
+): Promise<{ redirect: string }> {
+  return api("/api/mcp/oauth/consent", {
+    method: "POST",
+    body: JSON.stringify({ rid, allow }),
+  });
+}
+
 export async function listConnectors(): Promise<ConnectorCard[]> {
   return api("/api/connectors");
 }
@@ -332,6 +348,10 @@ export async function putSettings(
     method: "PUT",
     body: JSON.stringify({ values }),
   });
+}
+
+export async function disconnectSlack(): Promise<void> {
+  await api("/api/slack/disconnect", { method: "POST" });
 }
 
 export async function testOutboundEmail(

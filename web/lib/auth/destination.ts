@@ -1,4 +1,4 @@
-import { classifyPath } from "./routes";
+import { classifyPath, safeInternalNext } from "./routes";
 import type { AuthStatus } from "@/lib/types";
 
 /** Where to send this person, or null to stay.
@@ -13,7 +13,7 @@ export function authDestination(
   next = "/",
 ): string | null {
   const kind = classifyPath(pathname);
-  const safeNext = next.startsWith("/") ? next : "/";
+  const safeNext = safeInternalNext(next);
 
   if (status.state === "setup") {
     return pathname === "/setup" ? null : "/setup";
@@ -27,8 +27,12 @@ export function authDestination(
 
   if (status.state === "pick_workspace") {
     if (kind === "session" || kind === "join" || kind === "public") return null;
-    if (kind === "anonymous") return "/workspaces";
-    return "/workspaces";
+    const keep =
+      safeNext !== "/" &&
+      !safeNext.startsWith("/login") &&
+      !safeNext.startsWith("/workspaces");
+    const qs = keep ? `?next=${encodeURIComponent(safeNext)}` : "";
+    return `/workspaces${qs}`;
   }
 
   // ok — signed in with an active workspace

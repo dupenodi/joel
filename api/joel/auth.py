@@ -49,6 +49,8 @@ _PUBLIC_EXACT = {
     ("GET", "/api/composio/callback"),
     # Slack authenticates via its own request signature, not joel_session.
     ("POST", "/api/slack/events"),
+    # Browser returns here from Slack; org is in the oauth state, not the cookie.
+    ("GET", "/api/slack/oauth/callback"),
 }
 
 _SESSION_EXACT = {
@@ -67,7 +69,17 @@ def classify(method: str, path: str) -> Access:
     if (method, path) in _SESSION_EXACT:
         return Access.SESSION
     if path.startswith("/mcp"):
-        # MCP authenticates with an API key inside its own ASGI app.
+        # MCP authenticates with an API key or OAuth token inside its own ASGI app.
+        return Access.PUBLIC
+    if path.startswith("/.well-known/oauth-") or path in {
+        "/authorize",
+        "/token",
+        "/register",
+        "/revoke",
+    }:
+        # Cursor talks to these without a session cookie. Consent APIs are below.
+        return Access.PUBLIC
+    if method == "GET" and path == "/api/mcp/oauth/pending":
         return Access.PUBLIC
     if path.startswith("/api/auth/invite/"):
         return Access.PUBLIC

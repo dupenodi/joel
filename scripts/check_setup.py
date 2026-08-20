@@ -46,9 +46,12 @@ def check_new_settings_seeded() -> None:
                 assert key in app.DEFAULT_SETTINGS
                 assert key in settings, f"{key} missing after seed"
             assert app._is_secret_setting("slack_bot_token")
+            assert "slack_team_id" in {
+                info[1] for info in conn.execute("PRAGMA table_info(orgs)").fetchall()
+            }
             assert not app._is_secret_setting("voice")
             assert not app._is_secret_setting("workspace_about")
-    print("ok  setup.2: slack_bot_token / voice / workspace_about seed on a new org")
+    print("ok  setup.2: slack_bot_token / voice / workspace_about seed; orgs.slack_team_id exists")
 
 
 def main() -> None:

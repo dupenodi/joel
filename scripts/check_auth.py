@@ -18,6 +18,15 @@ def main() -> None:
     assert classify("GET", "/api/auth/invite/abc") is Access.PUBLIC
     assert classify("POST", "/api/auth/invite/abc/accept") is Access.PUBLIC
     assert classify("GET", "/mcp/foo") is Access.PUBLIC
+    assert classify("GET", "/authorize") is Access.PUBLIC
+    assert classify("POST", "/token") is Access.PUBLIC
+    assert classify("POST", "/register") is Access.PUBLIC
+    assert classify("GET", "/.well-known/oauth-authorization-server") is Access.PUBLIC
+    assert classify("GET", "/api/mcp/oauth/pending") is Access.PUBLIC
+    assert classify("POST", "/api/mcp/oauth/consent") is Access.ACTOR
+    assert classify("POST", "/api/slack/events") is Access.PUBLIC
+    assert classify("GET", "/api/slack/oauth/callback") is Access.PUBLIC
+    assert classify("GET", "/api/slack/oauth/start") is Access.ACTOR
 
     assert classify("GET", "/api/workspaces") is Access.SESSION
     assert classify("POST", "/api/workspaces") is Access.SESSION

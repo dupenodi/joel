@@ -1,6 +1,6 @@
-"""§13's third surface, after web and (eventually) Slack: a minimal MCP
-server exposing one tool, "ask". Authenticated by API key (`identity.py`'s
-`actor_from_api_key`), which maps to exactly one person's normal Actor --
+"""§13's third surface, after web and Slack: a minimal MCP server exposing
+one tool, "ask". Authenticated by API key (`joel_sk_…`) or OAuth access
+token (`joel_at_…`), both mapping to exactly one person's normal Actor --
 `AskContext` is built server-side from that Actor, never from anything
 the MCP client sends, same discipline `/api/ask` already applies to the
 session cookie.
@@ -32,16 +32,23 @@ ActorResolver = Callable[[str], identity.Actor | None]
 
 
 class _BearerAuthASGI:
-    """Wraps the MCP Streamable HTTP app with joel's own API-key auth,
+    """Wraps the MCP Streamable HTTP app with joel's own bearer auth,
     entirely outside the SDK's OAuth-oriented `token_verifier`/
-    `AuthSettings` machinery -- a static per-person API key doesn't need
-    dynamic client registration or a `.well-known` metadata surface, just
-    "whose key is this." Raw ASGI (not Starlette's `BaseHTTPMiddleware`)
-    so the transport's streaming responses pass through unbuffered."""
+    `AuthSettings` machinery for the *stream* path — so streaming
+    responses pass through unbuffered. Accepts API keys (`joel_sk_`)
+    and OAuth access tokens (`joel_at_`). Unauthenticated MCP calls
+    get RFC 9728 `WWW-Authenticate` pointing at protected-resource
+    metadata so Cursor can start the sign-in flow."""
 
-    def __init__(self, app: Any, actor_resolver: ActorResolver) -> None:
+    def __init__(
+        self,
+        app: Any,
+        actor_resolver: ActorResolver,
+        resource_metadata_url: str = "",
+    ) -> None:
         self.app = app
         self._resolve = actor_resolver
+        self._resource_metadata_url = resource_metadata_url
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
         if scope["type"] != "http":
@@ -52,14 +59,25 @@ class _BearerAuthASGI:
         token = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
         actor = self._resolve(token) if token else None
         if actor is None:
+            www = 'Bearer error="invalid_token", error_description="Authentication required"'
+            if self._resource_metadata_url:
+                www += f', resource_metadata="{self._resource_metadata_url}"'
             await send(
                 {
                     "type": "http.response.start",
                     "status": 401,
-                    "headers": [(b"content-type", b"application/json")],
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"www-authenticate", www.encode("latin-1")),
+                    ],
                 }
             )
-            await send({"type": "http.response.body", "body": b'{"error":"missing or invalid API key"}'})
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": b'{"error":"missing or invalid token"}',
+                }
+            )
             return
         reset = _actor_ctx.set(actor)
         try:
@@ -84,7 +102,12 @@ class McpMount:
         return self.session_manager.run()
 
 
-def build_mcp_app(*, ask_fn: AskFn, actor_resolver: ActorResolver) -> McpMount:
+def build_mcp_app(
+    *,
+    ask_fn: AskFn,
+    actor_resolver: ActorResolver,
+    resource_metadata_url: str = "",
+) -> McpMount:
     server = MCPServer(
         name="joel",
         version="1.0",
@@ -123,7 +146,12 @@ def build_mcp_app(*, ask_fn: AskFn, actor_resolver: ActorResolver) -> McpMount:
     # make the real reachable path /mcp/mcp.
     inner = server.streamable_http_app(streamable_http_path="/")
     session_manager = server.session_manager
-    return McpMount(asgi_app=_BearerAuthASGI(inner, actor_resolver), session_manager=session_manager)
+    return McpMount(
+        asgi_app=_BearerAuthASGI(
+            inner, actor_resolver, resource_metadata_url=resource_metadata_url
+        ),
+        session_manager=session_manager,
+    )
 
 
 __all__ = ["McpMount", "build_mcp_app"]

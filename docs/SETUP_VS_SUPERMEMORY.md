@@ -17,7 +17,7 @@ Default surface is **Slack**. Web exists for admin setup and automations list. M
 
 ### joel (self-host, web-native)
 
-Operator: env + Hydra + API/web (or Docker) → `/setup` (company name, optional domain, **password**) → land in **web Chat**. Optional `/onboarding` is the same settings in one skippable checklist (about, models, Composio, sources, Slack bot, people, MCP snippet, voice). Teammates join via **Settings → Members** (copy link or outbound email). Slack bot: create your app from the repo manifest, paste Events URL + signing secret + **bot token**, `/invite @joel`. Mentions work if the Slack profile email matches a joel user. MCP is a **bearer API key** and one `ask` tool at this origin.
+Operator: env + Hydra + API/web (or Docker) → `/setup` (company name, optional domain, **password**) → land in **web Chat**. Optional `/onboarding` is the same settings in one skippable checklist (about, models, Composio, sources, Slack bot, people, MCP snippet, voice). Teammates join via **Settings → Members** (copy link or outbound email). Slack bot: create your app from the repo manifest, paste Events URL + signing secret + **bot token**, `/invite @joel`. Mentions work if the Slack profile email matches a joel user. MCP is OAuth on this origin (optional `joel_sk_…` key) and one `ask` tool.
 
 Default surface is **web Chat**. Slack and MCP are extras you wire by hand.
 
@@ -32,8 +32,8 @@ Default surface is **web Chat**. Slack and MCP are extras you wire by hand.
 | Invite people | Settings → Members; comma emails; copy links; SMTP/Resend |
 | Org vs personal connectors | Org tools admin-only; Gmail/Slack can be personal |
 | Ingest catalog | **Indexed** vs **Live** on Integrations. Slack, Gmail, Notion, Drive, Jira, Confluence, HubSpot, Fireflies indexed; GitHub, Linear live (still ingest in v1) |
-| Slack **mention** bot | Settings → Slack bot: manifest, events URL, signing secret, **bot token**; `/invite @joel` |
-| MCP **ask** | Settings → API keys; snippet for `https://<this-origin>/mcp/`; key maps to that person’s AskContext |
+| Slack **mention** bot | Self-host: manifest + secrets. **meetjoel.xyz:** Add to Slack (`SLACK_*` env). `/invite @joel` |
+| MCP **ask** | Settings → API keys; URL snippet; OAuth sign-in (optional `joel_sk_…`); maps to that person’s AskContext |
 | Models | Settings → Models (base URL + key) — closest to SM “bring your own LLM” |
 | Voice / about | Settings → General (`voice`, `workspace_about`) injected into the answer prompt |
 | Roles | owner / admin / member; invite is member\|admin |
@@ -48,9 +48,9 @@ Ranked by how much it changes “a team actually turns this on,” not by agent 
 
 **SM:** Install to Slack (OAuth). Request-to-install if you’re not a Slack admin. Bot bootstraps `#company-brain` + `#general` announce. **Every channel join is an explicit tap.**
 
-**joel:** Admin creates a Slack *app* from the repo manifest, pastes Request URL, signing secret, and bot token, then `/invite @joel`. No OAuth install, no channel-join UI, no bootstrap channel. Bot only answers **@mentions**, and only if Slack email ∈ `users.email`.
+**joel:** Self-host: admin creates a Slack app from the repo manifest and pastes secrets. **Hosted (meetjoel.xyz):** Add to Slack. No channel-join UI, no bootstrap channel. Bot only answers **@mentions**, and only if Slack email ∈ `users.email`.
 
-**Gap to close (setup):** one-click Slack install; channel picker / approve-to-join; stop requiring a custom Slack app tutorial for the happy path. Chime-in *behavior* can wait; **being in the room** is setup.
+**Gap to close (setup):** channel picker / approve-to-join. One-click Slack install is done for hosted. Chime-in *behavior* can wait.
 
 ### 2. New hire activation is web-only
 
@@ -86,13 +86,13 @@ Ranked by how much it changes “a team actually turns this on,” not by agent 
 
 Acting on Linear from Slack is later (agent). **Offering the connection type** is setup.
 
-### 5. MCP is a key, not a sign-in
+### 5. MCP is a sign-in (keys still work)
 
 **SM:** `https://mcp.supermemory.ai/mcp` + OAuth (or `sm_` key). Then **pick a workspace** (employee / `#eng` / public). Tools: list tags, select workspace, recall, save-memory, memory-graph, whoAmI. Admin can restrict which tags a member’s client sees.
 
-**joel:** mint `joel_sk_…` in Settings → API keys. One tool: `ask`. No OAuth, no container picker, no save-memory, no whoAmI. Key is org-scoped to that person — correct graph, but Cursor/Claude Code setup is “paste a key,” not “Sign in to joel.”
+**joel:** this origin is the authorization server. Paste `https://<this-origin>/mcp`; Cursor/Claude register, the person Allows on `/oauth/consent`, token maps to that Actor. `joel_sk_…` keys remain. One tool: `ask`. No container picker, no save-memory, no whoAmI.
 
-**Gap to close:** documented MCP URL in product UI; OAuth or at least a copy-paste client config; a picker for **org vs my Gmail vs this Slack channel** if we keep those as rooms. Extra MCP tools can wait; **getting Cursor attached** is setup.
+**Still open:** a picker for **org vs my Gmail vs this Slack channel** if we keep those as rooms. Extra MCP tools can wait.
 
 ### 6. No automations surface
 
@@ -139,7 +139,7 @@ Do **not** start with sandbox debugging, long-horizon research, calendar, or “
 2. **Join from Slack** — Connect-me equivalent; bind Slack email to a membership without a password form.
 3. **First-run parallel rail** — people + Slack + tools on one screen; optional company blurb so Chat isn’t mute.
 4. **Connections page: Memory vs Live + custom MCP URL** — catalog honesty. Personal GitHub/Linear.
-5. **MCP attach story** — URL + OAuth or one-click Cursor/Claude snippet; workspace/room picker.
+5. **MCP attach story** — URL + OAuth shipped; workspace/room picker still later.
 6. **Automations list** (web).
 7. Tonality. Then leasing.
 
