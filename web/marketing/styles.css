@@ -278,6 +278,25 @@ button:focus-visible {
   filter: invert(1);
 }
 
+.nav-cta-soon {
+  cursor: default;
+  opacity: 0.72;
+  color: var(--ink-soft);
+  background: var(--surface);
+}
+
+.nav-cta-soon:hover,
+.nav-cta-soon:focus-visible {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  color: var(--ink-soft);
+}
+
+.nav-cta-soon:hover img,
+.nav-cta-soon:focus-visible img {
+  filter: none;
+}
+
 main {
   width: 100%;
 }
@@ -312,6 +331,16 @@ main {
 .btn-primary:focus-visible {
   box-shadow: var(--shadow-md);
   transform: translateY(-2px);
+}
+
+.btn-disabled {
+  border: 1px solid var(--line-strong);
+  background: #efeff1;
+  box-shadow: none;
+  color: var(--muted);
+  cursor: not-allowed;
+  user-select: none;
+  pointer-events: none;
 }
 
 .btn-ghost {
@@ -384,6 +413,14 @@ h1 .h1-lead {
   align-items: center;
   gap: 16px;
   flex-wrap: wrap;
+}
+
+.hero-soon-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 
 .hero-visual {
