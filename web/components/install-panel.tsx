@@ -62,11 +62,12 @@ export function InstallPanel() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [name, setName] = useState("");
   const [values, setValues] = useState<Record<string, string>>({});
+  const [slackSecretSet, setSlackSecretSet] = useState(false);
   const [wipeConfirm, setWipeConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [errorAt, setErrorAt] = useState<"name" | "models" | null>(null);
-  const [saving, setSaving] = useState<"name" | "models" | null>(null);
-  const [saved, setSaved] = useState<"name" | "models" | null>(null);
+  const [errorAt, setErrorAt] = useState<"name" | "models" | "slack" | null>(null);
+  const [saving, setSaving] = useState<"name" | "models" | "slack" | null>(null);
+  const [saved, setSaved] = useState<"name" | "models" | "slack" | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -83,7 +84,9 @@ export function InstallPanel() {
           llm_model_resolve: s.llm_model_resolve,
           llm_model_rerank: s.llm_model_rerank,
           embed_model: s.embed_model,
+          slack_signing_secret: "",
         });
+        setSlackSecretSet(Boolean(s.slack_signing_secret_set));
       })
       .catch(() => {})
       .finally(() => setLoaded(true));
@@ -106,6 +109,23 @@ export function InstallPanel() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Save failed");
       setErrorAt("models");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function onSaveSlack() {
+    setError(null);
+    setErrorAt(null);
+    setSaving("slack");
+    try {
+      await putSettings({ slack_signing_secret: values.slack_signing_secret ?? "" });
+      if (values.slack_signing_secret) setSlackSecretSet(true);
+      set("slack_signing_secret", "");
+      setSaved("slack");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Save failed");
+      setErrorAt("slack");
     } finally {
       setSaving(null);
     }
@@ -219,6 +239,44 @@ export function InstallPanel() {
           onClick={() => void onSaveModels()}
         >
           {saved === "models" ? "Saved" : "Save"}
+        </Button>
+      </section>
+
+      <section className="space-y-3">
+        <h2 className="text-[11px] font-medium tracking-[0.04em] text-ink-3 uppercase">
+          Slack bot
+        </h2>
+        <p className="text-[13px] leading-relaxed text-ink-2">
+          Mention joel in Slack for an answer, in-thread. Point the app&apos;s Event
+          Subscriptions at{" "}
+          <code className="rounded-[4px] bg-field px-1 py-0.5 text-[12px]">
+            /api/slack/events
+          </code>
+          , then paste its Signing Secret here.
+        </p>
+        <Field
+          label="Signing secret"
+          hint={slackSecretSet ? "A secret is already set. Leave blank to keep it." : undefined}
+        >
+          <Input
+            type="password"
+            placeholder={slackSecretSet ? "•••••••••••••" : "Paste from Slack app settings"}
+            value={values.slack_signing_secret ?? ""}
+            onChange={(e) => set("slack_signing_secret", e.target.value)}
+          />
+        </Field>
+        {errorAt === "slack" && error && (
+          <p className="text-[13px] text-red">{error}</p>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          loading={saving === "slack"}
+          disabled={!loaded}
+          onClick={() => void onSaveSlack()}
+        >
+          {saved === "slack" ? "Saved" : "Save"}
         </Button>
       </section>
 

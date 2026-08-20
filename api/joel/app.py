@@ -81,6 +81,7 @@ from joel.syncer import (
 )
 from joel import identity
 from joel.mcp_server import build_mcp_app
+from joel.slack_bot import SeenEvents, parse_app_mention, post_reply, strip_mention, verify_signature
 from joel.connectors.catalog import (
     ProviderAPIError,
     fetch_gdrive_docs,
@@ -182,6 +183,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "history_floor": "",
     "composio_api_key": "",
     "embed_model": "BAAI/bge-small-en-v1.5",
+    "slack_signing_secret": "",
 }
 
 
@@ -551,6 +553,9 @@ _PUBLIC_EXACT = {
     ("POST", "/api/auth/login"),
     ("POST", "/api/auth/logout"),
     ("GET", "/api/composio/callback"),
+    # Slack calls this directly -- it authenticates itself via its own
+    # request signature (verify_signature), never the joel_session cookie.
+    ("POST", "/api/slack/events"),
 }
 
 
@@ -2322,6 +2327,115 @@ async def _mcp_ask(actor: identity.Actor, question: str) -> dict[str, Any]:
     return await anyio.to_thread.run_sync(_mcp_ask_sync, actor, question)
 
 
+_slack_seen_events = SeenEvents()
+
+
+def _resolve_slack_actor(conn: sqlite3.Connection, slack_user_id: str) -> identity.Actor | None:
+    """§1.4's email-matching signal, reapplied a third time (Gmail
+    visibility, channel membership, and now this): a Slack user is only
+    ever an Actor if their Slack profile email matches a real workspace
+    member's. No match -> no Actor -> the mention is silently declined,
+    never answered with an org-wide AskContext for someone unrecognized."""
+    row = conn.execute(
+        "SELECT id FROM connections WHERE provider='slack' AND status='ready'"
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        credentials = _credential(conn, row["id"])
+        settings_map = _settings_map(conn)
+        client = SlackClient(_slack_token(credentials), caller=_slack_caller(credentials, settings_map))
+        emails = client.user_emails()
+    except Exception:
+        return None
+    email = emails.get(slack_user_id)
+    if not email:
+        return None
+    user_row = conn.execute("SELECT id FROM users WHERE email=?", (email.lower(),)).fetchone()
+    if user_row is None:
+        return None
+    return identity.actor_for_user(conn, user_row["id"])
+
+
+def _handle_slack_mention(event_id: str, channel: str, slack_user_id: str, text: str, thread_ts: str, bot_user_id: str) -> None:
+    """Runs on a background thread -- Slack's Events API needs a 200
+    within 3 seconds or it retries the whole delivery, and real retrieval
+    is real LLM calls, seconds not milliseconds."""
+    try:
+        with db() as conn:
+            actor = _resolve_slack_actor(conn, slack_user_id)
+            if actor is None:
+                return
+            row = conn.execute(
+                "SELECT id FROM connections WHERE provider='slack' AND status='ready'"
+            ).fetchone()
+            if row is None:
+                return
+            credentials = _credential(conn, row["id"])
+            settings_map = _settings_map(conn)
+            caller = _slack_caller(credentials, settings_map)
+        question = strip_mention(text, bot_user_id)
+        if not question:
+            return
+        result = _mcp_ask_sync(actor, question)
+        answer = str(result.get("answer") or "")
+        if not answer:
+            return
+        if caller is not None:
+            post_reply(caller, channel=channel, thread_ts=thread_ts, text=answer)
+    except Exception:
+        logging.getLogger(__name__).exception("slack bot mention handling failed for event %s", event_id)
+
+
+@app.post("/api/slack/events")
+async def slack_events(request: Request) -> dict[str, Any]:
+    body = await request.body()
+    timestamp = request.headers.get("x-slack-request-timestamp", "")
+    signature = request.headers.get("x-slack-signature", "")
+    with db() as conn:
+        settings_map = _settings_map(conn)
+    signing_secret = settings_map.get("slack_signing_secret", "")
+    if not verify_signature(
+        signing_secret=signing_secret, timestamp=timestamp, body=body, signature=signature
+    ):
+        raise HTTPException(401, "Invalid Slack signature")
+
+    payload = await request.json()
+    if payload.get("type") == "url_verification":
+        # The one-time handshake Slack does when you first save the
+        # Events API request URL in the app's settings.
+        return {"challenge": payload.get("challenge", "")}
+
+    mention = parse_app_mention(payload)
+    if mention is None:
+        return {"ok": True}
+    if _slack_seen_events.already_seen(mention.event_id):
+        return {"ok": True}
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT id FROM connections WHERE provider='slack' AND status='ready'"
+        ).fetchone()
+        bot_user_id = ""
+        if row is not None:
+            try:
+                credentials = _credential(conn, row["id"])
+                settings_map = _settings_map(conn)
+                client = SlackClient(_slack_token(credentials), caller=_slack_caller(credentials, settings_map))
+                bot_user_id = str(client.call("auth.test").get("user_id") or "")
+            except Exception:
+                bot_user_id = ""
+
+    thread_ts = mention.thread_ts or mention.ts
+    threading.Thread(
+        target=_handle_slack_mention,
+        args=(mention.event_id, mention.channel, mention.user, mention.text, thread_ts, bot_user_id),
+        daemon=True,
+        name=f"slack-mention-{mention.event_id}",
+    ).start()
+    return {"ok": True}
+
+
 _mcp_mount = build_mcp_app(ask_fn=_mcp_ask, actor_resolver=_mcp_actor_resolver)
 app.mount("/mcp", _mcp_mount.asgi_app)
 _mcp_session_cm = None
@@ -2713,6 +2827,7 @@ def get_settings() -> dict[str, Any]:
         "history_floor": s.get("history_floor") or None,
         "composio_api_key_set": bool(s.get("composio_api_key")),
         "embed_model": s.get("embed_model", ""),
+        "slack_signing_secret_set": bool(s.get("slack_signing_secret")),
         "raw": {
             k: ("" if k.endswith("key") or k.endswith("secret") else v)
             for k, v in s.items()

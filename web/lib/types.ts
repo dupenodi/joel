@@ -153,6 +153,7 @@ export interface Settings {
   history_floor?: string | null;
   composio_api_key_set?: boolean;
   embed_model: string;
+  slack_signing_secret_set?: boolean;
   raw?: Record<string, string>;
 }
 

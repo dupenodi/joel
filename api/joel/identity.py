@@ -251,6 +251,17 @@ def actor_from_api_key(conn: sqlite3.Connection, raw_key: str | None) -> Actor |
     return actor
 
 
+def actor_for_user(conn: sqlite3.Connection, user_id: str) -> Actor | None:
+    """Same lookup `actor_from_session`/`actor_from_api_key` both use
+    internally, for a caller that already resolved a raw user_id by some
+    other means (the Slack bot surface matching a mentioning Slack
+    user's email to a workspace member) and just needs the Actor."""
+    try:
+        return _actor_row(conn, user_id)
+    except IdentityError:
+        return None
+
+
 def workspace_row(conn: sqlite3.Connection) -> sqlite3.Row | None:
     return conn.execute("SELECT * FROM orgs WHERE id=?", (ORG_ID,)).fetchone()
 
@@ -578,6 +589,7 @@ __all__ = [
     "SESSION_DAYS",
     "accept_invite",
     "actor_dict",
+    "actor_for_user",
     "actor_from_api_key",
     "actor_from_session",
     "create_api_key",
