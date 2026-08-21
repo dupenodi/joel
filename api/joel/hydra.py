@@ -66,5 +66,12 @@ class Hydra:
         return response.json()
 
     def bolt(self, cypher: str, **params: Any) -> list[Any]:
-        with self.driver.session(database="default") as session:
+        """Bolt names the graph scope through the database name, which is how
+        a workspace's writes stay out of every other workspace's graph. This
+        used to be hardcoded to `"default"` while only the HTTP header carried
+        the namespace — and since every write and nearly every read in this
+        codebase goes over Bolt (see TRANSPORT in store.py), that meant the
+        per-org namespace decided nothing at all: every workspace read and
+        wrote the one root graph. Derive it from settings like the header."""
+        with self.driver.session(database=self.settings.hydra_database) as session:
             return list(session.run(cypher, **params))

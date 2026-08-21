@@ -44,7 +44,8 @@ Or: `docker compose up --build`
 | `JOEL_DEPLOYMENT` | Optional `cloud` or `selfhost` override |
 | `JOEL_HTTPS` | `1` → session cookie `Secure` |
 | `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` / `SLACK_SIGNING_SECRET` | Hosted Slack app. Empty on self-host |
-| `HYDRA_*` | Graph database |
+| `HYDRA_HTTP` / `HYDRA_BOLT` / `HYDRA_TOKEN` | Graph database endpoint and auth |
+| `HYDRA_NAMESPACE` / `HYDRA_DATABASE` | Root graph scope. Must match HydraDB's own `GRAPH_NAMESPACE` / `GRAPH_DATABASE`. Each workspace gets its own scope underneath these — joel derives it, so never set a per-workspace value here |
 | `COMPOSIO_API_KEY` | Optional env fallback; UI can store a key too |
 
 Workspace settings (LLM, mail, Slack bot, voice, about, sync) are admin-only in the API.

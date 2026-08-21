@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT / "api"))
 
 import joel.app as app  # noqa: E402
 from joel import identity  # noqa: E402
-from joel.config import hydra_namespace_for  # noqa: E402
+
 from joel.models import CanonicalDoc, compute_content_hash  # noqa: E402
 from joel.retrieve.lanes import fts_lane  # noqa: E402
 from joel.retrieve.planner import QueryPlan  # noqa: E402
@@ -34,6 +34,80 @@ def _doc(doc_id: str, body: str, *, org_marker: str) -> CanonicalDoc:
         last_seen=now,
         visibility="org",
     )
+
+
+def check_graph_scopes_are_isolated() -> None:
+    """Two workspaces must not see each other's graph — asserted against a
+    live HydraDB, because this is exactly the property that silently was not
+    true while every transport still agreed on the *names*.
+
+    The old check here compared `hydra_namespace_for(1)` to
+    `hydra_namespace_for(2)` and passed because two strings differed. They
+    did; it decided nothing. `Hydra.bolt` hardcoded `database="default"` and
+    ignored the namespace entirely, so both workspaces read and wrote one
+    graph while the naming looked per-tenant. A test that only inspects the
+    label on the door cannot notice that every door opens the same room —
+    so this one writes through one workspace's store and reads through the
+    other's.
+
+    Both workspaces use the *same* external key deliberately: keys hash to
+    vertex ids with no org in them, so an identical key is the sharpest probe
+    for a shared store. Isolation here is HydraDB's scoped database doing the
+    work, not a key-mangling scheme of ours.
+    """
+    from joel.config import Settings, hydra_database_for  # noqa: PLC0415
+    from joel.hydra import Hydra  # noqa: PLC0415
+    from joel.store import HydraStore  # noqa: PLC0415
+
+    try:
+        settings = Settings.from_env()
+    except KeyError:
+        print("skip graph scope isolation (HYDRA_* not configured)")
+        return
+
+    label = "IsolationProbe"
+    key = "isolation-probe/shared-key"  # identical on both sides, on purpose
+    marker = {1: "org-one-secret", 2: "org-two-secret"}
+    stores: dict[int, HydraStore] = {}
+    hydras: list[Hydra] = []
+    try:
+        for org_id in (1, 2):
+            org_settings = settings.for_org(org_id)
+            assert org_settings.hydra_database == hydra_database_for(org_id)
+            # Transports must name one scope, or writes and reads diverge.
+            assert org_settings.hydra_database.endswith(
+                org_settings.hydra_namespace.rsplit("/", 1)[-1] + "._"
+            )
+            hydra = Hydra(org_settings)
+            hydras.append(hydra)
+            stores[org_id] = HydraStore(hydra)
+
+        for org_id, store in stores.items():
+            store.hydra.bolt(f"MATCH (n:{label}) DETACH DELETE n")
+            store.create_node(label, key, name=marker[org_id])
+
+        for org_id, store in stores.items():
+            found = store.get_node(label, key, ["name"])
+            assert found is not None, f"org {org_id} lost its own node"
+            assert found["name"] == marker[org_id], (
+                f"org {org_id} read {found['name']!r} — the other workspace's "
+                "write landed in this workspace's graph"
+            )
+            count = store.count_nodes(label)
+            assert count == 1, (
+                f"org {org_id} sees {count} probe nodes; a workspace must see "
+                "only its own, and a label-wide sweep is where a shared store "
+                "shows up"
+            )
+        print("ok  graph scopes isolated per org (same key, separate stores)")
+    finally:
+        for store in stores.values():
+            try:
+                store.hydra.bolt(f"MATCH (n:{label}) DETACH DELETE n")
+            except Exception:
+                pass
+        for hydra in hydras:
+            hydra.close()
 
 
 def main() -> None:
@@ -162,17 +236,13 @@ def main() -> None:
             assert c1 == 3 and c2 == 7
             print("ok  spend scoped by (org_id, stage)")
 
-            # ── Hydra namespace helper ─────────────────────────────────────
-            assert hydra_namespace_for(1) == "joel-org-1"
-            assert hydra_namespace_for(2) == "joel-org-2"
-            assert hydra_namespace_for(1) != hydra_namespace_for(2)
-            print("ok  hydra_namespace_for per org")
-
             # ── LiveIndex path shape (no model load) ──────────────────────
             p1 = app.DATA_DIR / "index" / "org-1.npz"
             p2 = app.DATA_DIR / "index" / "org-2.npz"
             assert "org-1.npz" in str(p1) and "org-2.npz" in str(p2)
             print("ok  live index path pattern org-{id}.npz")
+
+    check_graph_scopes_are_isolated()
 
     print("\nALL CHECKS PASSED")
 

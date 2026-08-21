@@ -17,6 +17,18 @@ NODE IDENTITY
     so property-filtered matches and joins with SQLite/vectors use `key`,
     never the internal `id`.
 
+TENANCY
+    A workspace's graph is a HydraDB *scope*, not a convention this layer
+    enforces. Bolt names it through the database (`{base}.scope1.{tenant}._`)
+    and HTTP through the `X-Graph-Namespace` path (`{root}/{tenant}`), where
+    `tenant` is URL-safe unpadded base64; `Settings` derives both from one
+    org id so they cannot drift. Nothing below this line is org-aware, and
+    nothing needs to be: `to_vertex_id` hashes external keys with no org in
+    them, so two workspaces holding the same key hold the same vertex id, and
+    it is the scope -- not the id -- that keeps them apart. The corollary is
+    that a transport which forgets the scope silently merges every tenant
+    into one graph without a single query looking wrong.
+
 TRANSPORT
     The HTTP query endpoint does not bind `$param` at all on this build --
     every attempt fails with "missing OpenCypher query parameter", HTTP body
@@ -84,6 +96,12 @@ QUERY LANGUAGE GAPS (§4.4 assumptions, verified against the live node)
                               takes down the whole batch. Fallback: `_null_safe`
                               coerces `None` -> `""` for every batched property
                               in `upsert_nodes`/`link_nodes`.
+    UNWIND batch size        capped at 1024 items by admission control
+                              ("client_query_batch_items rejected by admission
+                              control: actual 1881 exceeds limit 1024"), and
+                              the rejection discards the whole batch rather
+                              than the overflow. `upsert_nodes`/`link_nodes`
+                              chunk at `BATCH_LIMIT` so callers never see it.
     SET on a props-less        rejected ("UNWIND relationship SET cannot update
     UNWIND-batched edge        relationship id") -- `link_nodes` used to paper
                               over an empty property list with `r.id = r.id`,
@@ -105,6 +123,7 @@ QUERY LANGUAGE GAPS (§4.4 assumptions, verified against the live node)
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterable, Sequence
 
 from .hydra import Hydra
@@ -116,6 +135,19 @@ ALIAS_LABEL = "Alias"
 
 _VERTEX_ID_BITS = 62
 _VERTEX_ID_MASK = (1 << _VERTEX_ID_BITS) - 1
+
+# HydraDB's admission control rejects an UNWIND batch carrying more than 1024
+# items outright -- "client_query_batch_items rejected by admission control:
+# actual 1881 exceeds limit 1024" -- and the rejection takes the whole batch,
+# so a caller with 1100 rows writes nothing rather than 1024 of them. Ordinary
+# incremental syncs stay well under it, which is why this never surfaced until
+# a whole-corpus write; chunk here so no caller has to know the number.
+BATCH_LIMIT = 1000
+
+
+def _chunked(rows: list[Any], size: int = BATCH_LIMIT) -> Iterable[list[Any]]:
+    for start in range(0, len(rows), size):
+        yield rows[start : start + size]
 
 
 def to_vertex_id(key: str) -> int:
@@ -307,10 +339,11 @@ class HydraStore:
         set_clause = ", ".join(
             ["n.key = row.key"] + [f"n.{p} = row.{p}" for p in prop_names]
         )
-        self.hydra.bolt(
-            f"UNWIND $rows AS row MERGE (n {{id: row.vid}}) SET n:{label}, {set_clause}",
-            rows=payload,
+        query = (
+            f"UNWIND $rows AS row MERGE (n {{id: row.vid}}) SET n:{label}, {set_clause}"
         )
+        for batch in _chunked(payload):
+            self.hydra.bolt(query, rows=batch)
 
     def link_nodes(
         self,
@@ -349,7 +382,8 @@ class HydraStore:
         )
         if set_clause:
             query += f" SET {set_clause}"
-        self.hydra.bolt(query, rows=payload)
+        for batch in _chunked(payload):
+            self.hydra.bolt(query, rows=batch)
 
     # ---- §4.4 fallbacks ----------------------------------------------
 
@@ -437,6 +471,30 @@ class HydraStore:
                 "ts": _unwrap(row["ts"]) or None,
                 "confidence": _unwrap(row["confidence"]),
                 "target_key": _unwrap(row["target_key"]),
+            }
+            for row in rows
+        ]
+
+    def edges_into(
+        self, from_label: str, to_key: str, edge_type: str, to_label: str
+    ) -> list[dict[str, Any]]:
+        """Incoming counterpart of `edges_from` — neighbors that point at
+        `to_key`. Same property projection; the other endpoint is
+        `source_key`."""
+        vid = to_vertex_id(to_key)
+        rows = self.hydra.bolt(
+            f"MATCH (a:{from_label})-[r:{edge_type}]->(b:{to_label} {{id: $vid}}) "
+            "RETURN r.doc_id AS doc_id, r.ctx AS ctx, r.ts AS ts, "
+            "r.confidence AS confidence, a.key AS source_key",
+            vid=vid,
+        )
+        return [
+            {
+                "doc_id": _unwrap(row["doc_id"]),
+                "ctx": _unwrap(row["ctx"]),
+                "ts": _unwrap(row["ts"]) or None,
+                "confidence": _unwrap(row["confidence"]),
+                "source_key": _unwrap(row["source_key"]),
             }
             for row in rows
         ]
@@ -534,6 +592,147 @@ class HydraStore:
             if not frontier:
                 break
         return sorted(doc_hop.items(), key=lambda kv: kv[1])[:result_limit]
+
+    # ---- whole-graph reads for the §graph overview -------------------
+
+    def all_entities(self, *, limit: int = 2000) -> list[dict[str, Any]]:
+        """Every Entity node with its display properties. The overview view
+        needs the whole entity set at once; per-node `get_node` calls would
+        be one round trip each. Alias/Root/Doc are deliberately excluded --
+        they are not part of the entity layer callers reason about."""
+        rows = self.hydra.bolt(
+            f"MATCH (n:{ENTITY_LABEL}) "
+            "RETURN n.key AS key, n.name AS name, n.etype AS etype, "
+            "n.identifier AS identifier LIMIT $limit",
+            limit=limit,
+        )
+        return [
+            {
+                "key": _unwrap(row["key"]),
+                "name": _unwrap(row["name"]) or None,
+                "etype": _unwrap(row["etype"]) or None,
+                "identifier": _unwrap(row["identifier"]) or None,
+            }
+            for row in rows
+            if _unwrap(row["key"])
+        ]
+
+    def all_edges_of_type(
+        self, edge_type: str, *, limit: int = 2000
+    ) -> list[dict[str, Any]]:
+        """Every Entity->Entity edge of one predicate, with provenance. One
+        query per predicate (the multi-type `[r:A|B]` pattern is rejected on
+        this build -- see the module docstring), which is still 12 round
+        trips for the whole ontology rather than thousands of per-node ones."""
+        rows = self.hydra.bolt(
+            f"MATCH (a:{ENTITY_LABEL})-[r:{edge_type}]->(b:{ENTITY_LABEL}) "
+            "RETURN a.key AS source_key, b.key AS target_key, "
+            "r.doc_id AS doc_id, r.ctx AS ctx, r.ts AS ts, "
+            "r.confidence AS confidence LIMIT $limit",
+            limit=limit,
+        )
+        return [
+            {
+                "source_key": _unwrap(row["source_key"]),
+                "target_key": _unwrap(row["target_key"]),
+                "doc_id": _unwrap(row["doc_id"]) or None,
+                "ctx": _unwrap(row["ctx"]) or None,
+                "ts": _unwrap(row["ts"]) or None,
+                "confidence": _unwrap(row["confidence"]),
+            }
+            for row in rows
+            if _unwrap(row["source_key"]) and _unwrap(row["target_key"])
+        ]
+
+    def all_ontology_edges(
+        self, predicates: Sequence[str], *, limit: int = 2000, workers: int = 8
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Every Entity->Entity edge for each predicate, fetched in parallel.
+
+        HydraDB rejects the multi-type `[r:A|B]` pattern, so the whole
+        ontology needs one query per predicate. Those cost roughly two
+        seconds each almost regardless of how many rows come back — the
+        expense is per round trip, not per edge — so running the set
+        serially made the graph page's load scale with the size of the
+        vocabulary rather than the size of the graph: expanding from 12
+        predicates to 23 took the sweep from ~26s to ~50s while the data
+        barely grew.
+
+        `Hydra.bolt` opens its own session per call and the neo4j driver is
+        thread-safe at the driver level, so these fan out safely.
+        """
+        predicates = list(predicates)
+        if not predicates:
+            return {}
+        out: dict[str, list[dict[str, Any]]] = {}
+        with ThreadPoolExecutor(max_workers=min(workers, len(predicates))) as pool:
+            futures = {
+                pool.submit(self.all_edges_of_type, p, limit=limit): p
+                for p in predicates
+            }
+            for future in futures:
+                predicate = futures[future]
+                try:
+                    out[predicate] = future.result()
+                except Exception:
+                    # One predicate failing must not lose the whole
+                    # ontology; the graph degrades by that edge type only.
+                    out[predicate] = []
+        return out
+
+    def all_mentions(self, *, limit: int = 4000) -> list[tuple[str, str]]:
+        """Every Doc->Entity :MENTIONS pair as (doc_key, entity_key)."""
+        rows = self.hydra.bolt(
+            f"MATCH (d:Doc)-[:{'MENTIONS'}]->(e:{ENTITY_LABEL}) "
+            "RETURN d.key AS doc_key, e.key AS entity_key LIMIT $limit",
+            limit=limit,
+        )
+        pairs = []
+        for row in rows:
+            doc_key = _unwrap(row["doc_key"])
+            entity_key = _unwrap(row["entity_key"])
+            if doc_key and entity_key:
+                pairs.append((str(doc_key), str(entity_key)))
+        return pairs
+
+    def all_reversals(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        """Every Doc->Doc :REVERSED edge in one query. The per-document
+        `edges_from` walk this replaces cost one round trip per document on
+        screen, for an edge type that is rare corpus-wide."""
+        rows = self.hydra.bolt(
+            "MATCH (a:Doc)-[r:REVERSED]->(b:Doc) "
+            "RETURN a.key AS source_key, b.key AS target_key, "
+            "r.doc_id AS doc_id, r.ctx AS ctx, r.ts AS ts, "
+            "r.confidence AS confidence LIMIT $limit",
+            limit=limit,
+        )
+        return [
+            {
+                "source_key": _unwrap(row["source_key"]),
+                "target_key": _unwrap(row["target_key"]),
+                "doc_id": _unwrap(row["doc_id"]) or None,
+                "ctx": _unwrap(row["ctx"]) or None,
+                "ts": _unwrap(row["ts"]) or None,
+                "confidence": _unwrap(row["confidence"]),
+            }
+            for row in rows
+            if _unwrap(row["source_key"]) and _unwrap(row["target_key"])
+        ]
+
+    def all_authored(self, *, limit: int = 4000) -> list[tuple[str, str]]:
+        """Every Entity->Doc :AUTHORED pair as (entity_key, doc_key)."""
+        rows = self.hydra.bolt(
+            f"MATCH (e:{ENTITY_LABEL})-[:{'AUTHORED'}]->(d:Doc) "
+            "RETURN e.key AS entity_key, d.key AS doc_key LIMIT $limit",
+            limit=limit,
+        )
+        pairs = []
+        for row in rows:
+            entity_key = _unwrap(row["entity_key"])
+            doc_key = _unwrap(row["doc_key"])
+            if entity_key and doc_key:
+                pairs.append((str(entity_key), str(doc_key)))
+        return pairs
 
     def ms_paths(
         self,
