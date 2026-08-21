@@ -42,6 +42,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from joel.adapters import triage_batch
+from joel import company_research
 from joel.agent.live import (
     TIMEOUT_SECONDS as LIVE_TIMEOUT_SECONDS,
     GitHubItemTarget,
@@ -259,6 +260,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "slack_signing_secret": "",
     "slack_bot_token": "",
     "workspace_about": "",
+    "workspace_profile_sources": "",
     "voice": "",
     # Outbound email — optional. none | smtp | resend
     "mail_provider": "none",
@@ -725,6 +727,10 @@ class SettingsIn(BaseModel):
 
 class WipeIn(BaseModel):
     domain: str
+
+
+class WorkspaceResearchIn(BaseModel):
+    url: str
 
 
 class SetupIn(BaseModel):
@@ -1989,6 +1995,20 @@ def patch_workspace(body: WorkspacePatch, request: Request) -> dict[str, Any]:
     except identity.IdentityError as extra:
         raise _identity_error(extra) from extra
     return {"workspace": workspace}
+
+
+@app.post("/api/workspace/research")
+def workspace_research(body: WorkspaceResearchIn, request: Request) -> dict[str, Any]:
+    """Crawl the operator's website (same-origin) into an editable About draft.
+
+    No LLM. Admin-only. Does not write settings — the client saves About.
+    """
+    _require_admin(request)
+    try:
+        result = company_research.research_website(body.url)
+    except company_research.ResearchError as err:
+        raise HTTPException(status_code=err.status, detail=str(err)) from err
+    return result.as_dict()
 
 
 @app.post("/api/workspace/invites")
@@ -3629,6 +3649,8 @@ def get_settings(request: Request) -> dict[str, Any]:
             team_id=team_id,
         ),
         "workspace_about": s.get("workspace_about", ""),
+        "workspace_profile_sources": s.get("workspace_profile_sources", ""),
+        "web_research_allowed": company_research.web_fetch_allowed(),
         "voice": s.get("voice", ""),
         "mail_provider": mail_provider,
         "mail_configured": joel_mail.is_configured(s),
@@ -3656,6 +3678,7 @@ def get_settings(request: Request) -> dict[str, Any]:
                 "sync_enabled",
                 "embed_model",
                 "workspace_about",
+                "workspace_profile_sources",
                 "voice",
                 "mail_provider",
                 "mail_from",

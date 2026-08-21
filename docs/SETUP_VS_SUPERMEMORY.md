@@ -64,9 +64,9 @@ Ranked by how much it changes “a team actually turns this on,” not by agent 
 
 **SM:** Domain research **seeds a company profile in parallel** with Slack + apps + invites. Smoke test works before Drive finishes.
 
-**joel:** Domain is an optional slug. Nothing is researched. Until an admin pastes an LLM key **and** a Composio key **and** a connector lookback, Chat has nothing company-shaped to say. Onboarding is LLM *then* tools, even though both are skippable.
+**joel:** Domain is an optional slug. **Also:** onboarding / Settings → General can Research a website URL (same-origin crawl: home, `llms.txt`, sitemap, linked pages like `/docs` — no LLM). Draft lands in `workspace_about` for the answer prompt. Air-gapped: `JOEL_ALLOW_WEB_FETCH=0`.
 
-**Gap to close:** parallel “Slack / tools / people” on first run (not a forced LLM wall — that’s already skippable). Optional: seed a short company blurb from the name/domain the owner typed, so “what does {company} do?” isn’t empty. Full web-research-the-company can wait.
+**Gap to close:** parallel “Slack / tools / people” on first run (not a forced LLM wall — that’s already skippable). Company profile seed from URL is shipped.
 
 ### 4. Connections page is ingest-only, not “data vs tools”
 
@@ -137,7 +137,7 @@ Do **not** start with sandbox debugging, long-horizon research, calendar, or “
 
 1. **Slack install that a non-engineer can finish** — Hosted Add to Slack done; channel join approvals + bootstrap channel still open.
 2. **Join from Slack** — Connect me shipped (pending invite + Slack email, no password form).
-3. **First-run parallel rail** — people + Slack + tools on one screen; optional company blurb so Chat isn’t mute.
+3. **First-run parallel rail** — people + Slack + tools on one screen. Company URL research → About is shipped.
 4. **Connections page: Memory vs Live + custom MCP URL** — catalog honesty. Personal GitHub/Linear.
 5. **MCP attach story** — URL + OAuth shipped; workspace/room picker still later.
 6. **Automations list** (web).

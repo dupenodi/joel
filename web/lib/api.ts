@@ -350,6 +350,23 @@ export async function putSettings(
   });
 }
 
+export type WorkspaceResearchResult = {
+  start_url: string;
+  about: string;
+  sources: { url: string; title: string; kind: string }[];
+  pages_fetched: number;
+  warnings: string[];
+};
+
+export async function researchWorkspaceWebsite(
+  url: string,
+): Promise<WorkspaceResearchResult> {
+  return api("/api/workspace/research", {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+}
+
 export async function disconnectSlack(): Promise<void> {
   await api("/api/slack/disconnect", { method: "POST" });
 }

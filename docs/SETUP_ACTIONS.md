@@ -42,7 +42,7 @@ Do **not** auto-create accounts on first Slack mention without an invite.
 
 Order:
 
-1. **Workspace** — optional about text
+1. **Workspace** — website URL → Research (same-origin crawl, no LLM) or hand-written about
 2. **Models** — LLM base URL + key
 3. **Connect broker** — Composio key
 4. **Sources** — Integrations grid (Indexed vs Live)
@@ -81,7 +81,7 @@ The bot **reads and answers**. No cron digests. Write tools first, later.
 
 ## 8. How it talks — done
 
-Workspace field (free text + Direct / Warm / Formal presets) on Settings → General and onboarding. Stored as `voice` + `workspace_about` in settings, injected into the answer prompt.
+Workspace field (free text + Direct / Warm / Formal presets) on Settings → General and onboarding. Stored as `voice` + `workspace_about` in settings, injected into the answer prompt. **About** can be seeded by Research (same-origin website crawl, no LLM); sources JSON in `workspace_profile_sources`.
 
 ---
 

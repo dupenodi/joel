@@ -177,6 +177,8 @@ export interface Settings {
   deployment?: "cloud" | "selfhost";
   slack_install?: "oauth" | "manifest" | "unavailable";
   workspace_about?: string;
+  workspace_profile_sources?: string;
+  web_research_allowed?: boolean;
   voice?: string;
   mail_provider?: "none" | "smtp" | "resend" | string;
   mail_configured?: boolean;

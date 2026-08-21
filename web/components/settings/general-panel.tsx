@@ -2,11 +2,11 @@
 
 import { Button } from "@/components/beautifului/primitives/button";
 import { Field } from "@/components/field";
+import { CompanyAboutFields } from "@/components/settings/company-about-fields";
 import { SettingsSection } from "@/components/settings/settings-section";
 import { VoiceFields } from "@/components/settings/voice-fields";
 import { WorkspaceAvatar } from "@/components/settings/workspace-avatar";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { getSettings, getWorkspace, patchWorkspace, putSettings } from "@/lib/api";
 import type { Me, Workspace } from "@/lib/types";
 import Link from "next/link";
@@ -19,6 +19,9 @@ export function GeneralPanel() {
   const [name, setName] = useState("");
   const [domain, setDomain] = useState("");
   const [about, setAbout] = useState("");
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [profileSources, setProfileSources] = useState("");
+  const [researchAllowed, setResearchAllowed] = useState(true);
   const [voice, setVoice] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -32,7 +35,13 @@ export function GeneralPanel() {
     setName(data.workspace.name);
     setDomain(data.workspace.domain);
     setAbout(settings.workspace_about ?? "");
+    setProfileSources(settings.workspace_profile_sources ?? "");
+    setResearchAllowed(settings.web_research_allowed !== false);
     setVoice(settings.voice ?? "");
+    const host = (data.workspace.domain || "").trim();
+    if (host) {
+      setWebsiteUrl(host.includes("://") ? host : `https://${host}`);
+    }
   }, []);
 
   useEffect(() => {
@@ -81,7 +90,11 @@ export function GeneralPanel() {
             setSaved(false);
             void Promise.all([
               patchWorkspace({ name, domain }),
-              putSettings({ workspace_about: about, voice }),
+              putSettings({
+                workspace_about: about,
+                workspace_profile_sources: profileSources,
+                voice,
+              }),
             ])
               .then(([res]) => {
                 setWorkspace(res.workspace);
@@ -118,20 +131,25 @@ export function GeneralPanel() {
               }}
             />
           </Field>
-          <Field
-            label="About"
-            hint="Optional. What this company is, in the owner's words — not a website scrape."
-          >
-            <Textarea
-              value={about}
-              placeholder="We build …"
-              onChange={(e) => {
-                setAbout(e.target.value);
-                setSaved(false);
-                setError(null);
-              }}
-            />
-          </Field>
+          <CompanyAboutFields
+            websiteUrl={websiteUrl}
+            onWebsiteUrl={(value) => {
+              setWebsiteUrl(value);
+              setSaved(false);
+              setError(null);
+            }}
+            about={about}
+            onAbout={(value) => {
+              setAbout(value);
+              setSaved(false);
+              setError(null);
+            }}
+            researchAllowed={researchAllowed}
+            onResearched={(res) => {
+              setProfileSources(JSON.stringify(res.sources));
+              setSaved(false);
+            }}
+          />
           <VoiceFields
             value={voice}
             onChange={(next) => {

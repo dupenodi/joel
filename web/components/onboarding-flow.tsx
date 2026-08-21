@@ -5,12 +5,12 @@ import { Button } from "@/components/beautifului/primitives/button";
 import { Field } from "@/components/field";
 import { IntegrationsPanel } from "@/components/integrations/integrations-panel";
 import { ApiKeysPanel } from "@/components/settings/api-keys-panel";
+import { CompanyAboutFields } from "@/components/settings/company-about-fields";
 import { MembersPanel } from "@/components/settings/members-panel";
 import { SlackPanel } from "@/components/settings/slack-panel";
 import { VoiceFields } from "@/components/settings/voice-fields";
 import { OnboardingSkeleton } from "@/components/skeletons";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import {
   getAuthStatus,
   getComposio,
@@ -77,6 +77,9 @@ export function OnboardingFlow({ requested }: { requested: string }) {
   const resolved = resolveOnboardingStep(requested);
   const [org, setOrg] = useState<Org | null>(null);
   const [about, setAbout] = useState("");
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [profileSources, setProfileSources] = useState("");
+  const [researchAllowed, setResearchAllowed] = useState(true);
   const [voice, setVoice] = useState("");
   const [llmUrl, setLlmUrl] = useState("https://openrouter.ai/api/v1");
   const [llmKey, setLlmKey] = useState("");
@@ -120,9 +123,17 @@ export function OnboardingFlow({ requested }: { requested: string }) {
             setLlmUrl(settings.llm_base_url || "https://openrouter.ai/api/v1");
             setLlmSet(settings.llm_api_key_set);
             setAbout(settings.workspace_about ?? "");
+            setProfileSources(settings.workspace_profile_sources ?? "");
+            setResearchAllowed(settings.web_research_allowed !== false);
             setVoice(settings.voice ?? "");
             setComposioSet(Boolean(composio.configured));
             if (existing) setOrg(existing);
+            const domain = (workspace.workspace.domain || "").trim();
+            if (domain) {
+              setWebsiteUrl(
+                domain.includes("://") ? domain : `https://${domain}`,
+              );
+            }
             const query = oauthQuery();
             if (query && requested !== "sources") {
               router.replace(`${onboardingPath("sources")}${query}`);
@@ -203,23 +214,30 @@ export function OnboardingFlow({ requested }: { requested: string }) {
             About {org?.name || "this company"}
           </h1>
           <p className="text-[13px] leading-relaxed text-ink-2">
-            Optional. A short description in your words — not a website scrape.
-            Name is already set from setup.
+            Optional. Paste the product or company site and Research to seed
+            About from public pages — or write it yourself. Name is already set
+            from setup.
           </p>
-          <Field label="About">
-            <Textarea
-              autoFocus
-              value={about}
-              placeholder="We build …"
-              onChange={(e) => setAbout(e.target.value)}
-            />
-          </Field>
+          <CompanyAboutFields
+            websiteUrl={websiteUrl}
+            onWebsiteUrl={setWebsiteUrl}
+            about={about}
+            onAbout={setAbout}
+            researchAllowed={researchAllowed}
+            autoFocusAbout
+            onResearched={(res) =>
+              setProfileSources(JSON.stringify(res.sources))
+            }
+          />
           {error && <p className="text-[12.5px] text-red">{error}</p>}
           <StepActions
             busy={busy}
             onContinue={() =>
               void saveAndNext("workspace", () =>
-                putSettings({ workspace_about: about }),
+                putSettings({
+                  workspace_about: about,
+                  workspace_profile_sources: profileSources,
+                }),
               )
             }
             onSkip={() => router.push("/")}
