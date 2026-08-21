@@ -1,16 +1,90 @@
+# A complete joel install: graph, API, web. `docker compose up --build` is meant
+# to give a working product, which until now it did not — there was no graph
+# service here at all, so every graph feature (the /graph page, the GRAPH and
+# WHO_KNOWS retrieval lanes, the reversal ledger) came up dead in a stack that
+# otherwise looked healthy.
 services:
+  # One-shot: a named volume is created root-owned and empty, but the hydradb
+  # image runs as UID 10001 and needs `LOCAL_PATH` to already exist. Preparing
+  # the layout in a root sidecar keeps the node itself unprivileged.
+  hydradb-init:
+    image: ghcr.io/hydra-db/hydradb:latest
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        mkdir -p /data/store /data/cache &&
+        printf '%s\n' "${HYDRA_TOKEN:-local-development-token-32-bytes}" > /data/auth-token &&
+        chown -R 10001:10001 /data
+    volumes:
+      - hydra-data:/data
+
+  hydradb:
+    image: ghcr.io/hydra-db/hydradb:latest
+    depends_on:
+      hydradb-init:
+        condition: service_completed_successfully
+    environment:
+      CLOUD_PROVIDER: local
+      LOCAL_PATH: /data/store
+      # These two are the install's ROOT scope. joel derives a separate scope
+      # per workspace underneath them (config.py), so never set a per-workspace
+      # value here — and whatever is set must match joel's HYDRA_NAMESPACE /
+      # HYDRA_DATABASE or every query addresses a graph that does not exist.
+      GRAPH_NAMESPACE: default
+      GRAPH_ID: default
+      GRAPH_DATABASE: default
+      GRAPH_CELL_ID: cell-0
+      GRAPH_CELLS: cell-0
+      GRAPH_NODE_ID: node-0
+      # Advertised as the compose service name, not 127.0.0.1: the Bolt routing
+      # table hands these addresses to the driver, and a loopback address sends
+      # a client in another container to itself.
+      GRAPH_ADVERTISED_BOLT_ADDR: hydradb:7687
+      GRAPH_BOLT_NODE_ADDRESSES: node-0=hydradb:7687
+      GRAPH_DATA_CACHE_DIR: /data/cache
+      GRAPH_AUTH_TOKEN_FILE: /data/auth-token
+      GRAPH_ALLOW_PLAINTEXT: "true"
+      RUST_MIN_STACK: "33554432"
+    volumes:
+      - hydra-data:/data
+    ports:
+      # Only needed to run the migration/rebuild scripts from the host; the app
+      # reaches the node over the compose network regardless.
+      - "8443:8443"
+      - "7687:7687"
+
   joel-api:
     build: ./api
     ports:
       - "8000:8000"
     volumes:
       - joel-data:/app/data
+    depends_on:
+      - hydradb
     environment:
       JOEL_DATA: /app/data
-      JOEL_WEB_ORIGIN: http://localhost:3000
+      JOEL_WEB_ORIGIN: ${JOEL_WEB_ORIGIN:-http://localhost:3000}
       JOEL_HTTPS: "0"
-      # JOEL_SECRET: set in a real deploy — encrypts connector credentials
-      # HYDRA_HTTP / HYDRA_BOLT / HYDRA_TOKEN: required for graph features
+      # Encrypts connector credentials. Optional: left empty, the API generates
+      # one into the joel-data volume and reuses it, so a self-host install
+      # works without ceremony. Set it explicitly when the volume is not the
+      # durable thing (rebuilds, multiple replicas) — and once set, keep it:
+      # a changed value makes every stored credential undecryptable.
+      JOEL_SECRET: ${JOEL_SECRET:-}
+      # `bolt://` rather than `neo4j://`: a direct connection, so the driver
+      # talks to this node instead of resolving a routing table first.
+      HYDRA_HTTP: http://hydradb:8443
+      HYDRA_BOLT: bolt://hydradb:7687
+      # Shared with hydradb above from one variable, so the two cannot drift.
+      # The default is the local dev token; set a real one for any install
+      # whose graph port is reachable from outside the compose network.
+      HYDRA_TOKEN: ${HYDRA_TOKEN:-local-development-token-32-bytes}
+      HYDRA_NAMESPACE: default
+      HYDRA_DATABASE: default
+      HYDRA_CELL: cell-0
+      COMPOSIO_API_KEY: ${COMPOSIO_API_KEY:-}
+
   joel-web:
     build:
       context: ./web
@@ -27,3 +101,4 @@ services:
 
 volumes:
   joel-data:
+  hydra-data:

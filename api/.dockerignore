@@ -1,0 +1,28 @@
+# The build context is uploaded to the daemon in full before any COPY runs, so
+# excluding here is what makes the build fast — narrowing the COPY lines is not
+# enough. Without this the context is ~1.1GB, nearly all of it .venv.
+
+# Virtualenvs: the image installs from requirements.txt against its own
+# interpreter, and a host venv carries macOS-linked binaries that would not run
+# in the container anyway.
+.venv/
+venv/
+
+# Secrets. api/Dockerfile does not COPY these, but a file that never enters the
+# context cannot be leaked by a later COPY either.
+.env
+.env.*
+!.env.example
+
+# Local state: the workspace database, vector indexes and connector blobs. These
+# are a runtime volume (JOEL_DATA), never image content.
+data/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.DS_Store
+*.log

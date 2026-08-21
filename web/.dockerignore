@@ -1,0 +1,26 @@
+# web/Dockerfile's builder stage runs `COPY . .`, so anything left in the
+# context lands in the image. Without this the context is ~1.5GB and the build
+# copies host node_modules over the ones `npm ci` just installed for Alpine —
+# native bindings built for the host, in an image that will not run them.
+
+node_modules/
+.next/
+out/
+
+# Secrets. `COPY . .` would put these in an image layer, where they survive
+# even if a later stage does not copy them forward.
+.env
+.env.*
+!.env.example
+
+npm-debug.log*
+yarn-error.log*
+.DS_Store
+*.log
+
+# Design scratch that is not part of the app.
+og.html
+Joel Landing.dc.html
+
+Dockerfile
+.dockerignore
