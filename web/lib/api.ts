@@ -18,6 +18,7 @@ import type {
   Workspace,
   WorkspaceInvite,
   WorkspaceMember,
+  GraphSlice,
 } from "./types";
 
 const API = process.env.NEXT_PUBLIC_API ?? "";
@@ -335,6 +336,20 @@ export async function getConversation(
   return api(`/api/conversations/${id}`);
 }
 
+export async function patchConversation(
+  id: string,
+  title: string,
+): Promise<Conversation> {
+  return api(`/api/conversations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  await api(`/api/conversations/${id}`, { method: "DELETE" });
+}
+
 export async function getSettings(): Promise<
   Settings & { raw?: Record<string, string> }
 > {
@@ -405,6 +420,14 @@ export async function getHealth(): Promise<Health> {
   return api("/api/health");
 }
 
+
+
+/** Every layer: connectors → containers → documents → entities. */
+export async function getGraphWorld(quality = true): Promise<GraphSlice> {
+  const params = new URLSearchParams({ quality: String(quality) });
+  return api(`/api/graph/world?${params}`);
+}
+
 export type AskHandlers = {
   onStatus?: (stage: string) => void;
   onRewritten?: (q: string, kind: string) => void;
@@ -413,6 +436,8 @@ export type AskHandlers = {
   onLive?: (checked: string[], found: boolean) => void;
   onToolCall?: (call: NonNullable<Message["tool_calls"]>[number]) => void;
   onToken?: (text: string) => void;
+  /** Overwrite everything streamed so far with this authoritative text. */
+  onReplace?: (text: string) => void;
   onCitations?: (citations: NonNullable<Message["citations"]>) => void;
   onReasoningPath?: (paths: string[]) => void;
   onDone?: (message: Message) => void;
@@ -497,6 +522,13 @@ export async function askStream(
           break;
         case "token":
           handlers.onToken?.(String(payload.text ?? ""));
+          break;
+        case "replace":
+          // The abstention gate disagreed with what was streamed (a
+          // fabricated citation, a withdrawn answer). The streamed text is
+          // display only; this is the authoritative text and must overwrite
+          // it rather than append to it.
+          handlers.onReplace?.(String(payload.text ?? ""));
           break;
         case "citations":
           handlers.onCitations?.(

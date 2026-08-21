@@ -59,7 +59,13 @@ def answer_question(
     extra_doc_ids: tuple[str, ...] = (),
     voice: str = "",
     workspace_about: str = "",
+    defer_synthesis: bool = False,
 ) -> RetrievalTrace:
+    """`defer_synthesis=True` stops after reranking and leaves `answer` as
+    the absent placeholder, so a streaming caller can run
+    `synthesize_answer_streaming` over `trace.reranked` itself and deliver
+    the prose as it is written. Everything before synthesis is identical,
+    so the two paths cannot drift in what they retrieved."""
     question = question.strip()
     plan = plan_query(llm_call, question) if llm_call is not None else QueryPlan(intent="lookup")
     lane_results = run_lanes(conn, index, embed_fn, plan, question, ask=ask, hydra_store=hydra_store)
@@ -80,13 +86,16 @@ def answer_question(
         ]
         fused = extra + fused
     reranked = rerank_candidates(llm_call, question, fused) if llm_call is not None else []
-    answer = synthesize_answer(
-        llm_call,
-        question,
-        reranked,
-        voice=voice,
-        workspace_about=workspace_about,
-    )
+    if defer_synthesis:
+        answer = AnswerResult()
+    else:
+        answer = synthesize_answer(
+            llm_call,
+            question,
+            reranked,
+            voice=voice,
+            workspace_about=workspace_about,
+        )
     return RetrievalTrace(
         question=question,
         plan=plan,

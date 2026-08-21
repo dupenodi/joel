@@ -62,7 +62,7 @@ export function EmailPanel() {
     <div className="space-y-6">
       <SettingsSection
         title="Outbound email"
-        description="Optional. When configured, invite emails are sent automatically. Installs still work link-only without a provider."
+        description="Optional. Without it, invites are link-only."
         headerAside={
           <span
             className={

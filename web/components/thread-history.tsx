@@ -25,22 +25,88 @@ function HistoryIcon() {
   );
 }
 
+function PlusIcon() {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      aria-hidden
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4h8v2" />
+      <path d="M19 6l-1 14H6L5 6" />
+    </svg>
+  );
+}
+
+const chromeBtn =
+  "flex size-9 shrink-0 items-center justify-center rounded-[14px] text-ink-2 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.96]";
+
+export function NewChatButton({
+  onClick,
+  pressed = false,
+}: {
+  onClick: () => void;
+  pressed?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      aria-label="New chat"
+      aria-pressed={pressed}
+      onClick={onClick}
+      className={cn(chromeBtn, pressed && "bg-hover text-ink")}
+    >
+      <PlusIcon />
+    </button>
+  );
+}
+
 export function ThreadHistory({
   conversations,
   activeId,
   onSelect,
-  onNew,
+  onDelete,
 }: {
   conversations: Conversation[];
   activeId: string | null;
   onSelect: (id: string) => void;
-  onNew: () => void;
+  onDelete: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const activeRowRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setConfirming(null);
+      return;
+    }
+    activeRowRef.current?.scrollIntoView({ block: "nearest" });
     function onPointer(e: PointerEvent) {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
     }
@@ -61,13 +127,15 @@ export function ThreadHistory({
     <div ref={rootRef} className="relative">
       <button
         type="button"
-        aria-label="Recent activity"
+        aria-label={
+          activeId
+            ? `Recent chats, current: ${conversations.find((c) => c.id === activeId)?.title ?? "chat"}`
+            : "Recent chats"
+        }
         aria-expanded={open}
+        aria-haspopup="listbox"
         onClick={() => setOpen((v) => !v)}
-        className={cn(
-          "flex size-9 shrink-0 items-center justify-center rounded-[14px] text-ink-2 transition-[background-color,color,transform] duration-150 hover:bg-hover hover:text-ink active:scale-[0.96]",
-          open && "bg-hover text-ink",
-        )}
+        className={cn(chromeBtn, (open || activeId) && "bg-hover text-ink")}
       >
         <HistoryIcon />
       </button>
@@ -83,47 +151,66 @@ export function ThreadHistory({
             <p className="text-[11px] font-medium tracking-[0.04em] text-ink-3 uppercase">
               Recent
             </p>
-            {activeId && (
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  onNew();
-                }}
-                className="text-[12px] font-medium text-accent-ink hover:underline"
-              >
-                New chat
-              </button>
-            )}
           </div>
           <GlideMenu
             className="max-h-72 overflow-y-auto p-1"
+            role="listbox"
+            aria-label="Recent chats"
             highlightClassName="inset-x-1 rounded-[6px] bg-hover"
           >
             {conversations.map((c) => {
               const active = c.id === activeId;
+              const pending = confirming === c.id;
               return (
-                <button
+                <div
                   key={c.id}
-                  type="button"
+                  ref={active ? activeRowRef : undefined}
                   data-menu-row
                   aria-current={active ? "true" : undefined}
-                  onClick={() => {
-                    setOpen(false);
-                    onSelect(c.id);
-                  }}
                   className={cn(
-                    "relative z-10 flex w-full items-baseline justify-between gap-3 rounded-[6px] px-2.5 py-2 text-left",
-                    active ? "text-ink" : "text-ink-2",
+                    "group relative z-10 flex w-full items-center gap-1 rounded-[6px] px-1 py-0.5",
+                    active ? "bg-hover text-ink" : "text-ink-2",
                   )}
                 >
-                  <span className="min-w-0 truncate text-[14px] font-medium">
-                    {c.title}
-                  </span>
-                  <span className="shrink-0 text-[11.5px] text-ink-3">
-                    {formatRelative(c.created_at)}
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    onClick={() => {
+                      setOpen(false);
+                      onSelect(c.id);
+                    }}
+                    className="min-w-0 flex-1 px-1.5 py-1.5 text-left"
+                  >
+                    <span className="block truncate text-[14px] font-medium">
+                      {c.title}
+                    </span>
+                    <span className="block text-[11.5px] text-ink-3">
+                      {formatRelative(c.updated_at ?? c.created_at)}
+                    </span>
+                  </button>
+                  {pending ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirming(null);
+                        onDelete(c.id);
+                      }}
+                      className="shrink-0 rounded-[6px] px-2 py-1 text-[12px] font-medium text-red hover:bg-red-tint"
+                    >
+                      Delete
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={`Delete ${c.title}`}
+                      onClick={() => setConfirming(c.id)}
+                      className="flex size-7 shrink-0 items-center justify-center rounded-[6px] text-ink-3 opacity-0 transition-opacity group-hover:opacity-100 hover:bg-hover hover:text-ink focus-visible:opacity-100"
+                    >
+                      <TrashIcon />
+                    </button>
+                  )}
+                </div>
               );
             })}
           </GlideMenu>

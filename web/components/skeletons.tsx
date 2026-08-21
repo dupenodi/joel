@@ -193,37 +193,52 @@ function StatBone() {
 export function GraphSkeleton() {
   return (
     <Status label="Loading graph">
-      <div className="rounded-card bg-surface p-5 shadow-card">
-        <div className="relative mx-auto aspect-[1.6] w-full max-w-lg">
-          <svg viewBox="0 0 400 250" className="h-full w-full" aria-hidden>
-            {[0, 1, 2, 3, 4, 5].map((i) => {
-              const angle = (Math.PI * 2 * i) / 6 - Math.PI / 2;
-              const x = 200 + Math.cos(angle) * 92;
-              const y = 125 + Math.sin(angle) * 72;
-              return (
-                <g key={i}>
-                  <line
-                    x1="200"
-                    y1="125"
-                    x2={x}
-                    y2={y}
-                    stroke="var(--line)"
-                    strokeWidth="1"
-                  />
-                  <circle cx={x} cy={y} r="5.5" fill="var(--field)" />
-                </g>
-              );
-            })}
-            <circle cx="200" cy="125" r="16" fill="var(--field)" />
-          </svg>
+      <Bone className="h-9 w-full max-w-md" />
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_16rem]">
+        <div className="rounded-card bg-surface p-5 shadow-card">
+          <div className="relative mx-auto aspect-[1.7] w-full">
+            <svg viewBox="0 0 720 420" className="h-full w-full" aria-hidden>
+              <circle cx="360" cy="210" r="18" fill="var(--field)" />
+              {[0, 1, 2, 3, 4].map((i) => {
+                const angle = (Math.PI * 2 * i) / 5 - Math.PI / 2;
+                const x = 360 + Math.cos(angle) * 130;
+                const y = 210 + Math.sin(angle) * 100;
+                return (
+                  <g key={i}>
+                    <line
+                      x1="360"
+                      y1="210"
+                      x2={x}
+                      y2={y}
+                      stroke="var(--line)"
+                      strokeWidth="1"
+                    />
+                    <rect
+                      x={x - 40}
+                      y={y - 12}
+                      width="80"
+                      height="24"
+                      rx="8"
+                      fill="var(--field)"
+                    />
+                  </g>
+                );
+              })}
+            </svg>
+          </div>
+        </div>
+        <div className="rounded-card bg-surface p-5 shadow-card">
+          <Bone className="h-3 w-16" />
+          <Bone className="mt-3 h-4 w-32" />
+          <Bone className="mt-2 h-3 w-full" />
+          <Bone className="mt-2 h-3 w-5/6" />
         </div>
       </div>
-      <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
-        {Array.from({ length: 6 }, (_, i) => (
+      <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {Array.from({ length: 4 }, (_, i) => (
           <StatBone key={i} />
         ))}
       </dl>
-      <Bone className="mt-2 h-3 w-72" />
     </Status>
   );
 }

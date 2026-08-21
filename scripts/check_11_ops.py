@@ -121,7 +121,8 @@ def check_health_degrades_when_hydra_unreachable(tmp_dir: Path) -> None:
         hydra_http="http://127.0.0.1:1",  # nothing listens here
         hydra_bolt="neo4j://127.0.0.1:1",
         hydra_token=settings.hydra_token,
-        hydra_namespace=settings.hydra_namespace,
+        hydra_root_namespace=settings.hydra_root_namespace,
+        hydra_base_database=settings.hydra_base_database,
         hydra_cell=settings.hydra_cell,
         embed_model=settings.embed_model,
     )

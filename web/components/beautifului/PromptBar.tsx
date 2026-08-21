@@ -41,6 +41,7 @@ export default function PromptBar({
   placeholder,
   disabled = false,
   busy = false,
+  autoFocus = false,
   onSend,
   onStop,
 }: {
@@ -52,6 +53,7 @@ export default function PromptBar({
   placeholder?: string;
   disabled?: boolean;
   busy?: boolean;
+  autoFocus?: boolean;
   onSend?: (text: string) => void;
   onStop?: () => void;
 }) {
@@ -118,6 +120,7 @@ export default function PromptBar({
             ref={inputRef}
             rows={1}
             value={draft}
+            autoFocus={autoFocus}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {

@@ -6,13 +6,14 @@ import { MemoryBanner } from "@/components/beautifului/MemoryBanner";
 import PromptBar from "@/components/beautifului/PromptBar";
 import { ToolCallChips } from "@/components/beautifului/ToolCallChips";
 import { BrandMark } from "@/components/brand-mark";
-import { ThreadHistory } from "@/components/thread-history";
+import { NewChatButton, ThreadHistory } from "@/components/thread-history";
 import { ChatBootSkeleton, ChatThreadSkeleton } from "@/components/skeletons";
 import { Bone } from "@/components/beautifului/primitives/bone";
 import { SourceIcon } from "@/components/source-icon";
 import {
   askStream,
   createConversation,
+  deleteConversation,
   getConversation,
   getOrg,
   getProfile,
@@ -127,6 +128,7 @@ export function ChatSurface() {
   const abortRef = useRef<AbortController | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const loadGen = useRef(0);
+  const [composerGen, setComposerGen] = useState(0);
 
   const loadList = useCallback(async () => {
     const list = await listConversations();
@@ -169,6 +171,13 @@ export function ChatSurface() {
   }, [messages, draft, stage, toolCalls, reasoningPaths]);
 
   async function selectConversation(id: string) {
+    if (id === activeId && !threadPending) {
+      if (requestedId !== id) router.replace(`/?c=${id}`);
+      return;
+    }
+    abortRef.current?.abort();
+    setBusy(false);
+    clearWorking();
     const seq = ++loadGen.current;
     setActiveId(id);
     setError(null);
@@ -179,9 +188,11 @@ export function ChatSurface() {
       if (loadGen.current !== seq) return;
       setMessages(conv.messages);
       if (requestedId !== id) router.replace(`/?c=${id}`);
-    } catch (e) {
+    } catch {
       if (loadGen.current !== seq) return;
-      setError(e instanceof Error ? e.message : "Could not load chat");
+      setActiveId(null);
+      setMessages([]);
+      if (requestedId) router.replace("/");
     } finally {
       if (loadGen.current === seq) setThreadPending(false);
     }
@@ -202,7 +213,19 @@ export function ChatSurface() {
     setActiveId(null);
     setMessages([]);
     setThreadPending(false);
+    setError(null);
+    setComposerGen((n) => n + 1);
     if (requestedId) router.replace("/");
+  }
+
+  async function onDeleteChat(id: string) {
+    try {
+      await deleteConversation(id);
+      await loadList();
+      if (activeId === id) await onNewChat();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete chat");
+    }
   }
 
   function stop() {
@@ -220,6 +243,7 @@ export function ChatSurface() {
       const conv = await createConversation(question.slice(0, 72));
       conversationId = conv.id;
       setActiveId(conv.id);
+      router.replace(`/?c=${conv.id}`);
       await loadList();
     }
     const user: Message = { role: "user", content: question };
@@ -253,6 +277,10 @@ export function ChatSurface() {
             tokens += text;
             setDraft(tokens);
           },
+          onReplace: (text) => {
+            tokens = text;
+            setDraft(text);
+          },
           onDone: (message) => {
             setMessages((m) => [...m, message]);
             clearWorking();
@@ -272,6 +300,9 @@ export function ChatSurface() {
 
   const empty = messages.length === 0 && !busy && !threadPending;
   const copy = welcomeCopy(hello.name, hello.org, ready === true);
+  const selectedId = requestedId ?? activeId;
+  const activeTitle =
+    conversations.find((c) => c.id === selectedId)?.title ?? null;
   const threadLoading =
     threadPending || (Boolean(requestedId) && requestedId !== activeId);
   const thinkingLabel = stage
@@ -308,6 +339,11 @@ export function ChatSurface() {
           Nothing in memory yet. You can still ask — answers will be honest about
           what&apos;s missing.
         </MemoryBanner>
+      )}
+      {activeTitle && !threadLoading && !empty && (
+        <p className="shrink-0 truncate px-4 pt-3 text-center text-[12.5px] font-medium text-ink-3">
+          {activeTitle}
+        </p>
       )}
       <div ref={scrollerRef} className="min-h-0 flex-1 overflow-y-auto">
         {threadLoading ? (
@@ -378,15 +414,25 @@ export function ChatSurface() {
       <div className="shrink-0 pb-5">
         <ContentFrame width="chat">
           <div className="flex items-end gap-2">
-            <ThreadHistory
-              conversations={conversations}
-              activeId={activeId}
-              onSelect={(id) => void selectConversation(id)}
-              onNew={() => void onNewChat()}
-            />
+            {conversations.length > 0 && (
+              <>
+                <NewChatButton
+                  pressed={!selectedId}
+                  onClick={() => void onNewChat()}
+                />
+                <ThreadHistory
+                  conversations={conversations}
+                  activeId={selectedId}
+                  onSelect={(id) => void selectConversation(id)}
+                  onDelete={(id) => void onDeleteChat(id)}
+                />
+              </>
+            )}
             <div className="min-w-0 flex-1">
               <PromptBar
+                key={`${activeId ?? "new"}-${composerGen}`}
                 tall={empty}
+                autoFocus
                 placeholder={copy.ask}
                 busy={busy}
                 onSend={(text) => void onSend(text)}

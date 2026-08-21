@@ -62,7 +62,7 @@ export default function SetupPage() {
             name: hasWorkspace ? undefined : companyName.trim(),
             domain: hasWorkspace ? undefined : domain.trim() || undefined,
           })
-            .then(() => router.replace("/"))
+            .then(() => router.replace("/onboarding/models"))
             .catch((err: unknown) => {
               setError(
                 err instanceof Error ? err.message : "Could not create workspace",

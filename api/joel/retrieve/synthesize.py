@@ -10,11 +10,18 @@ see rerank.py's module docstring for why that distinction matters."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from pydantic import BaseModel, Field
 
-from joel.llm import LLMCallFn, LLMError, call_json
+from joel.llm import (
+    JSONFieldStreamer,
+    LLMCallFn,
+    LLMError,
+    LLMStreamFn,
+    call_json,
+    parse_json_response,
+)
 from joel.retrieve.rerank import RerankedDoc
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "answer.md"
@@ -26,6 +33,20 @@ _STAGE = "answer"
 CONTEXT_BODY_CHARS = 2000
 
 RERANK_FLOOR = 5.0  # reranker scale is 0-10; tune on real traces.jsonl, never on RRF scores
+
+# Below this, the best candidate is genuinely unrelated and calling the model
+# would only invite invention. Between this and RERANK_FLOOR the context is
+# real but does not fully answer — the case a single floor handled worst.
+#
+# The reranker is deliberately harsh (see prompts/rerank.md: "topically
+# related but non-answering → <=3"), so a document that holds most of what
+# someone asked for routinely scores 2-4. With one floor at 5 that document
+# was retrieved, correctly scored, and then discarded, and the user was told
+# "Not in the company's memory" about a notice the system was holding. The
+# honest answer there is not silence, it is "here is what the notice says,
+# and here is the part it does not say" — which is exactly the `partial`
+# status the answer prompt already defines.
+SYNTHESIS_FLOOR = 2.0
 
 _ABSENT_ANSWER = "Not in the company's memory."
 
@@ -56,20 +77,52 @@ def _absent_result(reason: str = _ABSENT_ANSWER) -> AnswerResult:
 
 
 def _pre_gate_abstain(reranked: list[RerankedDoc]) -> bool:
-    """The two `should_abstain` rules that don't depend on the model's own
+    """The `should_abstain` rules that don't depend on the model's own
     answer — checked BEFORE spending an LLM call on a context that's
     already too weak to answer from."""
     if not reranked:
         return True
-    if reranked[0].rerank_score < RERANK_FLOOR:
+    if reranked[0].rerank_score < SYNTHESIS_FLOOR:
         return True
     return False
 
 
-def should_abstain(reranked: list[RerankedDoc], ans: AnswerResult) -> bool:
+def _is_weak_context(reranked: list[RerankedDoc]) -> bool:
+    """Context good enough to reason over, not good enough to be confident:
+    the model may answer `partial`, never `answered`."""
+    return bool(reranked) and reranked[0].rerank_score < RERANK_FLOOR
+
+
+def _downgrade_if_weak(ans: AnswerResult, reranked: list[RerankedDoc]) -> AnswerResult:
+    """A confident `answered` off a below-floor context is the exact failure
+    the floor exists to prevent, but throwing the whole answer away costs
+    the user the part that was genuinely supported. Downgrade the claim
+    instead of deleting it — the prose and citations survive, the confidence
+    does not."""
+    if ans.status == "answered" and _is_weak_context(reranked):
+        return ans.model_copy(update={"status": "partial"})
+    return ans
+
+
+def should_abstain(
+    reranked: list[RerankedDoc],
+    ans: AnswerResult,
+    *,
+    profile_only: bool = False,
+) -> bool:
     """Verbatim port of §10.5's deterministic gate. Runs AFTER synthesis
     too, since a fabricated citation or an unsupported "answered" can only
-    be caught once the model has actually answered."""
+    be caught once the model has actually answered.
+
+    `profile_only`: answering from workspace_about with no corpus hits —
+    citations are optional (there is no doc_id to cite).
+    """
+    if profile_only:
+        if ans.status == "absent":
+            return True
+        if not (ans.answer or "").strip() or ans.answer.strip() == _ABSENT_ANSWER:
+            return True
+        return False
     if _pre_gate_abstain(reranked):
         return True
     if ans.status == "answered" and not ans.citations:
@@ -162,16 +215,38 @@ def synthesize_answer(
     """The full §10.5 flow: pre-gate → LLM synthesis → post-gate. Returns
     "absent" (never raises) on a weak context, a missing LLM key, or an
     LLM/parse failure — an answering outage must degrade to honest silence,
-    not a 500."""
-    if _pre_gate_abstain(reranked):
+    not a 500.
+
+    When the corpus is empty/weak but `workspace_about` is set (onboarding
+    Research seed), still answer from that profile — otherwise Chat looks
+    broken right after setup before connectors finish.
+    """
+    profile = workspace_about.strip()
+    weak = _pre_gate_abstain(reranked)
+    if weak and not profile:
         return _absent_result()
     if llm_call is None:
         return _absent_result("Not in the company's memory. (no LLM key configured)")
 
+    profile_only = weak and bool(profile)
     template = _PROMPT_PATH.read_text()
     paths_block = "\n".join(graph_paths or []) or "(none — ontology not yet built)"
+    if profile_only:
+        context = (
+            "(No indexed documents ranked high enough for this question. "
+            "Answer ONLY from ## About this company in the voice block if it "
+            "contains the answer; otherwise status=absent. Citations may be [].)"
+        )
+    else:
+        context = _build_context(reranked)
+        if _is_weak_context(reranked):
+            context += (
+                "\n\n(None of these scored as a direct answer. Say what they DO "
+                "establish and name precisely what is still missing; status must "
+                "be `partial` or `absent`, never `answered`.)"
+            )
     user_prompt = (
-        template.replace("{context}", _build_context(reranked))
+        template.replace("{context}", context)
         .replace("{paths}", paths_block)
         .replace("{question}", question)
         .replace("{voice_block}", _voice_block(voice=voice, workspace_about=workspace_about))
@@ -181,10 +256,99 @@ def synthesize_answer(
     except LLMError:
         return _absent_result()
 
-    ans = _parse_answer(raw)
-    if should_abstain(reranked, ans):
+    ans = _downgrade_if_weak(_parse_answer(raw), reranked)
+    if should_abstain(reranked, ans, profile_only=profile_only):
         return _absent_result()
     return ans
+
+
+def synthesize_answer_streaming(
+    llm_stream: LLMStreamFn | None,
+    question: str,
+    reranked: list[RerankedDoc],
+    *,
+    graph_paths: list[str] | None = None,
+    voice: str = "",
+    workspace_about: str = "",
+) -> Iterator[tuple[str, str | AnswerResult]]:
+    """`synthesize_answer`, delivered as it is written.
+
+    Yields `("delta", text)` for each piece of the answer prose as the model
+    produces it, then exactly one `("result", AnswerResult)` at the end.
+
+    The deltas are display, not truth. `should_abstain` can only run once the
+    citations exist, so a model that fabricates one is caught after some of
+    its prose has already been shown -- the final `AnswerResult` is
+    authoritative and the caller is expected to replace what it streamed if
+    the two disagree. Streaming an answer that is later withdrawn is the
+    honest trade for not making every question feel like a five-second
+    hang; silently keeping a retracted answer on screen would not be.
+    """
+    profile = workspace_about.strip()
+    weak = _pre_gate_abstain(reranked)
+    if weak and not profile:
+        yield ("result", _absent_result())
+        return
+    if llm_stream is None:
+        yield ("result", _absent_result("Not in the company's memory. (no LLM key configured)"))
+        return
+
+    profile_only = weak and bool(profile)
+    template = _PROMPT_PATH.read_text()
+    paths_block = "\n".join(graph_paths or []) or "(none — ontology not yet built)"
+    if profile_only:
+        context = (
+            "(No indexed documents ranked high enough for this question. "
+            "Answer ONLY from ## About this company in the voice block if it "
+            "contains the answer; otherwise status=absent. Citations may be [].)"
+        )
+    else:
+        context = _build_context(reranked)
+        if _is_weak_context(reranked):
+            context += (
+                "\n\n(None of these scored as a direct answer. Say what they DO "
+                "establish and name precisely what is still missing; status must "
+                "be `partial` or `absent`, never `answered`.)"
+            )
+    user_prompt = (
+        template.replace("{context}", context)
+        .replace("{paths}", paths_block)
+        .replace("{question}", question)
+        .replace("{voice_block}", _voice_block(voice=voice, workspace_about=workspace_about))
+    )
+
+    extractor = JSONFieldStreamer("answer")
+    try:
+        for chunk in llm_stream(_STAGE, _SYSTEM_PROMPT, user_prompt):
+            text = extractor.feed(chunk)
+            if text:
+                yield ("delta", text)
+    except LLMError:
+        yield ("result", _absent_result())
+        return
+
+    try:
+        parsed = parse_json_response(extractor.raw)
+    except ValueError:
+        # The stream completed but the document is not parseable JSON. The
+        # non-streaming path gets a repair retry here; retrying would mean
+        # re-streaming prose the user has already read, so accept the loss
+        # and abstain rather than double-answering.
+        yield ("result", _absent_result())
+        return
+
+    ans = _downgrade_if_weak(_parse_answer(parsed), reranked)
+    if should_abstain(reranked, ans, profile_only=profile_only):
+        yield ("result", _absent_result())
+        return
+    yield ("result", ans)
+
+
+def context_is_weak(reranked: list[RerankedDoc]) -> bool:
+    """Public name for the pre-synthesis gate: is this context too thin to
+    answer from at all? Callers outside synthesis use it to decide whether
+    a live lookup is worth attempting, before spending an answer call."""
+    return _pre_gate_abstain(reranked)
 
 
 __all__ = [
@@ -192,6 +356,8 @@ __all__ = [
     "Conflict",
     "ConflictPosition",
     "RERANK_FLOOR",
+    "context_is_weak",
     "should_abstain",
     "synthesize_answer",
+    "synthesize_answer_streaming",
 ]

@@ -20,7 +20,10 @@ _SYSTEM_PROMPT = (
 )
 _STAGE = "rerank"
 KEEP_TOP_N = 10
-SNIPPET_CHARS = 300
+SNIPPET_CHARS = 1000
+# When the rerank LLM flakes, pass fused hits through at this score so
+# pre-gate (RERANK_FLOOR=5) still runs synthesis instead of hard-absent.
+_FALLBACK_SCORE = 6.0
 
 
 @dataclass(frozen=True)
@@ -52,13 +55,23 @@ def _build_candidates_block(candidates: list[RetrievedDoc]) -> str:
     return "\n".join(lines)
 
 
+def _passthrough(
+    candidates: list[RetrievedDoc], *, keep: int, reason: str
+) -> list[RerankedDoc]:
+    return [
+        RerankedDoc(doc=c, score=_FALLBACK_SCORE, reason=reason)
+        for c in candidates[:keep]
+    ]
+
+
 def rerank_candidates(
     llm_call: LLMCallFn, question: str, candidates: list[RetrievedDoc], *, keep: int = KEEP_TOP_N
 ) -> list[RerankedDoc]:
     """Score every fused candidate against the question; return the top
-    `keep` by score, descending. An LLM failure degrades to an empty
-    result — not a raised exception — so a rerank outage makes the system
-    abstain (safe) rather than crash the question."""
+    `keep` by score, descending. An LLM failure degrades to a fused
+    passthrough (scores above the abstain floor) — not an empty list —
+    so a rerank outage still lets synthesis try, rather than hard-absent.
+    """
     if not candidates:
         return []
 
@@ -69,9 +82,9 @@ def rerank_candidates(
     try:
         raw = call_json(llm_call, _STAGE, _SYSTEM_PROMPT, user_prompt)
     except LLMError:
-        return []
+        return _passthrough(candidates, keep=keep, reason="rerank-fallback")
     if not isinstance(raw, list):
-        return []
+        return _passthrough(candidates, keep=keep, reason="rerank-fallback")
 
     by_id = {c.id: c for c in candidates}
     scored: list[RerankedDoc] = []
@@ -91,6 +104,8 @@ def rerank_candidates(
         scored.append(RerankedDoc(doc=by_id[doc_id], score=score, reason=reason))
         seen.add(doc_id)
 
+    # Empty list from a successful parse = model said nothing is on-topic.
+    # Don't invent scores; let pre-gate abstain.
     scored.sort(key=lambda r: r.score, reverse=True)
     return scored[:keep]
 

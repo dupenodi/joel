@@ -34,20 +34,10 @@ VECTOR_TOP_K = 20
 VEC_ARTIFACTS_TOP_K = 15
 GRAPH_TOP_K = 200  # §10.2's own cap
 WHO_KNOWS_TOP_K = 50
-ONTOLOGY_PREDICATES = (
-    "OWNS",
-    "DECIDED",
-    "COMMITTED_TO",
-    "OBJECTED_TO",
-    "DEPENDS_ON",
-    "BLOCKS",
-    "ASSIGNED_TO",
-    "REPORTED",
-    "ESCALATED",
-    "APPROVED",
-    "RESOLVED",
-    "AFFECTS",
-)
+# Re-exported rather than redefined: traversal must walk exactly the edges
+# extraction is allowed to write, and keeping two lists in sync by hand is
+# how a predicate ends up written but never read.
+from joel.ontology.predicates import ONTOLOGY_PREDICATES  # noqa: E402
 FTS_TOP_K = 15
 PHRASE_TOP_K = 15
 
@@ -146,7 +136,7 @@ def _vector_mask(
         filters["granularity"] = "artifact"
     if plan.temporal.period and plan.temporal.wants_history:
         filters["period"] = plan.temporal.period
-    if plan.needs_current_only and not plan.temporal.wants_history:
+    if plan.needs_current_only and not plan.temporal.wants_history and plan.intent != "conflict":
         filters["validity"] = "current"
     if allowed is not None:
         filters["visibility"] = tuple(sorted(allowed))

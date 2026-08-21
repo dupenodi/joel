@@ -78,4 +78,37 @@ def member_channel_stamps(
     return frozenset(Visibility.channel(r["provider"], r["channel_id"]).stamp for r in rows)
 
 
-__all__ = ["sync_slack_channel_memberships", "member_channel_stamps"]
+def mailbox_stamps(
+    conn: sqlite3.Connection, user_id: str, *, org_id: int = 1
+) -> frozenset[str]:
+    """Every `user:{provider}:{mailbox}` stamp this actor may read.
+
+    A mailbox is private to the person who connected it, not to whoever
+    happens to share its name. The read side used to derive this stamp from
+    the actor's workspace email, which silently assumed a person's login and
+    their connected mailbox were the same string — so anyone whose work
+    address differed from their personal Gmail lost access to the mail they
+    had just connected.
+
+    The authorising user is the one who gets the stamp: `owned_by` for a
+    personal connection, `connected_by` for an org-scoped one. Being an
+    admin of the workspace does not grant it; nobody inherits somebody
+    else's inbox by role.
+    """
+    rows = conn.execute(
+        """SELECT provider, account_id FROM connections
+           WHERE org_id=? AND account_id IS NOT NULL AND account_id != ''
+             AND (owned_by=? OR (owned_by IS NULL AND connected_by=?))""",
+        (org_id, user_id, user_id),
+    ).fetchall()
+    return frozenset(
+        Visibility.user(r["provider"], str(r["account_id"]).strip().lower()).stamp
+        for r in rows
+    )
+
+
+__all__ = [
+    "sync_slack_channel_memberships",
+    "member_channel_stamps",
+    "mailbox_stamps",
+]

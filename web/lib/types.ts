@@ -210,16 +210,21 @@ export interface ComposioStatus {
 }
 
 export interface Health {
-  hydra: "ok" | "down";
+  hydra: string;
   schema_version: number;
   sync_enabled: boolean;
   queue_depth: number;
   llm_error: string | null;
   index: {
     sqlite: number;
-    vectors: number;
-    graph: number;
-    consistent: boolean;
+    vectors: number | null;
+    graph: number | null;
+    consistent: boolean | null;
+  };
+  corpus?: {
+    oldest_doc: string | null;
+    artifacts: number;
+    entities: number | null;
   };
   connectors: Array<{
     provider: string;
@@ -229,10 +234,66 @@ export interface Health {
   }>;
 }
 
+/** The four layers of the world graph, outermost provenance first. */
+export type GraphNodeKind = "source" | "container" | "doc" | "entity";
+
+export interface GraphNode {
+  id: string;
+  kind: GraphNodeKind;
+  label: string;
+  /** True when the entity carries no name and `label` is a placeholder. */
+  unnamed?: boolean;
+  /** Count of live ontology claims touching this node; 0 for docs. */
+  degree?: number;
+  etype: string | null;
+  validity: string | null;
+  url: string | null;
+  source_type: string | null;
+  artifact_class: string | null;
+  /** Repo / channel / mailbox this doc came from. */
+  container?: string | null;
+  timestamp?: string | null;
+  /** Corpus-wide document count, on source and container nodes. */
+  doc_count?: number;
+  hop: number;
+}
+
+export interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  predicate: string;
+  kind: string;
+  doc_id: string | null;
+  ctx: string | null;
+  ts: string | null;
+  /** How many separate docs asserted this same claim. */
+  corroborations?: number;
+}
+
+export interface GraphSlice {
+  query: string;
+  focus: GraphNode | null;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  who_knows: GraphEdge[];
+  reversals: GraphEdge[];
+  truncated: boolean;
+  hydra: string;
+  /** Present on /api/graph/world: corpus-wide counts, not just what is drawn. */
+  totals?: {
+    docs: number;
+    sources: number;
+    containers: number;
+    by_source: Record<string, number>;
+  };
+}
+
 export interface Conversation {
   id: string;
   title: string;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface Citation {

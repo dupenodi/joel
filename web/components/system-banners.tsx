@@ -46,7 +46,7 @@ export function SystemBanners() {
       {health.llm_error && (
         <MemoryBanner kind="llm">{health.llm_error}</MemoryBanner>
       )}
-      {health.hydra === "down" && <MemoryBanner kind="degraded" />}
+      {health.hydra !== "ok" && <MemoryBanner kind="degraded" />}
       {reauth.map((c) => (
         <MemoryBanner
           key={c.provider}

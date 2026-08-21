@@ -34,7 +34,13 @@ from joel.retrieve.fuse import PER_SOURCE_CAP, rrf_fuse  # noqa: E402
 from joel.retrieve.lanes import RetrievedDoc, fts_lane, phrase_lane, run_lanes, vector_artifacts_lane, vector_lane  # noqa: E402
 from joel.retrieve.planner import QueryPlan  # noqa: E402
 from joel.retrieve.rerank import RerankedDoc, rerank_candidates  # noqa: E402
-from joel.retrieve.synthesize import AnswerResult, RERANK_FLOOR, should_abstain, synthesize_answer  # noqa: E402
+from joel.retrieve.synthesize import (  # noqa: E402
+    AnswerResult,
+    RERANK_FLOOR,
+    SYNTHESIS_FLOOR,
+    should_abstain,
+    synthesize_answer,
+)
 from joel.store_sql import from_canonical_doc, upsert_docs  # noqa: E402
 
 RUN_ID = uuid.uuid4().hex[:8]
@@ -218,15 +224,35 @@ def check_abstention_empty_and_low_score() -> None:
     assert should_abstain([], _dummy_answered_result()) is True
     print("ok  7.4a: empty reranked list always abstains")
 
-    low = RerankedDoc(doc=_rd("weak"), score=RERANK_FLOOR - 0.1, reason="weak")
-    llm = _stage_llm(answer={"status": "answered", "answer": "should never be reached", "citations": ["weak"],
+    # Two floors, not one. Below SYNTHESIS_FLOOR the best candidate is
+    # unrelated and the answer stage is never called. Between the two floors
+    # the context is real but incomplete: answering is worth an LLM call, and
+    # the result is capped at `partial` rather than thrown away. A single
+    # floor at RERANK_FLOOR collapsed both cases into silence, and since the
+    # reranker scores a merely-topical document 2-4 by design, that silence
+    # was what a user got for documents the system was holding.
+    unrelated = RerankedDoc(doc=_rd("unrelated"), score=SYNTHESIS_FLOOR - 0.1, reason="unrelated")
+    llm = _stage_llm(answer={"status": "answered", "answer": "should never be reached", "citations": ["unrelated"],
                               "reasoning_path": [], "conflict": None, "confidence": 0.9})
-    result = synthesize_answer(llm, "an unanswerable question", [low])
+    result = synthesize_answer(llm, "an unanswerable question", [unrelated])
     assert result.status == "absent"
     assert not any(stage == "answer" for stage, _ in llm.calls), (
-        "a reranked[0].score below RERANK_FLOOR must abstain WITHOUT spending an answer-stage LLM call"
+        "a reranked[0].score below SYNTHESIS_FLOOR must abstain WITHOUT spending an answer-stage LLM call"
     )
-    print(f"ok  7.4b: reranked[0].rerank_score < {RERANK_FLOOR} abstains before calling the answer stage")
+    print(f"ok  7.4b: reranked[0].rerank_score < {SYNTHESIS_FLOOR} abstains before calling the answer stage")
+
+    partial_ctx = RerankedDoc(doc=_rd("weak"), score=RERANK_FLOOR - 0.1, reason="topical but incomplete")
+    llm_weak = _stage_llm(answer={"status": "answered", "answer": "what the notice does say", "citations": ["weak"],
+                                   "reasoning_path": [], "conflict": None, "confidence": 0.9})
+    weak_result = synthesize_answer(llm_weak, "a partly answerable question", [partial_ctx])
+    assert any(stage == "answer" for stage, _ in llm_weak.calls), (
+        "context between the two floors is worth answering from, not discarding"
+    )
+    assert weak_result.status == "partial", (
+        "a confident `answered` off a below-RERANK_FLOOR context must be downgraded, not deleted"
+    )
+    assert weak_result.citations == ["weak"], "the downgrade keeps the receipts"
+    print(f"ok  7.4b2: {SYNTHESIS_FLOOR} <= score < {RERANK_FLOOR} answers as `partial`, keeping citations")
 
 
 def check_abstention_no_citations_and_fabricated() -> None:
@@ -276,6 +302,43 @@ def check_voice_and_about_injected_into_answer_prompt() -> None:
     assert "How you talk" not in plain
     assert "About this company" not in plain
     print("ok  7.4e: voice and workspace about land in the answer prompt only when set")
+
+    # Empty corpus + seeded About must still reach the answer stage.
+    profile_llm = _stage_llm(
+        answer={
+            "status": "answered",
+            "answer": "Acme makes widgets in Austin.",
+            "citations": [],
+            "reasoning_path": [],
+            "conflict": None,
+            "confidence": 0.8,
+        }
+    )
+    profiled = synthesize_answer(
+        profile_llm,
+        "what does this company do?",
+        [],
+        workspace_about="Acme makes widgets in Austin.",
+    )
+    assert profiled.status == "answered", profiled
+    assert "widgets" in profiled.answer.lower()
+    assert any(stage == "answer" for stage, _ in profile_llm.calls)
+    print("ok  7.4f: empty corpus + workspace_about still answers from the profile")
+
+
+def check_rerank_failure_passthrough() -> None:
+    from joel.llm import LLMError
+
+    candidates = [_rd("c1"), _rd("c2")]
+
+    def boom(stage: str, system: str, user: str) -> str:  # noqa: ARG001
+        raise LLMError("rerank down")
+
+    out = rerank_candidates(boom, "q", candidates)
+    assert len(out) == 2
+    assert all(r.score >= RERANK_FLOOR for r in out)
+    assert out[0].reason == "rerank-fallback"
+    print("ok  7.3b: rerank LLM failure passes fused candidates through above the floor")
 
 
 def check_five_unanswerable_questions_abstain(conn: sqlite3.Connection, index: LiveIndex) -> None:
@@ -393,6 +456,7 @@ def main() -> None:
             check_lanes_individually(conn, index)
             check_fusion_consensus_and_cap()
             check_rerank_scale_and_clamping()
+            check_rerank_failure_passthrough()
             check_abstention_empty_and_low_score()
             check_abstention_no_citations_and_fabricated()
             check_voice_and_about_injected_into_answer_prompt()

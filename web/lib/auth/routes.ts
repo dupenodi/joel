@@ -1,6 +1,6 @@
 /** Route kinds for the session cookie gate.
 
-  public     — marketing, static assets
+  public     — marketing, static assets, and /api/* (see below)
   anonymous  — login / setup (bounce away once signed in)
   join       — invite link; cookie optional
   session    — picker; cookie required, org optional
@@ -10,6 +10,13 @@
 Next middleware uses the cookie coarsely. AuthGate still asks /api/auth/status
 because a cookie is not a valid session and is not an active workspace.
 SSO / magic-link later: add a kind, don't scatter redirects.
+
+`/api/*` is "public" here in the narrow sense that the cookie gate must not
+touch it — the backend authenticates every route itself and answers an
+unauthenticated call with 401 JSON. Gating it in middleware instead turns that
+401 into a 307 to an HTML login page, so a session that expires while the app
+is open makes every in-flight fetch resolve to HTML that the client parses as
+JSON: a hang, not an error, and nothing in the console naming the cause.
 */
 export const SESSION_COOKIE = "joel_session";
 
@@ -40,10 +47,12 @@ export function classifyPath(pathname: string): RouteKind {
     return "onboarding";
   }
   if (
+    pathname.startsWith("/api/") ||
     pathname.startsWith("/brand-kit") ||
     pathname.startsWith("/_next") ||
     pathname.startsWith("/.well-known/oauth-") ||
     pathname === "/mcp" ||
+    pathname === "/mcp/" ||
     pathname.startsWith("/mcp/") ||
     OAUTH_HTTP.has(pathname)
   ) {

@@ -89,6 +89,12 @@ export function AppHeader() {
                 onMouseEnter={() => setHovered(tab.href)}
                 onFocus={() => setHovered(tab.href)}
                 onBlur={() => setHovered(null)}
+                onClick={(event) => {
+                  if (tab.href !== "/" || pathname !== "/") return;
+                  if (new URLSearchParams(window.location.search).has("c")) {
+                    event.preventDefault();
+                  }
+                }}
                 className={cn(
                   "relative z-10 flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full px-3.5 text-[14px] font-medium transition-colors duration-150",
                   active ? "text-ink" : "text-ink-2 hover:text-ink",

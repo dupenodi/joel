@@ -21,7 +21,13 @@ sys.path.insert(0, str(ROOT / "api"))
 
 from dotenv import load_dotenv  # noqa: E402
 
-from joel.agent.live import GitHubItemTarget, SlackChannelTarget, detect_live_targets  # noqa: E402
+from joel.agent.live import (  # noqa: E402
+    GitHubCatalogTarget,
+    GitHubItemTarget,
+    SlackChannelTarget,
+    connection_can_live,
+    detect_live_targets,
+)
 from joel.agent.working_memory import Turn, answer_meta, rewrite_question  # noqa: E402
 from joel.llm import LLMError  # noqa: E402
 from joel.retrieve.planner import QueryPlan  # noqa: E402
@@ -109,6 +115,39 @@ def check_live_whitelist_detection() -> None:
     targets = detect_live_targets(_Scratch(), "no live-shaped mention here at all", plan)
     assert targets == [], "a question matching none of the whitelist must detect zero targets, never guess"
     print("ok  10.3d: a question matching nothing in the whitelist detects zero targets")
+
+    targets = detect_live_targets(_Scratch(), "what's currently open on acme/hydra", plan)
+    assert len(targets) == 1 and isinstance(targets[0], GitHubCatalogTarget)
+    assert targets[0].owner == "acme" and targets[0].repo == "hydra"
+    print("ok  10.3e: a named repo without a number is a catalog live target")
+
+    class _Repos:
+        def execute(self, *a, **k):
+            class _Rows:
+                def fetchall(self):
+                    return [{"container": "acme/hydra"}]
+            return _Rows()
+
+    targets = detect_live_targets(_Repos(), "Check for open github PRs", plan)
+    assert len(targets) == 1 and isinstance(targets[0], GitHubCatalogTarget)
+    assert targets[0].owner == "acme" and targets[0].repo == "hydra"
+    print("ok  10.3f: a GitHub now-question with no number uses the connected-repo catalog")
+
+    targets = detect_live_targets(_Repos(), "Check for open PRs", plan)
+    assert len(targets) == 1 and isinstance(targets[0], GitHubCatalogTarget)
+    print("ok  10.3h: catalog nouns (PR) cue GitHub without naming the provider")
+
+    targets = detect_live_targets(_Scratch(), "is acme/hydra#118 merged yet?", plan)
+    assert isinstance(targets[0], GitHubItemTarget)
+    print("ok  10.3g: a numbered item still wins over a catalog for the same repo")
+
+    assert connection_can_live("syncing")
+    assert connection_can_live("ready")
+    assert connection_can_live("backfilling")
+    assert not connection_can_live("needs_reauth")
+    assert not connection_can_live("pending_auth")
+    assert not connection_can_live("error")
+    print("ok  10.3i: live reads while ingest is in flight; not while unauthed")
 
 
 def check_live_detection_and_real_fetch() -> None:

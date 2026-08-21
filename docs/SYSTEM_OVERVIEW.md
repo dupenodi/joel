@@ -1,8 +1,8 @@
 # joel — system overview
 
-Short technical map of what exists today and what's genuinely left. `PLAN.md` is the
-authoritative living spec (§0.3 has the up-to-date status table) — this doc is a faster
-orientation read, not a replacement.
+Short technical map of what exists today and what's genuinely left. This is the
+authoritative status doc; `docs/adr/` records the decisions behind it, and
+`scripts/check_*.py` is the executable version of every claim made here.
 
 ## What joel is
 
@@ -43,7 +43,10 @@ manage profile/password/API keys and personal connectors.
 invites are emailed; links are always recoverable via Resend on the Members page.
 
 **Tenancy** — business data (`docs`, `connections`, `conversations`, `settings`, spend,
-vectors `org-{id}.npz`, Hydra namespace `joel-org-{id}`) is scoped by active workspace.
+vectors `org-{id}.npz`, and a per-workspace HydraDB graph scope) is scoped by active
+workspace. The graph scope is the one isolation that is not a query filter: vertex ids are
+hashes of external keys with no org in them, so separation comes from addressing a separate
+HydraDB database, derived for both transports in `config.py`.
 
 **Visibility & permissions** (`api/joel/visibility.py`, `membership.py`) — every doc is stamped
 `org` / `channel:slack:C…` / `user:gmail:…` at ingest. `POST /api/ask` builds the actor's
@@ -99,13 +102,14 @@ connector needs reauth or is mid-sync, `rebuild_index.py` for a from-canonical r
 debugging.
 
 **Frontend** (`web/`) — Next.js app router: `/setup`, `/login`, `/join`, `/(product)/chat`,
-`/integrations`, `/settings`, `/graph` (still a stats/health stub, not a real graph visualizer),
+`/integrations`, `/settings`, `/graph` (full-page interactive four-layer graph over
+`/api/graph/world`),
 `/onboarding`. `web/components/integrations/*` handles connect/disconnect, personal-vs-org
 checkbox, backfill-progress copy, reauth, Indexed vs Live grouping. Settings → API keys
 (MCP URL snippet; OAuth sign-in; optional key) and Settings → Slack bot (manifest, signing secret, bot token) are the
 MCP/Slack-bot settings UI. Slack install is Add to Slack on cloud (`meetjoel.xyz`) and manifest+paste on self-host (`deployment.py`).
 
-## What's explicitly cut (not gaps — deliberate, documented in `PLAN.md` §17)
+## What's explicitly cut (not gaps — deliberate)
 
 - **Access leasing** — the one remaining item on the permissions-graph roadmap; personal
   connectors shipped first as the higher-value increment. No timeline pressure to build it.
@@ -123,10 +127,9 @@ MCP/Slack-bot settings UI. Slack install is Add to Slack on cloud (`meetjoel.xyz
   same `owned_by` treatment if a use case shows up (e.g., a personal GitHub token vs. an
   org-wide one) — schema already supports it (`UNIQUE(provider, owned_by)`), it's just unused
   for those providers.
-- **`/graph` page** renders corpus/health stats, not an actual node/edge visualization — the
-  real graph surface today is the "reasoning path" shown in chat answers, per `PLAN.md` §1.1.
-  A real graph explorer (even read-only, a few hops around an entity) is a legitimate follow-up
-  if the ontology work should become more discoverable than "trust the chat citations."
+- **Writing to the graph from the `/graph` page** — the explorer is read-only. Editing an
+  entity, merging two that are really one, or retracting a claim all still happen by
+  re-ingesting or by running a script, not by clicking.
 
 ## What can genuinely still be added
 
@@ -136,26 +139,23 @@ MCP/Slack-bot settings UI. Slack install is Add to Slack on cloud (`meetjoel.xyz
    resolution is proven.
 2. **More live-lookup providers** — Linear/Jira ticket status, Notion page last-edited, a
    HubSpot deal stage check. Same code shape as the existing two, no architecture change.
-3. **A real graph explorer page** — read-only entity neighborhood view using the same HydraDB
-   queries WHO_KNOWS/GRAPH lanes already run, surfaced visually instead of only as chat
-   citations.
+3. **Curation from the graph page** — merging duplicate entities, retracting a bad claim,
+   correcting an alias. The explorer makes the ontology's mistakes visible for the first
+   time, which immediately creates the want to fix them in place.
 4. **Personal connectors for more providers** — schema is ready; wiring is per-provider.
-5. **Digests** — mentioned in `PLAN.md` §1.1 as an explicit not-yet-built idea (a periodic
+5. **Digests** — an explicit not-yet-built idea (a periodic
    "what changed" summary per room/channel), distinct from live chat.
-6. **Agent write-actions** — also explicitly out of v1 scope in `PLAN.md` §1.1/§1.3 (Sentra's
+6. **Agent write-actions** — also explicitly out of v1 scope (Sentra's
    "action memory" layer) — e.g., joel filing a Linear issue or replying in a thread on its own
    initiative, not just answering when asked. Meaningful scope increase, not a small add-on.
-7. **Billing** — noted as not-built in `PLAN.md` §1.1; only relevant if this moves toward a
+7. **Billing** — not built; only relevant if this moves toward a
    multi-tenant hosted product rather than a self-hosted single-org install.
-8. **The manual ship-checklist items** (`PLAN.md` §15) that need a human, not more code: a
+8. **The manual ship-checklist items** that need a human, not more code: a
    clean-clone `docker compose up` run on pruned Docker, a real OAuth consent-screen pass for
    all ten providers in a browser, and an unattended overnight soak test.
 
 ## Where to look next
 
-- `PLAN.md` §0.3 — always-current status table (source of truth over this doc if they ever
-  drift).
-- `PLAN.md` §22 — the full phase-by-phase checklist.
 - `scripts/check_*.py` — one live-verification script per checkpoint; the convention this
   whole project follows is "real HydraDB, real LLM calls, real corpus data, real browser/API
   hits," not synthetic-only coverage.

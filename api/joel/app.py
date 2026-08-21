@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 import anyio
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -45,7 +45,7 @@ from joel.adapters import triage_batch
 from joel import company_research
 from joel.agent.live import (
     TIMEOUT_SECONDS as LIVE_TIMEOUT_SECONDS,
-    GitHubItemTarget,
+    LIVE_CONNECTION_STATUSES,
     detect_live_targets,
     fetch_live_target,
 )
@@ -143,17 +143,34 @@ from joel.connectors.slack import (
     fetch_slack_docs,
     slack_channels_floor,
 )
-from joel.config import Settings, hydra_namespace_for
+from joel.config import Settings, hydra_database_for, hydra_namespace_for
 from joel.hydra import Hydra
 from joel.live_index import LiveIndex
-from joel.llm import make_openrouter_caller
-from joel.membership import member_channel_stamps, sync_slack_channel_memberships
+from joel.llm import make_openrouter_caller, make_openrouter_streamer
+from joel.membership import (
+    mailbox_stamps,
+    member_channel_stamps,
+    sync_slack_channel_memberships,
+)
 from joel.models import CanonicalDoc
 from joel.pipeline import run_store_pipeline
+from joel.store_sql import from_canonical_doc, upsert_docs
 from joel.retrieve import RetrievalTrace, answer_question, log_trace
+from joel.retrieve.synthesize import (
+    AnswerResult,
+    context_is_weak,
+    synthesize_answer,
+    synthesize_answer_streaming,
+)
 from joel.retrieve.planner import QueryPlan
 from joel.store import HydraStore
-from joel.visibility import AskContext, Visibility, apply as apply_visibility
+from joel.graph_slice import (
+    around as graph_around_slice,
+    empty_slice,
+    overview as graph_overview_slice,
+    world as graph_world_slice,
+)
+from joel.visibility import AskContext, Visibility, apply as apply_visibility, allowed_stamps
 
 DATA_DIR = Path(os.getenv("JOEL_DATA", "data"))
 DB_PATH = DATA_DIR / "index" / "joel.db"
@@ -206,13 +223,15 @@ def _live_index_for(org_id: int) -> LiveIndex:
 
 
 def _hydra_store_for(org_id: int) -> HydraStore:
-    """Per-org HydraStore with `X-Graph-Namespace: joel-org-{org_id}`."""
+    """Per-org HydraStore pinned to that workspace's HydraDB graph scope, on
+    both transports — Bolt database and HTTP namespace alike."""
     rt = _runtime()
     with _RUNTIME_LOCK:
         stores: dict[int, HydraStore] = rt["hydra_stores"]
         if org_id not in stores:
             settings = rt["settings"].for_org(org_id)
             assert settings.hydra_namespace == hydra_namespace_for(org_id)
+            assert settings.hydra_database == hydra_database_for(org_id)
             hydra = Hydra(settings)
             stores[org_id] = HydraStore(hydra)
         return stores[org_id]
@@ -262,6 +281,17 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "workspace_about": "",
     "workspace_profile_sources": "",
     "voice": "",
+    # Whether the graph trusts relations extracted from source code.
+    #
+    # Off by default because a repo full of code yields entities that are
+    # identifier names ("thread_id", "summary") related by verbs that assert
+    # nothing about the organisation. That is the right default for a
+    # workspace whose GitHub connector is pointed at application code.
+    #
+    # It is a setting rather than a constant because it is not universally
+    # right: a team whose real decisions live in code review, or one indexing
+    # infrastructure-as-code and runbooks, loses genuine knowledge to it.
+    "graph_trust_code": "false",
     # Outbound email — optional. none | smtp | resend
     "mail_provider": "none",
     "mail_from": "",
@@ -299,9 +329,54 @@ def _public_app_url(request: Request, settings: dict[str, str]) -> str:
     return os.getenv("JOEL_WEB_ORIGIN", "http://localhost:3000").rstrip("/")
 
 
+def _graph_quality(
+    conn: sqlite3.Connection, org_id: int, override: bool | None
+) -> bool:
+    """Whether the graph should drop code-derived claims.
+
+    `quality=True` means "filter code out". The workspace setting decides;
+    an explicit query parameter overrides it, so the unfiltered graph stays
+    inspectable without changing the workspace's own default."""
+    if override is not None:
+        return override
+    row = conn.execute(
+        "SELECT value FROM settings WHERE org_id=? AND key='graph_trust_code'",
+        (org_id,),
+    ).fetchone()
+    trust_code = str(row["value"] if row else "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    return not trust_code
+
+
+def _mailbox_aliases(conn: sqlite3.Connection, actor: Any) -> frozenset[str]:
+    """Private-mailbox visibility stamps for this actor.
+
+    Derived only from the connections this person actually authorised (see
+    `membership.mailbox_stamps`). Deriving a stamp from the actor's own
+    email address instead is exactly the bug this replaced: it grants a
+    mailbox to whoever happens to be registered under a matching string,
+    rather than to the person who connected it. Keeping it as a fallback
+    would keep that hole open, so there is no fallback.
+    """
+    return mailbox_stamps(conn, actor.user_id, org_id=actor.org_id)
+
+
 def _cors_origins() -> list[str]:
     primary = os.getenv("JOEL_WEB_ORIGIN", "http://localhost:3000").rstrip("/")
-    origins = [primary, "http://localhost:3000", "http://127.0.0.1:3000"]
+    # `localhost` and `127.0.0.1` are different origins to a browser, so a
+    # dev server reached by the other spelling of its own address gets its
+    # credentialed requests blocked — which surfaces as a page that loads
+    # forever rather than as an error anyone can read. Accept both spellings
+    # of whatever JOEL_WEB_ORIGIN names, on whatever port it names.
+    alias = ""
+    if primary.startswith("http://localhost"):
+        alias = primary.replace("http://localhost", "http://127.0.0.1", 1)
+    elif primary.startswith("http://127.0.0.1"):
+        alias = primary.replace("http://127.0.0.1", "http://localhost", 1)
+    origins = [primary, alias, "http://localhost:3000", "http://127.0.0.1:3000"]
     # Preserve order, drop dupes.
     seen: set[str] = set()
     out: list[str] = []
@@ -355,6 +430,15 @@ def _connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # WAL lets readers run during a write, but writers still serialise, and
+    # SQLite's default behaviour on a held write lock is to fail instantly
+    # with "database is locked" rather than wait. Anything doing a long
+    # write against this file — a backfill, a bulk re-extraction, a
+    # migration on a big table — therefore turns every concurrent write
+    # request into an immediate 500, and startup migrations into a failed
+    # boot. Five seconds of patience costs nothing on an idle database and
+    # covers the ordinary case of two writes landing together.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -705,6 +789,10 @@ class ComposioConnectIn(BaseModel):
 
 class ConversationIn(BaseModel):
     title: str | None = None
+
+
+class ConversationPatch(BaseModel):
+    title: str
 
 
 class AskIn(BaseModel):
@@ -1628,6 +1716,8 @@ def _upsert_connection(
     status: str = "backfilling",
     reset_progress: bool = True,
     owned_by: str | None = None,
+    connected_by: str | None = None,
+    account_label: str | None = None,
 ) -> tuple[str, bool]:
     """§0.3/§1.4 personal connectors: `owned_by=None` is the org-shared
     connection every provider has always had (unchanged default, backward
@@ -1652,8 +1742,9 @@ def _upsert_connection(
             conn.execute(
                 """INSERT INTO connections(
                      id, org_id, provider, mode, status, interval_min, checklist_json,
-                     created_at, backfill_progress, lookback_days, owned_by, kind)
-                   VALUES (?,?,?,?,?,?,?,?,0.05,?,?,?)""",
+                     created_at, backfill_progress, lookback_days, owned_by, kind,
+                     connected_by, account_id)
+                   VALUES (?,?,?,?,?,?,?,?,0.05,?,?,?,?,?)""",
                 (
                     connection_id,
                     org_id,
@@ -1666,6 +1757,12 @@ def _upsert_connection(
                     lookback_days,
                     owned_by,
                     "personal" if owned_by else "org",
+                    # Who authorised this. An org-scoped connection has
+                    # `owned_by` NULL by design, so without this there is no
+                    # record of whose account was actually authenticated —
+                    # and a private mailbox has no owner to grant it back to.
+                    connected_by or owned_by,
+                    (account_label or "").strip().lower() or None,
                 ),
             )
         elif reset_progress:
@@ -1773,6 +1870,7 @@ def _activate_composio_toolkit(
     org_id: int,
     account_id: str | None = None,
     owned_by: str | None = None,
+    connected_by: str | None = None,
 ) -> str | None:
     spec = INTEGRATION_BY_TOOLKIT.get(toolkit)
     if spec is None or not spec.connectable:
@@ -1804,6 +1902,11 @@ def _activate_composio_toolkit(
         status=status,
         reset_progress=start_sync,
         owned_by=owned_by,
+        connected_by=connected_by,
+        # Composio labels a connected account with the address it
+        # authenticated as, which for a mailbox provider IS the mailbox
+        # `visibility.derive` stamps documents with.
+        account_label=account.get("label"),
     )
     if spec.ingest:
         with db() as conn:
@@ -2652,60 +2755,120 @@ def composio_callback(
 # ── conversations / ask ─────────────────────────────────────────────────────
 
 
+_CONV_TITLE_MAX = 72
+
+_CONV_SELECT = """
+SELECT c.id, c.title, c.created_at,
+       COALESCE(
+         (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = c.id),
+         c.created_at
+       ) AS updated_at
+FROM conversations c
+"""
+
+
+def _conversation_title(raw: str | None, *, default: str = "New conversation") -> str:
+    title = (raw or default).strip() or default
+    if len(title) > _CONV_TITLE_MAX:
+        return title[: _CONV_TITLE_MAX - 1] + "…"
+    return title
+
+
+def _conversation_public(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _get_owned_conversation(
+    conn: sqlite3.Connection, conversation_id: str, actor: identity.Actor
+) -> sqlite3.Row:
+    row = conn.execute(
+        _CONV_SELECT + " WHERE c.id=? AND c.org_id=? AND c.user_id=?",
+        (conversation_id, actor.org_id, actor.user_id),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, "Not found")
+    return row
+
+
 @app.get("/api/conversations")
 def list_conversations(request: Request) -> list[dict[str, Any]]:
     actor = _require_actor(request)
     with db() as conn:
         rows = conn.execute(
-            """SELECT * FROM conversations
-               WHERE org_id=? AND user_id=?
-               ORDER BY created_at DESC""",
+            _CONV_SELECT
+            + """ WHERE c.org_id=? AND c.user_id=?
+                   ORDER BY updated_at DESC, c.id DESC""",
             (actor.org_id, actor.user_id),
         ).fetchall()
-    return [
-        {"id": r["id"], "title": r["title"], "created_at": r["created_at"]}
-        for r in rows
-    ]
+    return [_conversation_public(r) for r in rows]
 
 
 @app.post("/api/conversations")
 def create_conversation(body: ConversationIn, request: Request) -> dict[str, Any]:
     actor = _require_actor(request)
     cid = f"c_{uuid.uuid4().hex[:12]}"
-    title = (body.title or "New conversation").strip() or "New conversation"
+    title = _conversation_title(body.title)
     created = _now()
     with db() as conn:
         conn.execute(
             "INSERT INTO conversations(id, title, created_at, org_id, user_id) VALUES (?,?,?,?,?)",
             (cid, title, created, actor.org_id, actor.user_id),
         )
-    return {"id": cid, "title": title, "created_at": created}
+        row = _get_owned_conversation(conn, cid, actor)
+    return _conversation_public(row)
 
 
 @app.get("/api/conversations/{conversation_id}")
 def get_conversation(conversation_id: str, request: Request) -> dict[str, Any]:
     actor = _require_actor(request)
     with db() as conn:
-        c = conn.execute(
-            "SELECT * FROM conversations WHERE id=? AND org_id=? AND user_id=?",
-            (conversation_id, actor.org_id, actor.user_id),
-        ).fetchone()
-        if c is None:
-            raise HTTPException(404, "Not found")
+        c = _get_owned_conversation(conn, conversation_id, actor)
         msgs = conn.execute(
             """SELECT * FROM messages WHERE conversation_id=?
                ORDER BY created_at ASC""",
             (conversation_id,),
         ).fetchall()
     return {
-        "id": c["id"],
-        "title": c["title"],
-        "created_at": c["created_at"],
+        **_conversation_public(c),
         "messages": [
             {"id": m["id"], **json.loads(m["content_json"]), "created_at": m["created_at"]}
             for m in msgs
         ],
     }
+
+
+@app.patch("/api/conversations/{conversation_id}")
+def patch_conversation(
+    conversation_id: str, body: ConversationPatch, request: Request
+) -> dict[str, Any]:
+    actor = _require_actor(request)
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(400, "Title required")
+    title = _conversation_title(title, default=title)
+    with db() as conn:
+        _get_owned_conversation(conn, conversation_id, actor)
+        conn.execute(
+            "UPDATE conversations SET title=? WHERE id=?",
+            (title, conversation_id),
+        )
+        row = _get_owned_conversation(conn, conversation_id, actor)
+    return _conversation_public(row)
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str, request: Request) -> dict[str, str]:
+    actor = _require_actor(request)
+    with db() as conn:
+        _get_owned_conversation(conn, conversation_id, actor)
+        conn.execute("DELETE FROM messages WHERE conversation_id=?", (conversation_id,))
+        conn.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
+    return {"status": "deleted"}
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -2767,44 +2930,47 @@ def _run_live_lookup(
 ) -> tuple[list[str], list[str]]:
     """§13.2: at most `live.MAX_LOOKUPS` whitelisted point-lookups, each
     under `live.TIMEOUT_SECONDS`, only against providers this workspace has
-    actually connected. Fetched docs go through the exact same
-    `_persist_canonical_docs` + `run_store_pipeline` front door as a
-    scheduled sync (§13.2's "nothing skips distillation and the noise
-    filter" rule) — no second write path. Returns `(stored_doc_ids,
-    checked_descriptions)`; `stored_doc_ids` is empty when nothing
-    whitelisted matched, nothing was found, or a fetch timed out/errored —
-    all of which degrade to "not found live either", never a crash.
+    actually connected. Fetched docs are persisted and upserted into
+    FTS/vectors so this turn can cite them. Distill + ontology stay on the
+    scheduled sync path — running them here stalled the ask SSE.
+    Returns `(stored_doc_ids, checked_descriptions)`; `stored_doc_ids` is
+    empty when nothing whitelisted matched, nothing was found, or a fetch
+    timed out/errored — all of which degrade to "not found live either",
+    never a crash.
     """
     targets = detect_live_targets(conn, question, plan)
     if not targets:
         return [], []
 
+    status_list = sorted(LIVE_CONNECTION_STATUSES)
+    placeholders = ",".join("?" * len(status_list))
     ready_providers = {
         r["provider"]
         for r in conn.execute(
-            "SELECT provider FROM connections WHERE status='ready' AND org_id=?",
-            (org_id,),
+            f"SELECT provider FROM connections WHERE status IN ({placeholders}) "
+            "AND org_id=? AND paused=0",
+            (*status_list, org_id),
         )
     }
     checked: list[str] = []
     fetched_docs: list[CanonicalDoc] = []
 
     for target in targets:
-        provider = "github" if isinstance(target, GitHubItemTarget) else "slack"
+        provider = target.provider
         if provider not in ready_providers:
             continue
         # §1.4/§0.3 personal-then-org-shared read resolution: this actor's
-        # own personal connection (if one exists and is ready) is used
+        # own personal connection (if one exists and is usable) is used
         # over the org-shared one -- e.g. a live Slack lookup should read
         # with the asking person's own identity when they have one,
         # falling back to the shared connection otherwise. Only
         # gmail/slack can even have a personal row (PERSONAL_CONNECTOR_
         # PROVIDERS), so this is a no-op for github today.
         conn_row = conn.execute(
-            """SELECT id FROM connections WHERE provider=? AND status='ready'
-               AND org_id=? AND (owned_by=? OR owned_by IS NULL)
+            f"""SELECT id FROM connections WHERE provider=? AND status IN ({placeholders})
+               AND org_id=? AND paused=0 AND (owned_by=? OR owned_by IS NULL)
                ORDER BY (owned_by IS NULL) LIMIT 1""",
-            (provider, org_id, actor_id),
+            (provider, *status_list, org_id, actor_id),
         ).fetchone()
         if conn_row is None:
             continue
@@ -2837,15 +3003,18 @@ def _run_live_lookup(
 
     live_docs = [d.model_copy(update={"ingested_via": "live"}) for d in fetched_docs]
     _, dirty_docs = _persist_canonical_docs(conn, live_docs, org_id=org_id)
-    if dirty_docs and llm_call is not None:
-        run_store_pipeline(
+    # Ask-path must stay fast: upsert into FTS/vectors so this turn can cite
+    # the live doc. Full distill + ontology wait for the next scheduled sync
+    # — running them here stalled SSE on "live" for tens of seconds.
+    if dirty_docs:
+        store_docs = [from_canonical_doc(d) for d in dirty_docs]
+        upsert_docs(
             conn,
             _live_index_for(org_id),
             _hydra_store_for(org_id),
-            _embed_fn,
-            llm_call,
-            dirty_docs,
-            data_dir=DATA_DIR,
+            store_docs,
+            embed_fn=_embed_fn,
+            now=_now(),
             org_id=org_id,
         )
     # Every fetched doc is now indexed (freshly, via dirty_docs above, or
@@ -2868,7 +3037,7 @@ def _mcp_ask_sync(actor: identity.Actor, question: str) -> dict[str, Any]:
         settings_map = _settings_map(conn, actor.org_id)
         ask_ctx = AskContext.web(
             actor.user_id,
-            aliases={Visibility.user("gmail", actor.email).stamp},
+            aliases=_mailbox_aliases(conn, actor),
             channels=member_channel_stamps(conn, actor.user_id, org_id=actor.org_id),
             org_id=actor.org_id,
         )
@@ -3330,14 +3499,13 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
     actor = _require_actor(request)
 
     with db() as conn:
-        # Web is the asker's desk: the workspace email is the one mailbox
-        # identity we have until connectors are owned per person (§0.3),
-        # and private Slack channels the actor is a member of (§1.4) —
-        # closing the literal gap the plan named: "web cannot yet include
-        # channel:slack:… even for people who are in that Slack room."
+        # Web is the asker's desk: the mailboxes this person actually
+        # connected (§0.3) plus the private Slack channels they are a member
+        # of (§1.4) — closing the literal gap the plan named: "web cannot yet
+        # include channel:slack:… even for people who are in that Slack room."
         ask_ctx = AskContext.web(
             actor.user_id,
-            aliases={Visibility.user("gmail", actor.email).stamp},
+            aliases=_mailbox_aliases(conn, actor),
             channels=member_channel_stamps(conn, actor.user_id, org_id=actor.org_id),
             org_id=actor.org_id,
         )
@@ -3349,10 +3517,9 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             raise HTTPException(404, "Conversation not found")
 
         if c["title"] == "New conversation":
-            title = question[:72] + ("…" if len(question) > 72 else "")
             conn.execute(
                 "UPDATE conversations SET title=? WHERE id=?",
-                (title, body.conversation_id),
+                (_conversation_title(question), body.conversation_id),
             )
 
         user_id = f"m_{uuid.uuid4().hex[:12]}"
@@ -3391,13 +3558,21 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
         with db() as conn:
             settings_map = _settings_map(conn, actor.org_id)
             turns = load_recent_turns(conn, body.conversation_id)
-        llm_call = make_openrouter_caller(settings_map) if settings_map.get("llm_api_key") else None
+        has_key = bool(settings_map.get("llm_api_key"))
+        llm_call = make_openrouter_caller(settings_map) if has_key else None
+        llm_stream = make_openrouter_streamer(settings_map) if has_key else None
         call_counts: dict[str, int] = {}
 
         def tracked_llm(stage: str, system_prompt: str, user_prompt: str) -> str:
             raw = llm_call(stage, system_prompt, user_prompt)
             call_counts[stage] = call_counts.get(stage, 0) + 1
             return raw
+
+        def tracked_stream(
+            stage: str, system_prompt: str, user_prompt: str
+        ) -> Iterator[str]:
+            call_counts[stage] = call_counts.get(stage, 0) + 1
+            return llm_stream(stage, system_prompt, user_prompt)
 
         # §13.1: rewrite the raw message into a standalone question and
         # classify it — knowledge/meta/chitchat — before planning anything.
@@ -3462,6 +3637,9 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
                     rewritten_question,
                     ask=ask_ctx,
                     hydra_store=_hydra_store_for(actor.org_id),
+                    # Synthesis is run separately below so its prose can be
+                    # streamed as the model writes it.
+                    defer_synthesis=llm_call is not None,
                     **_answer_style(settings_map),
                 )
         except Exception:
@@ -3482,9 +3660,36 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
         # §13.2: live lookup fires on exactly two conditions — planner
         # intent is "live", or the abstention gate fired. Memory-first,
         # always: this only ever runs AFTER the real retrieval above.
+        #
+        # The gate is read from the reranked context rather than from a
+        # finished answer. It used to key off `trace.answer.status ==
+        # "absent"`, which forced synthesis to complete before the live
+        # decision — and then threw that answer away and synthesised again
+        # whenever live found something, paying for two answer calls on
+        # exactly the questions that were already slowest. `_pre_gate_abstain`
+        # is the same weak-context test `synthesize_answer` applies
+        # internally before it calls the model at all, so this decides on the
+        # identical signal, one call earlier.
+        # Live when the planner says so, context is too weak, OR the
+        # question already matches a live read (point or catalog). Do not
+        # wait for the planner — "open GitHub PRs" is live even if retrieve
+        # found related code and the model called it lookup.
+        live_shape = False
+        try:
+            with db() as conn:
+                live_shape = bool(
+                    detect_live_targets(conn, rewritten_question, trace.plan)
+                )
+        except Exception:
+            live_shape = False
         live_doc_ids: list[str] = []
         live_checked: list[str] = []
-        if llm_call is not None and (trace.plan.intent == "live" or trace.answer.status == "absent"):
+        if llm_call is not None and (
+            trace.plan.intent == "live"
+            or trace.plan.needs_current_only
+            or context_is_weak(trace.reranked)
+            or live_shape
+        ):
             yield _sse("status", {"stage": "live"})
             try:
                 with db() as conn:
@@ -3516,6 +3721,7 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
                             ask=ask_ctx,
                             hydra_store=_hydra_store_for(actor.org_id),
                             extra_doc_ids=tuple(live_doc_ids),
+                            defer_synthesis=True,
                             **_answer_style(settings_map),
                         )
                 except Exception:
@@ -3525,6 +3731,35 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
 
         yield _sse("status", {"stage": "answering"})
 
+        # Real token streaming. The answer stage returns a JSON object
+        # (answer + citations + status) because the abstention gate has to
+        # see the citations before the prose is trusted, so the prose is
+        # lifted out of the JSON as it streams and the parsed result is
+        # still checked at the end. `streamed_chars` tracks what the client
+        # has actually been shown, so the `done` event can tell it to
+        # replace that text if the gate ends up disagreeing with it.
+        streamed = ""
+        if llm_call is not None and llm_stream is not None:
+            try:
+                for kind, payload in synthesize_answer_streaming(
+                    tracked_stream,
+                    rewritten_question,
+                    trace.reranked,
+                    **_answer_style(settings_map),
+                ):
+                    if kind == "delta" and isinstance(payload, str):
+                        streamed += payload
+                        yield _sse("token", {"text": payload})
+                    elif kind == "result" and isinstance(payload, AnswerResult):
+                        trace.answer = payload
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "streaming synthesis failed for %r", rewritten_question
+                )
+                trace.answer = synthesize_answer(
+                    tracked_llm, rewritten_question, trace.reranked, **_answer_style(settings_map)
+                )
+
         answer_text = trace.answer.answer
         live_doc_id_set = set(live_doc_ids)
         cited_live = live_doc_id_set.intersection(trace.answer.citations)
@@ -3533,8 +3768,16 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
             answer_text += f" A live check of {', '.join(live_checked)} found nothing either."
         elif cited_live and trace.answer.status in {"answered", "partial"}:
             answer_text = f"As of just now: {answer_text}"
-        for token in answer_text.split(" "):
-            yield _sse("token", {"text": token + " "})
+
+        if streamed and answer_text != streamed:
+            # The gate rewrote (or withdrew) what was streamed — tell the
+            # client to replace rather than append, so a retracted answer
+            # never stays on screen next to its replacement.
+            yield _sse("replace", {"text": answer_text})
+        elif not streamed:
+            # Chitchat/no-LLM paths never streamed anything; deliver the
+            # whole text in one token event so the client renders it.
+            yield _sse("token", {"text": answer_text})
 
         # §13.2's whitelisted point-lookups ARE the agent's only tool calls
         # today -- surfaced on the message so the UI can show what was
@@ -3606,7 +3849,22 @@ def ask(request: Request, body: AskIn) -> StreamingResponse:
         except OSError:
             pass  # traces are diagnostic only — never fail the answer over a log write
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    # Without these, every reverse proxy in front of this (nginx, and
+    # Vercel's edge in the hosted deployment) buffers the whole response and
+    # releases it when the generator closes — the tokens are produced
+    # incrementally and then delivered in one burst anyway, which looks
+    # exactly like no streaming at all. `X-Accel-Buffering: no` is the
+    # explicit opt-out nginx honours; `no-transform` stops content-encoding
+    # middleboxes from re-chunking the stream.
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ── settings / profile / health ─────────────────────────────────────────────
@@ -3870,6 +4128,91 @@ def delete_api_key_route(key_id: str, request: Request) -> dict[str, str]:
     if not removed:
         raise HTTPException(404, "Key not found")
     return {"status": "ok"}
+
+
+@app.get("/api/graph/around")
+def graph_around(
+    request: Request,
+    q: str = Query("", max_length=200),
+    hops: int = Query(1, ge=1, le=2),
+) -> dict[str, Any]:
+    actor = _require_actor(request)
+    with db() as conn:
+        ask_ctx = AskContext.web(
+            actor.user_id,
+            aliases=_mailbox_aliases(conn, actor),
+            channels=member_channel_stamps(conn, actor.user_id, org_id=actor.org_id),
+            org_id=actor.org_id,
+        )
+        allowed = allowed_stamps(ask_ctx)
+        try:
+            return graph_around_slice(
+                _hydra_store_for(actor.org_id),
+                conn,
+                q,
+                hops=hops,
+                allowed=allowed,
+                org_id=actor.org_id,
+            )
+        except Exception as exc:
+            return empty_slice(q.strip(), hydra=f"error: {exc}")
+
+
+# The overview reads the whole entity layer: 12 predicate queries plus the
+# mention and reversal sweeps. That is a few seconds against HydraDB, and it
+# is the graph page's first paint, so the result is cached briefly per
+# (org, viewer, quality). Keyed on the viewer because the slice is filtered
+# by what that person is allowed to read — caching it per org would leak
+# documents across desks. The TTL is short enough that a finished sync shows
+# up on the next visit without an invalidation hook.
+_GRAPH_OVERVIEW_TTL_SECONDS = 600.0
+_GRAPH_OVERVIEW_CACHE: dict[tuple[int, str, bool], tuple[float, dict[str, Any]]] = {}
+
+
+@app.get("/api/graph/world")
+def graph_world(
+    request: Request,
+    quality: bool | None = Query(None),
+    refresh: bool = Query(False),
+) -> dict[str, Any]:
+    """Every layer at once: connectors, containers, documents, entities.
+    Shares the overview's cache key space (keyed on viewer, since the slice
+    is visibility-filtered) under its own bucket."""
+    actor = _require_actor(request)
+    cache_key = (actor.org_id, f"world:{actor.user_id}", quality)
+    if not refresh:
+        cached = _GRAPH_OVERVIEW_CACHE.get(cache_key)
+        if cached is not None and (time.time() - cached[0]) < _GRAPH_OVERVIEW_TTL_SECONDS:
+            return cached[1]
+    with db() as conn:
+        ask_ctx = AskContext.web(
+            actor.user_id,
+            aliases=_mailbox_aliases(conn, actor),
+            channels=member_channel_stamps(conn, actor.user_id, org_id=actor.org_id),
+            org_id=actor.org_id,
+        )
+        allowed = allowed_stamps(ask_ctx)
+        effective_quality = _graph_quality(conn, actor.org_id, quality)
+        try:
+            result = graph_world_slice(
+                _hydra_store_for(actor.org_id),
+                conn,
+                allowed=allowed,
+                org_id=actor.org_id,
+                quality=effective_quality,
+            )
+            # Never cache an empty graph. Empty is either genuinely empty —
+            # in which case recomputing is cheap and the workspace is about
+            # to start filling up — or the tail of a transient fault, and
+            # pinning that for the full TTL turns a momentary blip into ten
+            # minutes of a product that looks broken.
+            if result.get("nodes"):
+                _GRAPH_OVERVIEW_CACHE[cache_key] = (time.time(), result)
+            return result
+        except Exception as exc:
+            return empty_slice(hydra=f"error: {exc}")
+
+
 
 
 @app.get("/api/health")

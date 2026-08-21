@@ -156,7 +156,7 @@ export function SlackPanel() {
 
       <SettingsSection
         title="Also ingest Slack?"
-        description="Connecting Slack as a connector syncs channels into memory. That’s separate from the bot being in the room."
+        description="Syncs channels into memory. Separate from the bot answering in them."
       >
         <Link
           href="/integrations?open=slack"
@@ -199,10 +199,10 @@ function SlackHeader({
           </h2>
           <p className="mt-1 max-w-md text-[13px] leading-relaxed text-ink-2">
             {oauth
-              ? "Add joel to your Slack workspace, then /invite @joel in the channels where it should answer @mentions. We don't create channels or post a launch message."
+              ? "Add joel, then /invite @joel where it should answer. Nothing is posted."
               : install === "unavailable"
                 ? "The hosted Slack app isn't configured yet."
-                : "Create your own Slack app from the manifest, paste the signing secret and bot token, then /invite @joel in the channels where it should answer @mentions. We don't create channels or post a launch message."}
+                : "Create an app from the manifest, paste both secrets, then /invite @joel where it should answer."}
           </p>
         </div>
       </div>

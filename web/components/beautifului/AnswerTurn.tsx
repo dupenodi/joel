@@ -25,6 +25,8 @@ export function UserTurn({ children }: { children: string }) {
 export function SimpleAnswer({ message }: { message: Message }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const citations = message.citations ?? [];
+  const paths = message.reasoning_path ?? [];
+  const tools = message.tool_calls ?? [];
   const absent =
     message.status === "absent" ||
     (!message.content && citations.length === 0);
@@ -40,6 +42,9 @@ export function SimpleAnswer({ message }: { message: Message }) {
           {message.content}
         </p>
       )}
+
+      {tools.length > 0 && <ToolCallChips calls={tools} />}
+      {paths.length > 0 && <ReasoningPath paths={paths} />}
 
       {citations.length > 0 && (
         <>

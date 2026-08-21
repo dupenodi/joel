@@ -36,6 +36,11 @@ def main() -> None:
     assert classify("GET", "/api/ask") is Access.ACTOR
     assert classify("GET", "/api/org") is Access.ACTOR
     assert classify("PATCH", "/api/workspace") is Access.ACTOR
+    assert classify("GET", "/api/conversations") is Access.ACTOR
+    assert classify("POST", "/api/conversations") is Access.ACTOR
+    assert classify("GET", "/api/conversations/c_abc") is Access.ACTOR
+    assert classify("PATCH", "/api/conversations/c_abc") is Access.ACTOR
+    assert classify("DELETE", "/api/conversations/c_abc") is Access.ACTOR
 
     empty = RequestIdentity(session_id=None, user_id=None, actor=None)
     assert unauthorized(empty, Access.PUBLIC) is False

@@ -96,7 +96,7 @@ export function MembersPanel() {
         title="Members"
         description={
           admin
-            ? "People with access to this workspace. Invite one or many — email when configured, otherwise share the links."
+            ? "Who can use this workspace. Invite by email, or share a link."
             : "People with access to this workspace."
         }
         headerAside={
@@ -192,7 +192,7 @@ export function MembersPanel() {
       {admin && (
         <SettingsSection
           title="Pending invites"
-          description="Resend rotates the link and re-emails when mail is configured. Revoke any you no longer want used."
+          description="Get link rotates and re-copies an invite. Revoke ends it."
         >
           {invites.length === 0 ? (
             <SettingsEmpty>No pending invites.</SettingsEmpty>
@@ -239,7 +239,7 @@ export function MembersPanel() {
                           });
                       }}
                     >
-                      Resend
+                      Get link
                     </Button>
                     <Button
                       type="button"
@@ -395,7 +395,7 @@ export function MembersPanel() {
               : "Give them these links"}
           </h2>
           <p className="mt-1 text-[13px] text-ink-2">
-            Each link is shown once here. Copy before you close.
+            Each link is shown here after create or Get link. Copy before you close.
             {mailConfigured
               ? " Configure Email in settings if sends are failing."
               : ""}
