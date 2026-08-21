@@ -23,6 +23,15 @@ const CY = H / 2;
 const MIN_K = 0.2;
 const MAX_K = 8;
 
+// How far the pointer may travel before a press counts as a drag rather than
+// a click. A mouse press almost always jitters a pixel or two, and a trackpad
+// press more, so without a slop radius nothing is ever a click.
+const DRAG_SLOP = 4;
+
+function past(px: number, py: number, event: { clientX: number; clientY: number }) {
+  return Math.hypot(event.clientX - px, event.clientY - py) > DRAG_SLOP;
+}
+
 /* ------------------------------------------------------------------ *
  * Palette
  *
@@ -398,8 +407,16 @@ export function GraphCanvas({
 
   const alphaRef = useRef(1);
   const rafRef = useRef<number | null>(null);
-  const panRef = useRef<{ px: number; py: number; vx: number; vy: number } | null>(null);
-  const dragRef = useRef<{ i: number; moved: boolean } | null>(null);
+  const panRef = useRef<{
+    px: number;
+    py: number;
+    vx: number;
+    vy: number;
+    moved: boolean;
+  } | null>(null);
+  const dragRef = useRef<{ i: number; moved: boolean; px: number; py: number } | null>(
+    null,
+  );
   const viewRef = useRef(view);
   viewRef.current = view;
 
@@ -477,13 +494,23 @@ export function GraphCanvas({
 
   function onPointerDown(event: ReactPointerEvent<SVGSVGElement>) {
     if (dragRef.current) return;
-    panRef.current = { px: event.clientX, py: event.clientY, vx: view.x, vy: view.y };
+    panRef.current = {
+      px: event.clientX,
+      py: event.clientY,
+      vx: view.x,
+      vy: view.y,
+      moved: false,
+    };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function onPointerMove(event: ReactPointerEvent<SVGSVGElement>) {
     const drag = dragRef.current;
     if (drag) {
+      // Below the slop radius this is a click with a shaky hand, not a drag.
+      // Treating it as a drag is what made "click to inspect" impossible:
+      // any press moves a pixel or two, so every click looked intentional.
+      if (!drag.moved && !past(drag.px, drag.py, event)) return;
       const p = toGraph(event.clientX, event.clientY);
       const n = simsRef.current[drag.i];
       n.x = p.x;
@@ -497,6 +524,8 @@ export function GraphCanvas({
     }
     const pan = panRef.current;
     if (!pan) return;
+    if (!pan.moved && !past(pan.px, pan.py, event)) return;
+    pan.moved = true;
     setView((v) => ({
       ...v,
       x: pan.vx + (event.clientX - pan.px),
@@ -504,13 +533,19 @@ export function GraphCanvas({
     }));
   }
 
+  // Selection is decided here rather than on the node, because the node's own
+  // pointerup never fires: pressing one captures the pointer to the <svg>, so
+  // every subsequent event for that gesture is retargeted away from the <g>.
   function endPointer(event: ReactPointerEvent<SVGSVGElement>) {
     const drag = dragRef.current;
+    const pan = panRef.current;
     if (drag) {
       // Hand-placed nodes stay put; springing back would undo the work.
       simsRef.current[drag.i].pinned = true;
-      if (!drag.moved) onSelect(null);
+      if (!drag.moved) onSelect(simsRef.current[drag.i].id);
       dragRef.current = null;
+    } else if (pan && !pan.moved) {
+      onSelect(null); // a click on empty canvas puts the inspector away
     }
     panRef.current = null;
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
@@ -662,15 +697,14 @@ export function GraphCanvas({
                 onPointerLeave={() => setHoverId(null)}
                 onPointerDown={(event) => {
                   event.stopPropagation();
-                  dragRef.current = { i, moved: false };
+                  dragRef.current = {
+                    i,
+                    moved: false,
+                    px: event.clientX,
+                    py: event.clientY,
+                  };
                   s.pinned = true;
                   svgRef.current?.setPointerCapture(event.pointerId);
-                }}
-                onPointerUp={(event) => {
-                  if (dragRef.current && !dragRef.current.moved) {
-                    event.stopPropagation();
-                    onSelect(n.id);
-                  }
                 }}
                 onDoubleClick={(event) => {
                   event.stopPropagation();
