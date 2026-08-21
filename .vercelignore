@@ -10,6 +10,4 @@ scripts
 docs
 *.md
 !brand-kit/**/*.md
-web/Joel Landing.dc.html
 web/Dockerfile
-web/og.html

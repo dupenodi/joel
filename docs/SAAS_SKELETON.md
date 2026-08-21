@@ -4,7 +4,7 @@ Primary-source notes on how dual-mode OSS products (and Linear via public API/do
 
 **Sources policy:** GitHub source + official docs only. Linear is **not** open source; Linear claims below are from the public GraphQL schema / help docs, and are called out as such.
 
-**joel local sources:** `api/joel/migrations/003_identity.sql`, `api/joel/identity.py`, `PLAN.md` §0 / §0.2 / §0.3.
+**joel local sources:** `api/joel/migrations/003_identity.sql`, `api/joel/identity.py`, `docs/SYSTEM_OVERVIEW.md`.
 
 ---
 
@@ -236,7 +236,7 @@ Citations:
 
 ## joel today (grounded)
 
-From `003_identity.sql` + `identity.py` + `PLAN.md` §0.2:
+From `003_identity.sql` + `identity.py`:
 
 - Settled product decision: **one self-hosted workspace, many members**; `/setup` creates first admin; invites for everyone else; roles `admin` / `member`.
 - Implementation: `ORG_ID = 1`; `Actor` always resolves membership for that org; sessions are opaque IDs in SQLite; invites hash tokens like API keys.
@@ -301,7 +301,7 @@ Numbered path from current state → hardened single-workspace skeleton → opti
 | Linear invite members help | https://linear.app/docs/invite-members |
 | joel identity migration | `api/joel/migrations/003_identity.sql` |
 | joel identity module | `api/joel/identity.py` |
-| joel one-workspace product decision | `PLAN.md` §0.2 |
+| joel one-workspace product decision | `docs/adr/0002-mode-a-one-workspace.md` |
 
 ---
 
@@ -311,7 +311,7 @@ Work these in order. Each step ends with a `scripts/check_*.py` green (or an ext
 
 ### Step 1 — Product contract (docs only)
 - [x] Add a short ADR / PLAN pointer: **deploy = one company (Mode A)**; no “create workspace” in self-host UI. (`docs/adr/0002-mode-a-one-workspace.md`)
-- [x] Cross-link `docs/SAAS_SKELETON.md` from `docs/SYSTEM_OVERVIEW.md` and `PLAN.md` §0.
+- [x] Cross-link `docs/SAAS_SKELETON.md` from `docs/SYSTEM_OVERVIEW.md`.
 - [x] Explicitly state: departments/squads ≠ extra workspaces; use visibility stamps (or a future in-workspace team) instead.
 
 ### Step 2 — Tenancy API discipline (code, still Mode A)
