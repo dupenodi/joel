@@ -264,6 +264,17 @@ def _fetch_repo_code(
     return raws
 
 
+def _pr_merged_flag(item: dict[str, Any]) -> bool:
+    """Issues API list/get often omit top-level `merged`; nested pull_request
+    carries `merged_at` when the PR actually merged."""
+    if item.get("merged") is True:
+        return True
+    pr = item.get("pull_request")
+    if isinstance(pr, dict) and pr.get("merged_at"):
+        return True
+    return bool(item.get("merged", False))
+
+
 def fetch_github_docs(
     *,
     since: str | None = None,
@@ -311,7 +322,7 @@ def fetch_github_docs(
             payload = _with_repo(item, full_name)
             if isinstance(item.get("pull_request"), dict):
                 payload["draft"] = bool(item.get("draft", False))
-                payload["merged"] = bool(item.get("merged", False))
+                payload["merged"] = _pr_merged_flag(item)
                 prs_raw.append(payload)
                 pr_numbers.add(str(number))
             else:
@@ -355,6 +366,20 @@ def fetch_github_docs(
     return docs
 
 
+MAX_LIVE_CATALOG = 20
+
+
+def _docs_from_issue_payload(data: dict[str, Any], full_name: str) -> list[CanonicalDoc]:
+    if data.get("number") is None:
+        return []
+    payload = _with_repo(data, full_name)
+    if isinstance(data.get("pull_request"), dict):
+        payload["draft"] = bool(data.get("draft", False))
+        payload["merged"] = _pr_merged_flag(data)
+        return adapt_many(GITHUB_PR, [payload])
+    return adapt_many(GITHUB_ISSUE, [payload])
+
+
 def fetch_github_item(
     *, request: RequestFn, owner: str, repo: str, number: int
 ) -> CanonicalDoc | None:
@@ -370,17 +395,34 @@ def fetch_github_item(
         if exc.status in {404, 410}:
             return None
         raise
-    if not isinstance(data, dict) or data.get("number") is None:
+    if not isinstance(data, dict):
         return None
-    payload = _with_repo(data, full_name)
-    is_pr = isinstance(data.get("pull_request"), dict)
-    if is_pr:
-        payload["draft"] = bool(data.get("draft", False))
-        payload["merged"] = bool(data.get("merged", False))
-        docs = adapt_many(GITHUB_PR, [payload])
-    else:
-        docs = adapt_many(GITHUB_ISSUE, [payload])
+    docs = _docs_from_issue_payload(data, full_name)
     return docs[0] if docs else None
+
+
+def fetch_github_open_items(
+    *, request: RequestFn, owner: str, repo: str
+) -> list[CanonicalDoc]:
+    """Current open issues and PRs on one repo — the catalog read for a
+    now-question that names GitHub (or the repo) but not a number."""
+    client = GitHubClient(request)
+    full_name = f"{owner}/{repo}"
+    try:
+        data, _headers = client.get(
+            f"/repos/{full_name}/issues",
+            state="open",
+            sort="updated",
+            per_page=MAX_LIVE_CATALOG,
+        )
+    except GitHubAPIError as extra:
+        if extra.status in {404, 410}:
+            return []
+        raise
+    docs: list[CanonicalDoc] = []
+    for item in _as_list(data)[:MAX_LIVE_CATALOG]:
+        docs.extend(_docs_from_issue_payload(item, full_name))
+    return docs
 
 
 __all__ = [
@@ -388,5 +430,6 @@ __all__ = [
     "GitHubClient",
     "fetch_github_docs",
     "fetch_github_item",
+    "fetch_github_open_items",
     "GITHUB_ACCEPT",
 ]

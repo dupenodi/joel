@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from joel.llm import LLMCallFn, LLMError, call_json
+from joel.ontology.predicates import VALID_ETYPES, VALID_PREDICATES
 
 _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "extract_ontology.md"
 _SYSTEM_PROMPT = (
@@ -28,26 +29,10 @@ _STAGE = "extract"
 _MAX_BODY_CHARS = 6000  # documents can run long; the prompt only needs enough to ground extraction
 _MIN_CONFIDENCE = 0.3  # same floor distill_thread.py uses — ambiguity lowers confidence, don't guess
 
-EXTRACT_VALID_ETYPES = frozenset(
-    {"PERSON", "TEAM", "PROJECT", "CUSTOMER", "SERVICE", "POLICY", "METRIC", "INCIDENT"}
-)
-# §4.2's Entity→Entity edge set, plus AFFECTS/RESOLVED which §9.1 rule 4 also allows.
-EXTRACT_VALID_PREDICATES = frozenset(
-    {
-        "OWNS",
-        "DECIDED",
-        "COMMITTED_TO",
-        "OBJECTED_TO",
-        "DEPENDS_ON",
-        "BLOCKS",
-        "ASSIGNED_TO",
-        "REPORTED",
-        "ESCALATED",
-        "APPROVED",
-        "RESOLVED",
-        "AFFECTS",
-    }
-)
+# Single source of truth, shared with retrieval's traversal set — see
+# `joel/ontology/predicates.py` for why the vocabulary looks like this.
+EXTRACT_VALID_ETYPES = VALID_ETYPES
+EXTRACT_VALID_PREDICATES = VALID_PREDICATES
 
 
 class ExtractFailure(RuntimeError):

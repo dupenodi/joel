@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from joel.llm import LLMCallFn
-from joel.ontology.extract import ExtractFailure, ExtractInput, extract_ontology
+from joel.ontology.extract import ExtractFailure, ExtractInput, ExtractionResult, extract_ontology
 from joel.ontology.reconcile import Claim, apply_decisions, reconcile_claim
 from joel.ontology.resolve import EntityRegistry, Mention, load_cache, resolve_mention, save_cache
 from joel.store import ALIAS_LABEL, ENTITY_LABEL, HydraStore
@@ -96,6 +96,32 @@ def _extract_one(
     except ExtractFailure as exc:
         report.extract_errors.append(str(exc))
         return
+    apply_extraction(
+        conn, hydra_store, llm_call, target, result, registry, cache, conflicts_path, report
+    )
+
+
+def apply_extraction(
+    conn: sqlite3.Connection,
+    hydra_store: HydraStore,
+    llm_call: LLMCallFn,
+    target: ExtractInput,
+    result: ExtractionResult,
+    registry: EntityRegistry,
+    cache: dict,
+    conflicts_path: Path,
+    report: OntologyReport,
+) -> None:
+    """Everything after the extraction call: resolve mentions to registry
+    entities, write nodes and edges, reconcile against existing claims.
+
+    Split out from `_extract_one` so a bulk rebuild can run the extraction
+    calls concurrently (they are independent, network-bound, and the slow
+    part) and then apply the results one at a time. Applying has to stay
+    serial: `registry` and `cache` are plain mutable objects, and entity
+    resolution is order-dependent — two documents naming the same person
+    must see each other's registry writes to resolve to one entity rather
+    than two."""
     report.docs_extracted += 1
     if result.artifact_class == "noise" or result.confidence < _MIN_CONFIDENCE:
         report.docs_skipped_noise += 1
@@ -160,16 +186,30 @@ def _extract_one(
         )
 
     by_predicate: dict[str, list[dict]] = {}
+    # One doc can state the same fact twice ("PPFAS announced X" … "PPFAS
+    # notified unitholders of X"), and two local entity keys can resolve to
+    # the same global entity, so distinct extracted relations collapse onto
+    # one `rel_key`. HydraDB rejects a batch carrying the same relationship
+    # id twice outright ("idempotency key conflict for relationship-import
+    # request"), which loses every edge in that batch, not just the
+    # duplicate — so dedupe before the write rather than after.
+    seen_rel_keys: set[str] = set()
     for relation in result.relations:
         src = local_to_global.get(relation.source)
         dst = local_to_global.get(relation.target)
         if src is None or dst is None:
             continue
+        if src == dst:
+            continue  # self-edge: two surface forms resolved to one entity
+        rel_key = f"{target.doc_id}::{src}::{relation.predicate}::{dst}"
+        if rel_key in seen_rel_keys:
+            continue
+        seen_rel_keys.add(rel_key)
         by_predicate.setdefault(relation.predicate, []).append(
             {
                 "from_key": src,
                 "to_key": dst,
-                "rel_key": f"{target.doc_id}::{src}::{relation.predicate}::{dst}",
+                "rel_key": rel_key,
                 "doc_id": target.doc_id,
                 "ctx": relation.context,
                 "ts": target.timestamp or "",
@@ -270,4 +310,4 @@ def run_ontology_pipeline(
     return report
 
 
-__all__ = ["OntologyReport", "run_ontology_pipeline", "registry_paths"]
+__all__ = ["OntologyReport", "apply_extraction", "run_ontology_pipeline", "registry_paths"]
